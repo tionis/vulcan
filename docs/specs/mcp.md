@@ -398,10 +398,12 @@ Grants store vault, profile, expiry, client, audience and scope. The packs field
 
 ## 13. Migration
 
-- Grants whose packs covered every pack eligible under their profile migrate unchanged; others
-  are revoked with a reason that `vulcan mcp connections list` shows, and the client reconnects.
-- `--tool-pack` and `--tool-pack-mode` are removed; the CLI rejects them with a pointer to
-  permission profiles. Named-remote definitions drop `tool_packs`; `--auth` modes other than the
+- A grant approved under packs keeps them until its next token use or refresh. Then, if its packs
+  covered every pack its profile could use, it keeps working and forgets them; otherwise it is
+  revoked, the client is told to reconnect, and `vulcan mcp connections list` shows it revoked.
+- `--tool-pack` and `--tool-pack-mode` are removed; `vulcan mcp` and `vulcan describe` reject them
+  with a pointer to permission profiles. Named-remote definitions and vault `[mcp_remote]` settings
+  drop `tool_packs` (old values load and are ignored), as does skill-command frontmatter; `--auth` modes other than the
   three above are rejected with a pointer to named remotes.
 - `vulcan describe --format mcp|openai-tools` exports the same catalog the server lists for the
   given profile.

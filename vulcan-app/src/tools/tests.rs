@@ -159,8 +159,7 @@ input_schema:
         "function main() { return null; }\n",
     );
 
-    let tools = list_custom_tools(&paths, None, &CustomToolRegistryOptions::default())
-        .expect("tools should load");
+    let tools = list_custom_tools(&paths, None).expect("tools should load");
     assert_eq!(tools.len(), 1);
     assert!(!tools[0].callable);
 }
@@ -217,20 +216,15 @@ metadata:
     );
 
     assert_eq!(
-        collect_custom_tool_cli_name_candidates(&paths, &CustomToolRegistryOptions::default())
-            .expect("name candidates"),
+        collect_custom_tool_cli_name_candidates(&paths).expect("name candidates"),
         vec![
             "skill_conversation_export_export".to_string(),
             "conversation-export".to_string()
         ]
     );
     assert_eq!(
-        collect_custom_tool_cli_flag_candidates(
-            &paths,
-            "conversation-export",
-            &CustomToolRegistryOptions::default(),
-        )
-        .expect("flag candidates"),
+        collect_custom_tool_cli_flag_candidates(&paths, "conversation-export",)
+            .expect("flag candidates"),
         vec![
             "--title".to_string(),
             "--dry-run".to_string(),
@@ -260,7 +254,6 @@ metadata:
             "--tag".to_string(),
             "beta".to_string(),
         ],
-        &CustomToolRegistryOptions::default(),
     )
     .expect("cli input should build");
     assert_eq!(
@@ -285,7 +278,6 @@ metadata:
             "--source".to_string(),
             "gemini".to_string(),
         ],
-        &CustomToolRegistryOptions::default(),
     )
     .expect_err("invalid choice should fail");
     assert!(
@@ -334,12 +326,7 @@ input_schema:
     );
 
     // A sandboxed tool needs no `execute`; it runs under the profile.
-    let tools = list_custom_tools(
-        &paths,
-        Some("blocked"),
-        &CustomToolRegistryOptions::default(),
-    )
-    .expect("tools should load");
+    let tools = list_custom_tools(&paths, Some("blocked")).expect("tools should load");
     assert_eq!(tools.len(), 1);
     assert!(tools[0].callable);
 
@@ -357,12 +344,7 @@ input_schema:
 ",
         "function main() { return null; }\n",
     );
-    let tools = list_custom_tools(
-        &paths,
-        Some("blocked"),
-        &CustomToolRegistryOptions::default(),
-    )
-    .expect("tools should load");
+    let tools = list_custom_tools(&paths, Some("blocked")).expect("tools should load");
     assert!(!tools[0].callable);
 
     trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
@@ -482,12 +464,7 @@ input_schema:
         "function main() { return null; }\n",
     );
 
-    let tools = list_custom_tools(
-        &paths,
-        Some("readonly"),
-        &CustomToolRegistryOptions::default(),
-    )
-    .expect("tools should load");
+    let tools = list_custom_tools(&paths, Some("readonly")).expect("tools should load");
     assert_eq!(tools.len(), 4);
     for name in [
         "skill_writer_run",
@@ -555,7 +532,6 @@ output_schema:
         None,
         "remote_tool",
         &json!({ "note": "Projects/Alpha.md" }),
-        &CustomToolRegistryOptions::default(),
         &CustomToolRunOptions {
             surface: "cli".to_string(),
         },
@@ -602,7 +578,6 @@ input_schema:
         None,
         "missing_profile_tool",
         &json!({}),
-        &CustomToolRegistryOptions::default(),
         &CustomToolRunOptions::default(),
     )
     .expect_err("missing tool profile should fail");
@@ -644,7 +619,6 @@ input_schema:
         None,
         "broken_tool",
         &json!({}),
-        &CustomToolRegistryOptions::default(),
         &CustomToolRunOptions::default(),
     )
     .expect_err("runtime failure should surface");
@@ -692,7 +666,6 @@ output_schema:
         None,
         "mismatch_tool",
         &json!({}),
-        &CustomToolRegistryOptions::default(),
         &CustomToolRunOptions::default(),
     )
     .expect_err("output schema mismatch should fail");
@@ -762,19 +735,13 @@ input_schema:
         Some("readonly"),
         "restricted_tool",
         &json!({}),
-        &CustomToolRegistryOptions::default(),
         &CustomToolRunOptions::default(),
     )
     .expect_err("broader requested profile should fail");
     assert!(error
         .to_string()
         .contains("tool `restricted_tool` requires permission profile `agent`"));
-    let listed = list_custom_tools(
-        &paths,
-        Some("readonly"),
-        &CustomToolRegistryOptions::default(),
-    )
-    .expect("tools should list");
+    let listed = list_custom_tools(&paths, Some("readonly")).expect("tools should list");
     assert_eq!(listed.len(), 1);
     assert!(!listed[0].callable);
     trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
@@ -839,7 +806,6 @@ Outer tool documentation.
         None,
         "outer_tool",
         &json!({ "note": "alpha" }),
-        &CustomToolRegistryOptions::default(),
         &CustomToolRunOptions {
             surface: "cli".to_string(),
         },
@@ -932,7 +898,6 @@ input_schema:
         None,
         "readonly_outer",
         &json!({}),
-        &CustomToolRegistryOptions::default(),
         &CustomToolRunOptions {
             surface: "cli".to_string(),
         },
@@ -976,7 +941,6 @@ input_schema:
         None,
         "loop_tool",
         &json!({}),
-        &CustomToolRegistryOptions::default(),
         &CustomToolRunOptions {
             surface: "cli".to_string(),
         },
@@ -1063,7 +1027,6 @@ metadata:
     )
     .expect("script");
     scan_vault(&paths, ScanMode::Full).expect("scan");
-    let options = CustomToolRegistryOptions::default();
     let denied = |result: Result<CustomToolRunReport, crate::AppError>| {
         let error = result
             .expect_err("host command must be refused")
@@ -1080,7 +1043,6 @@ metadata:
             Some("writer"),
             "skill_checker_run",
             &json!({}),
-            &options,
             &CustomToolRunOptions::default(),
         )
     };
@@ -1088,8 +1050,8 @@ metadata:
     // Declared but not granted: a writer caller cannot start processes.
     denied(run());
 
-    let granted = crate::tool_grants::grant_tool(&paths, "skill_checker_run", &options, false)
-        .expect("grant");
+    let granted =
+        crate::tool_grants::grant_tool(&paths, "skill_checker_run", false).expect("grant");
     assert_eq!(
         granted.grant.host_commands,
         vec![vec![
@@ -1103,10 +1065,10 @@ metadata:
     // A changed skill, as a synced commit would bring, voids the grant.
     fs::write(skill.join("scripts/helper.js"), "// new file\n").expect("change");
     denied(run());
-    let listed = crate::tool_grants::list_tool_grants(&paths, &options).expect("grants");
+    let listed = crate::tool_grants::list_tool_grants(&paths).expect("grants");
     assert_eq!(listed[0].state, crate::tool_grants::ToolGrantState::Stale);
 
-    crate::tool_grants::grant_tool(&paths, "skill_checker_run", &options, false).expect("regrant");
+    crate::tool_grants::grant_tool(&paths, "skill_checker_run", false).expect("regrant");
     assert!(run().is_ok());
     assert!(
         crate::tool_grants::revoke_tool_grant(&paths, "skill_checker_run", false).expect("revoke")
@@ -1158,8 +1120,7 @@ fn a_changeset_runs_its_vaults_granted_tools_only_while_they_are_unchanged() {
     git(&["add", "-A"]);
     git(&["commit", "--quiet", "-m", "seed"]);
     scan_vault(&paths, ScanMode::Full).expect("scan");
-    let options = CustomToolRegistryOptions::default();
-    crate::tool_grants::grant_tool(&paths, "skill_checker_run", &options, false).expect("grant");
+    crate::tool_grants::grant_tool(&paths, "skill_checker_run", false).expect("grant");
 
     let changeset = crate::changesets::begin_changeset(&paths, None).expect("changeset");
     let staged = crate::changesets::changeset_paths(&changeset);
@@ -1170,7 +1131,6 @@ fn a_changeset_runs_its_vaults_granted_tools_only_while_they_are_unchanged() {
             Some("writer"),
             "skill_checker_run",
             &json!({}),
-            &options,
             &CustomToolRunOptions::default(),
         )
     };
@@ -1198,7 +1158,6 @@ fn a_changeset_runs_its_vaults_granted_tools_only_while_they_are_unchanged() {
         Some("writer"),
         "skill_checker_run",
         &json!({}),
-        &options,
         &CustomToolRunOptions::default(),
     )
     .expect("the vault's tool still runs");

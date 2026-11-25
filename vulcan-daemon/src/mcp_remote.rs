@@ -12,27 +12,9 @@ use ulid::Ulid;
 use crate::registry::WikiId;
 
 pub const MCP_REMOTE_DEFINITION_VERSION: u32 = 1;
-pub const DEFAULT_MCP_TOOL_PACKS: &[&str] = &["notes-read", "search", "status"];
 const MAX_REMOTE_ID_BYTES: usize = 64;
 const MAX_PROFILE_BYTES: usize = 128;
 const MAX_URL_BYTES: usize = 2_048;
-const MAX_TOOL_PACKS: usize = 32;
-const KNOWN_TOOL_PACKS: &[&str] = &[
-    "notes-read",
-    "search",
-    "status",
-    "graph",
-    "custom",
-    "daily",
-    "tasks",
-    "notes-write",
-    "notes-manage",
-    "web",
-    "config",
-    "index",
-    "sync",
-    "git",
-];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -80,19 +62,10 @@ pub struct McpRemoteVault {
     pub ceiling_profile: String,
     #[serde(default = "default_permission_profile")]
     pub default_profile: String,
-    #[serde(default = "default_tool_packs")]
-    pub tool_packs: Vec<String>,
 }
 
 fn default_permission_profile() -> String {
     "readonly".to_string()
-}
-
-fn default_tool_packs() -> Vec<String> {
-    DEFAULT_MCP_TOOL_PACKS
-        .iter()
-        .map(|pack| (*pack).to_string())
-        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,7 +200,6 @@ pub(crate) fn validate_definition(
         }
         validate_profile_name(&vault.ceiling_profile, "ceiling")?;
         validate_profile_name(&vault.default_profile, "default")?;
-        validate_tool_packs(&vault.tool_packs)?;
     }
     for host in &definition.redirect_hosts {
         validate_redirect_host(host)?;
@@ -266,10 +238,6 @@ fn normalize_definition(
         McpRemoteAuthentication::IndieAuth { identity } => {
             *identity = normalized_https_url(identity, "IndieAuth identity")?;
         }
-    }
-    for vault in &mut definition.vaults {
-        vault.tool_packs.sort();
-        vault.tool_packs.dedup();
     }
     for host in &mut definition.redirect_hosts {
         *host = host.trim().to_ascii_lowercase();
@@ -328,28 +296,6 @@ fn validate_profile_name(value: &str, label: &str) -> Result<(), McpRemoteValida
     Ok(())
 }
 
-fn validate_tool_packs(tool_packs: &[String]) -> Result<(), McpRemoteValidationError> {
-    if tool_packs.is_empty() || tool_packs.len() > MAX_TOOL_PACKS {
-        return Err(McpRemoteValidationError::new(format!(
-            "remote MCP tool packs must contain 1-{MAX_TOOL_PACKS} entries"
-        )));
-    }
-    let mut unique = std::collections::BTreeSet::new();
-    for pack in tool_packs {
-        if !KNOWN_TOOL_PACKS.contains(&pack.as_str()) {
-            return Err(McpRemoteValidationError::new(format!(
-                "unknown remote MCP tool pack `{pack}`"
-            )));
-        }
-        if !unique.insert(pack) {
-            return Err(McpRemoteValidationError::new(format!(
-                "duplicate remote MCP tool pack `{pack}`"
-            )));
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,7 +312,6 @@ mod tests {
                 wiki_id: WikiId::parse("personal").expect("wiki ID"),
                 ceiling_profile: "agent".to_string(),
                 default_profile: "readonly".to_string(),
-                tool_packs: default_tool_packs(),
             }],
             redirect_hosts: Vec::new(),
         }
@@ -375,13 +320,24 @@ mod tests {
     }
 
     #[test]
-    fn remote_definition_normalizes_urls_and_pack_order() {
+    fn remote_definition_normalizes_urls() {
         let mut request = definition();
         request.public_url = "https://mcp.example.test/personal/../notes".to_string();
-        request.vaults[0].tool_packs = vec!["status".to_string(), "notes-read".to_string()];
         normalize_definition(&mut request).expect("normalized definition");
         assert_eq!(request.public_url, "https://mcp.example.test/notes");
-        assert_eq!(request.vaults[0].tool_packs, ["notes-read", "status"]);
+    }
+
+    #[test]
+    fn stored_definitions_with_tool_packs_still_load() {
+        let original = definition();
+        let mut stored = toml::Value::try_from(&original).unwrap();
+        stored["vaults"][0].as_table_mut().unwrap().insert(
+            "tool_packs".into(),
+            toml::Value::Array(vec!["search".into()]),
+        );
+        let loaded: McpRemoteDefinition = stored.try_into().unwrap();
+        assert_eq!(loaded, original);
+        assert!(!toml::to_string(&loaded).unwrap().contains("tool_packs"));
     }
 
     #[test]
@@ -421,10 +377,6 @@ mod tests {
 
         let mut candidate = definition();
         candidate.public_url = "http://mcp.example.test/personal".to_string();
-        assert!(validate_definition(&candidate).is_err());
-
-        let mut candidate = definition();
-        candidate.vaults[0].tool_packs = vec!["unknown".to_string()];
         assert!(validate_definition(&candidate).is_err());
     }
 

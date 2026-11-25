@@ -89,8 +89,7 @@ The CLI is designed to be self-describing at runtime.
 - `vulcan --output json describe` prints the runtime command schema in machine-oriented JSON.
 - `vulcan --output json describe --format openai-tools` exports OpenAI function-calling tool definitions.
 - `vulcan --output json describe --format mcp` exports MCP-style tool definitions.
-- The default MCP navigation surface exposes exact note reads, search, structured query, daily reads, status, and a compact `capabilities` tool. Graph analysis is available through `--tool-pack graph`.
-- Adaptive MCP sessions expose one `tool_packs` controller; startup-selected packs remain pinned, and clients must still refresh `tools/list` after a list-change notification.
+- MCP lists every tool the permission profile (`--permissions`) allows and nothing else; there is no separate tool selection. Choose a narrower profile to expose fewer tools.
 - MCP HTTP checks a browser `Origin` as a complete `http(s)://host[:port]` value: loopback listeners accept `localhost`, `127.0.0.1`, and `[::1]`; non-loopback listeners require their exact bind IP. Origins with paths, credentials, queries, or fragments are rejected. This is a browser request check, not a substitute for a token or OAuth grant.
 - MCP HTTP accepts a single unambiguous `Content-Length` for request bodies; duplicate framing or authorization headers, malformed header lines, and chunked request transfer encoding are rejected before dispatch. Configure a reverse proxy to forward a normal length-delimited request body.
 - MCP query pages default to 50 compact rows, daily list/range pages default to 20 rows, and oversized structured results are returned through session resource links.

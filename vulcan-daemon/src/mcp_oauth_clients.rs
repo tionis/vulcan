@@ -1150,7 +1150,6 @@ mod tests {
                 shell: false,
                 limits: ResourceLimits::default(),
             },
-            tool_packs: vec!["status".to_string()],
             scopes: vec!["mcp:tools".to_string()],
             audience: "https://mcp.example.test/personal".to_string(),
             created_at: now,

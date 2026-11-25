@@ -2608,7 +2608,7 @@ impl RegistryLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp_remote::{McpRemoteAuthentication, McpRemoteVault, DEFAULT_MCP_TOOL_PACKS};
+    use crate::mcp_remote::{McpRemoteAuthentication, McpRemoteVault};
     use std::fs::File;
     use tempfile::tempdir;
 
@@ -2716,10 +2716,6 @@ mod tests {
                 wiki_id: WikiId::parse(wiki_id).expect("wiki ID"),
                 ceiling_profile: "agent".to_string(),
                 default_profile: "readonly".to_string(),
-                tool_packs: DEFAULT_MCP_TOOL_PACKS
-                    .iter()
-                    .map(|pack| (*pack).to_string())
-                    .collect(),
             }],
             redirect_hosts: Vec::new(),
         }

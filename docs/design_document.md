@@ -1534,7 +1534,7 @@ The CLI serves three audiences simultaneously: human users in the terminal, exte
 
 ### Command hierarchy
 
-Commands are organized into a two-level hierarchy using clap nested subcommand enums. The 9.18 redesign was a pre-alpha clean break: the old flat command names were removed without aliases. Since then, a renamed command or tool may keep a hidden compatibility alias (for example `sync devices remove` for `prune-backup`, legacy MCP `daily_show`/`daily_list`, and the former tool-pack operation names). Such aliases are undocumented in help, map to exactly the new behavior, and are listed in the changelog.
+Commands are organized into a two-level hierarchy using clap nested subcommand enums. The 9.18 redesign was a pre-alpha clean break: the old flat command names were removed without aliases. Since then, a renamed command or tool may keep a hidden compatibility alias (for example `sync devices remove` for `prune-backup`, legacy MCP `daily_show`/`daily_list`). MCP tool names follow the 9.43 clean break instead (`docs/specs/mcp.md`). Such aliases are undocumented in help, map to exactly the new behavior, and are listed in the changelog.
 
 **Grouping principles:**
 - **`note`** groups single-note CRUD operations (get, set, create, append, patch) and single-note inspection (doctor, links, backlinks, diff). These are the primary tools for AI integrations.
@@ -1549,9 +1549,9 @@ Commands are organized into a two-level hierarchy using clap nested subcommand e
 
 The CLI's tool surface is designed for gradual discovery rather than loading all tool definitions upfront. This keeps context budgets manageable while making the full command surface accessible.
 
-**Core tools (always in the runtime's initial prompt, ~10):** The initial prompt for an external runtime such as `pi` should include full schemas for the most frequently used commands: `note get`, `note outline`, `note create`, `note set`, `note append`, `note patch`, `note update`, `note unset`, `search`, `query`, and `inbox`. These cover the vast majority of vault interactions. MCP exposes the same operations under snake_case tool names (for example `note_get` and `note_patch`); see *MCP-specific discovery boundary* for which MCP packs are enabled by default.
+**Core tools (always in the runtime's initial prompt, ~10):** The initial prompt for an external runtime such as `pi` should include full schemas for the most frequently used commands: `note get`, `note outline`, `note create`, `note set`, `note append`, `note patch`, `note update`, `note unset`, `search`, `query`, and `inbox`. These cover the vast majority of vault interactions. MCP exposes the same operations under snake_case tool names (for example `note_get` and `note_patch`); see *MCP-specific discovery boundary* for how the profile decides which MCP tools are listed.
 
-For generic MCP clients, the stable read/navigation surface also includes a compact high-level `daily` tool. It owns `latest`, `today`, `show`, `list`, and `range` operations; `latest` returns the newest existing note from the configured daily-note convention and can include content in one response. Legacy `daily_show` and `daily_list` remain available in the explicit daily pack for compatibility. Common navigation must not depend on a host honoring dynamic tool-list changes.
+For generic MCP clients, the stable read/navigation surface also includes a compact high-level `daily` tool. It owns `latest`, `today`, `show`, `list`, and `range` operations; `latest` returns the newest existing note from the configured daily-note convention and can include content in one response. Legacy `daily_show` and `daily_list` remain until the 9.43 catalog redesign removes them. Common navigation must not depend on a host honoring dynamic tool-list changes.
 
 **Discovery commands (always available on the CLI):**
 - **`describe`** — returns a compact listing of all commands with one-line descriptions. Cheap to call, gives the LLM a map of what exists.
@@ -1584,7 +1584,7 @@ Skills serve double duty: they teach external runtimes how to use Vulcan effecti
 - **git-workflow** — checking changes, committing, reviewing diffs, auto-commit behavior
 - **task-management** — task syntax, querying tasks, creating/completing, priorities
 - **configuration-and-permissions** — config inspection, profiles, sandboxing, trust, and access-control troubleshooting
-- **mcp-setup** — MCP server setup, ChatGPT remote connectors, OAuth/IndieAuth, tool packs, and resource visibility
+- **mcp-setup** — MCP server setup, ChatGPT remote connectors, OAuth/IndieAuth, and tool and resource visibility
 - **index-maintenance** — scanning, reindexing, cache verification, vector index checks, and stale-index repair
 - **dataview-and-bases** — Dataview, DataviewJS, Bases, `.base` views, formulas, and compatibility debugging
 - **templates-and-capture** — templates, inbox capture, QuickAdd/Templater compatibility, and note scaffolding
@@ -1622,15 +1622,13 @@ The CLI/harness pattern above does **not** map 1:1 onto generic MCP clients.
 That means Vulcan should treat MCP as a **server-native discovery surface**, not just as "the CLI tool list over JSON-RPC". In practice:
 
 - The Phase 9 MCP baseline should speak **protocolVersion `2025-06-18`** and advertise `tools`, `resources`, `prompts`, and `completions`, with stdio remaining the default local transport and `vulcan mcp --transport http` exposing the same registry over Streamable HTTP for networked clients.
-- MCP `tools` should come from an explicit, permission-filtered registry with curated packs. `notes-read`, `search`, and `status` are enabled by default; `daily`, `tasks`, `notes-write`, `notes-manage`, `graph`, `web`, `config`, `index`, `sync`, `git`, `custom` (vault skill commands), and `tool-packs` are opt-in. Interactive/TUI/editor/desktop-launch commands are CLI affordances, not MCP tools, and `vulcan describe --format mcp` should reuse the same registry so export and live exposure do not drift.
+- MCP `tools` come from an explicit, curated registry, and the permission profile alone decides which of them a connection sees: every tool it allows, nothing else (tool packs were removed in 9.43; `docs/specs/mcp.md`). Clients do the context work with deferred loading and tool search. Interactive/TUI/editor/desktop-launch commands are CLI affordances, not MCP tools, and `vulcan describe --format mcp` should reuse the same registry so export and live exposure do not drift.
 - Tool calls should return `structuredContent` plus a text fallback, with JSON-RPC protocol failures kept separate from `isError` tool failures. Large payloads should be referenceable via stable `vulcan://...` resource URIs instead of being forced into one opaque text blob.
 - Command help, `AGENTS.md`, assistant config summaries, skill indexes/content, and similar reference material should be exposed over MCP `resources`, because generic MCP clients cannot rely on injected skills or out-of-band files.
 - Reusable workflow starters should be stored as prompt files in the vault's configured prompts folder and exposed through MCP `prompts`, not hidden in a server-only prompt catalog. Prompt and resource list changes should surface through the corresponding MCP notifications.
 - Progressive disclosure for MCP should come from protocol-visible discovery primitives (`resources`, `prompts`, targeted help, and permission-filtered completion), not from assuming the host preloads a curated system prompt.
 - MCP initialization carries a short routing hierarchy: domain operation, exact note read, structured query, full-text search, then semantic/general fallback. Query tools apply bounded defaults and compact projections so an omitted limit cannot dump the vault.
-- Adaptive pack mutation is only a server capability. A usable client lifecycle still requires processing `notifications/tools/list_changed`, refreshing `tools/list`, and replacing callable schemas. Hosts that cache imported tool definitions must use an adequate static startup surface instead.
-- Startup-selected packs are pinned for the session, so model-initiated adaptive changes cannot remove the navigation contract the server advertised at initialization. Adaptive control uses one `tool_packs` operation tool; the former four names remain hidden call aliases for cached clients.
-- `graph_communities` and `suggest_links` live in an optional `graph` pack rather than the default navigation surface. A compact `capabilities` tool bridges routing and pack discovery for tools-only hosts.
+- The tool list never changes as a side effect of a request (MCP 2026-07-28 forbids it); it changes only when the vault's custom tools, trust, or the caller's profile do.
 - MCP list/query results use row limits and compact projections, while every tool response also has a serialized structured-content byte ceiling. Oversized results omit `structuredContent` and are retrieved through a session resource link instead of being duplicated into model context.
 - The shared MCP registry and dispatcher live in `vulcan-app`; HTTP/OAuth hosting lives in `vulcan-daemon`. Foreground CLI hosting and resident daemon listeners reuse that implementation. Local stdio remains daemon-independent.
 
@@ -1906,7 +1904,7 @@ The implementation agent should treat the following as mandatory:
 - **Single-note CRUD (`note get/set/create/append/patch`)** — **P1** — Required for AI integrations to read/write individual notes without shell access.
 - **`note patch` single-match safety** — **P1** — Fail on multiple matches by default to prevent unintended bulk edits from agent tool calls.
 - **JS runtime sandbox enforcement** — **P1** — Tiered sandbox (strict/fs/net/none) with resource limits must be correct and tested.
-- **CLI-to-tool parity** — **P1** — Every agent-facing tool that performs a vault operation maps to a CLI command with the same behavior and output format. MCP-only protocol and discovery tools (`capabilities`, `tool_packs`, and compound navigation tools such as `daily`, whose operations each map to a CLI subcommand) are the documented exceptions.
+- **CLI-to-tool parity** — **P1** — Every agent-facing tool that performs a vault operation maps to a CLI command with the same behavior and output format. MCP-only protocol and discovery tools (`capabilities` and compound navigation tools such as `daily`, whose operations each map to a CLI subcommand) are the documented exceptions.
 
 ## References
 

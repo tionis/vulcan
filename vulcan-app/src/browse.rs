@@ -1,6 +1,6 @@
 use crate::mdbase::mdbase_js_mutation_committer;
 use crate::scan::refresh_cache_incrementally;
-use crate::tools::{build_custom_tool_js_registry, CustomToolRegistryOptions};
+use crate::tools::build_custom_tool_js_registry;
 use crate::{plugins, templates, tools, AppError};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
@@ -436,7 +436,6 @@ fn query_js_options(paths: &VaultPaths, permission_profile: Option<&str>) -> Dat
             paths,
             permission_profile,
             "dataview.query_js",
-            &CustomToolRegistryOptions::default(),
         )),
         ..DataviewJsEvalOptions::default()
     }
@@ -1016,20 +1015,13 @@ pub fn collect_complete_candidates(
                     .collect()
             }
         }
-        "custom-tool" => tools::collect_custom_tool_cli_name_candidates(
-            paths,
-            &tools::CustomToolRegistryOptions::default(),
-        )?,
+        "custom-tool" => tools::collect_custom_tool_cli_name_candidates(paths)?,
         context if context.starts_with("custom-tool-flag:") => {
             let name = context.trim_start_matches("custom-tool-flag:");
             if name.is_empty() {
                 Vec::new()
             } else {
-                tools::collect_custom_tool_cli_flag_candidates(
-                    paths,
-                    name,
-                    &tools::CustomToolRegistryOptions::default(),
-                )?
+                tools::collect_custom_tool_cli_flag_candidates(paths, name)?
             }
         }
         context if context.starts_with("custom-tool-value:") => {
@@ -1039,19 +1031,12 @@ pub fn collect_complete_candidates(
             else {
                 return Ok(Vec::new());
             };
-            let mut candidates = tools::collect_custom_tool_cli_choice_candidates(
-                paths,
-                name,
-                flag,
-                &tools::CustomToolRegistryOptions::default(),
-            )?;
+            let mut candidates =
+                tools::collect_custom_tool_cli_choice_candidates(paths, name, flag)?;
             if candidates.is_empty() {
-                if let Some(completion) = tools::custom_tool_cli_flag_completion_context(
-                    paths,
-                    name,
-                    flag,
-                    &tools::CustomToolRegistryOptions::default(),
-                )? {
+                if let Some(completion) =
+                    tools::custom_tool_cli_flag_completion_context(paths, name, flag)?
+                {
                     candidates = collect_complete_candidates(paths, &completion)?;
                 }
             }

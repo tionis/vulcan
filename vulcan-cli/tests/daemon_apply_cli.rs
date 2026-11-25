@@ -316,7 +316,7 @@ fn remote_ceilings_resolve_from_daemon_toml() {
              public_url = \"https://notes.example.invalid/mcp\"\n\n\
              [mcp_remote.authentication]\ntype = \"indie_auth\"\nidentity = \"https://me.example.invalid/\"\n\n\
              [[mcp_remote.vaults]]\nwiki_id = \"notes\"\nceiling_profile = \"notes-rw\"\n\
-             default_profile = \"notes-rw\"\ntool_packs = [\"notes-read\"]\n{profiles}",
+             default_profile = \"notes-rw\"\n{profiles}",
             notes.display()
         )
     };
@@ -409,7 +409,7 @@ fn built_in_and_pinned_profiles_serve_as_remote_ceilings() {
              public_url = \"https://notes.example.invalid/mcp\"\n\n\
              [mcp_remote.authentication]\ntype = \"indie_auth\"\nidentity = \"https://me.example.invalid/\"\n\n\
              [[mcp_remote.vaults]]\nwiki_id = \"notes\"\nceiling_profile = \"{ceiling}\"\n\
-             default_profile = \"{ceiling}\"\ntool_packs = [\"notes-read\"]\n",
+             default_profile = \"{ceiling}\"\n",
             notes.display()
         )
     };
@@ -705,7 +705,7 @@ fn write_vault_remote(notes: &Path, identity: &str) {
         format!(
             "[mcp_remote]\npublic_url = \"https://notes.example.invalid/mcp\"\n\
              identity = \"{identity}\"\nceiling_profile = \"writer\"\n\
-             default_profile = \"writer\"\ntool_packs = [\"notes-read\", \"search\"]\n"
+             default_profile = \"writer\"\n"
         ),
     )
     .unwrap();

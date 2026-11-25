@@ -42,7 +42,7 @@ Use the CLI directly from shell or Python scripts, request JSON output, or run J
 | `vulcan run` | JavaScript scripts using the vault API |
 | Skills and skill commands | Reusable agent guidance and typed callable workflows |
 | Plugins | Event-driven lifecycle hooks |
-| MCP | Tool clients using permission profiles and selected tool packs |
+| MCP | Tool clients, with tools chosen by the connection's permission profile |
 | Daemon REST API | Programs reaching one vault over HTTP with a per-vault token |
 | Rust crates | Native integration with shared semantics and application workflows |
 
@@ -103,7 +103,7 @@ For an external agent runtime or MCP client:
 ```sh
 vulcan --vault ~/notes agent install
 vulcan --vault ~/notes describe --format mcp
-vulcan --vault ~/notes mcp --transport stdio --tool-pack notes-read,search,status
+vulcan --vault ~/notes --permissions readonly mcp --transport stdio
 ```
 
 Explore commands with `vulcan --help` and topic guides with `vulcan help`. The [getting-started guide](docs/guide/getting-started.md) and [CLI reference](docs/cli.md) cover additional workflows and configuration prerequisites.

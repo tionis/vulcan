@@ -14,7 +14,7 @@ use vulcan_core::{
 
 use crate::mdbase::mdbase_js_mutation_committer;
 use crate::plugins::require_trusted_plugin_execution;
-use crate::tools::{build_custom_tool_js_registry, CustomToolRegistryOptions};
+use crate::tools::build_custom_tool_js_registry;
 use crate::AppError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,7 +170,6 @@ pub(crate) fn invocation_session(
                 paths,
                 permission_profile,
                 "customjs.invoke",
-                &CustomToolRegistryOptions::default(),
             )),
             ..DataviewJsEvalOptions::default()
         },

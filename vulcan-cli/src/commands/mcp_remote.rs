@@ -1,7 +1,6 @@
 use crate::output::print_json;
 use crate::{
-    mcp, Cli, CliError, McpCommand, McpConnectionsCommand, McpRemoteCommand, McpToolPackArg,
-    OutputFormat,
+    mcp, Cli, CliError, McpCommand, McpConnectionsCommand, McpRemoteCommand, OutputFormat,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -91,7 +90,6 @@ fn handle_remote(
             bind,
             ceiling_profile,
             default_profile,
-            tool_pack,
             redirect_host,
             dry_run,
         } => {
@@ -116,7 +114,6 @@ fn handle_remote(
                             wiki_id: registration.id,
                             ceiling_profile: ceiling_profile.clone(),
                             default_profile: default_profile.clone(),
-                            tool_packs: tool_pack_names(tool_pack),
                         }],
                         redirect_hosts: redirect_host.clone(),
                     },
@@ -155,7 +152,6 @@ fn handle_remote(
             identity,
             ceiling_profile,
             default_profile,
-            tool_pack,
             redirect_host,
             any_redirect,
             dry_run,
@@ -184,8 +180,7 @@ fn handle_remote(
                 .show_mcp_remote(&id)
                 .map_err(CliError::operation)?;
             let mut vaults = existing.vaults.clone();
-            let changing_vault_policy =
-                ceiling_profile.is_some() || default_profile.is_some() || !tool_pack.is_empty();
+            let changing_vault_policy = ceiling_profile.is_some() || default_profile.is_some();
             let removed_wiki = remove_wiki
                 .as_ref()
                 .map(WikiId::parse)
@@ -227,20 +222,10 @@ fn handle_remote(
                 let ceiling = ceiling_profile.as_deref().unwrap_or("readonly");
                 let default = default_profile.as_deref().unwrap_or("readonly");
                 validate_profiles(&registration, ceiling, default)?;
-                let packs = if tool_pack.is_empty() {
-                    tool_pack_names(&[
-                        McpToolPackArg::NotesRead,
-                        McpToolPackArg::Search,
-                        McpToolPackArg::Status,
-                    ])
-                } else {
-                    tool_pack_names(tool_pack)
-                };
                 vaults.push(McpRemoteVault {
                     wiki_id: registration.id,
                     ceiling_profile: ceiling.to_string(),
                     default_profile: default.to_string(),
-                    tool_packs: packs,
                 });
             } else if changing_vault_policy || wiki.is_some() {
                 let selected = match wiki {
@@ -265,9 +250,6 @@ fn handle_remote(
                 }
                 if let Some(profile) = default_profile {
                     vault.default_profile.clone_from(profile);
-                }
-                if !tool_pack.is_empty() {
-                    vault.tool_packs = tool_pack_names(tool_pack);
                 }
                 let registration = context
                     .registry
@@ -398,7 +380,6 @@ fn handle_connections(
                 println!("Subject: {}", report.subject);
                 println!("Vault: {}", report.wiki_id);
                 println!("Permission profile: {}", report.permission_profile);
-                println!("Tool packs: {}", report.tool_packs.join(", "));
                 println!("Scopes: {}", report.scopes.join(" "));
                 println!("Expires: {}", report.expires_at);
                 println!(
@@ -512,29 +493,6 @@ fn choose_available_bind(context: &DaemonProcessContext) -> Result<String, CliEr
     ))
 }
 
-fn tool_pack_names(packs: &[McpToolPackArg]) -> Vec<String> {
-    packs
-        .iter()
-        .map(|pack| match pack {
-            McpToolPackArg::NotesRead => "notes-read",
-            McpToolPackArg::Search => "search",
-            McpToolPackArg::Status => "status",
-            McpToolPackArg::Graph => "graph",
-            McpToolPackArg::Custom => "custom",
-            McpToolPackArg::Daily => "daily",
-            McpToolPackArg::Tasks => "tasks",
-            McpToolPackArg::NotesWrite => "notes-write",
-            McpToolPackArg::NotesManage => "notes-manage",
-            McpToolPackArg::Web => "web",
-            McpToolPackArg::Config => "config",
-            McpToolPackArg::Index => "index",
-            McpToolPackArg::Sync => "sync",
-            McpToolPackArg::Git => "git",
-        })
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
 fn print_remote(output: OutputFormat, remote: &McpRemoteDefinition) -> Result<(), CliError> {
     if output == OutputFormat::Json {
         #[derive(Serialize)]
@@ -556,7 +514,6 @@ fn print_remote(output: OutputFormat, remote: &McpRemoteDefinition) -> Result<()
         println!("Vault: {}", vault.wiki_id);
         println!("Ceiling: {}", vault.ceiling_profile);
         println!("Default consent: {}", vault.default_profile);
-        println!("Tool packs: {}", vault.tool_packs.join(", "));
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 use super::*;
-use crate::McpToolPackModeArg;
 use serde_json::Map;
+use std::collections::BTreeSet;
 #[cfg(feature = "oauth")]
 use std::io::Read;
 use std::io::Write;
@@ -94,13 +94,7 @@ fn stdio_and_http_reads_refuse_a_pending_ordinary_write_journal() {
             .expect("owner-only journal");
     }
 
-    let mut core = McpServerCore::new(
-        &paths,
-        Some("readonly"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let mut core = McpServerCore::new(&paths, Some("readonly")).expect("MCP core");
     let request = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
     let stdio = core.process_request(request.clone());
     assert_eq!(stdio[0]["error"]["code"], -32603);
@@ -190,13 +184,7 @@ fn http_parser_rejects_oversized_content_length_before_body_read() {
 fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
-    let core = McpServerCore::new(
-        &paths,
-        Some("readonly"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let core = McpServerCore::new(&paths, Some("readonly")).expect("MCP core");
     let instance = Ulid::new();
     let grant = Ulid::new();
     let authority = McpSessionAuthority::granted(
@@ -208,7 +196,6 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
         "https://mcp.example.test/personal".to_string(),
         "readonly".to_string(),
-        vec!["notes-read".to_string()],
         vec!["mcp:tools".to_string()],
         "alice-token",
     );
@@ -224,7 +211,6 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
         "https://mcp.example.test/personal".to_string(),
         "readonly".to_string(),
-        vec!["notes-read".to_string()],
         vec!["mcp:tools".to_string()],
         "bob-token",
     );
@@ -239,7 +225,6 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         vulcan_daemon::registry::WikiId::parse("work").expect("wiki"),
         "https://mcp.example.test/work".to_string(),
         "readonly".to_string(),
-        vec!["notes-read".to_string()],
         vec!["mcp:tools".to_string()],
         "alice-token",
     );
@@ -254,7 +239,6 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
         "https://mcp.example.test/personal".to_string(),
         "readonly".to_string(),
-        vec!["notes-read".to_string()],
         vec!["mcp:tools".to_string()],
         "replacement-token",
     );
@@ -316,8 +300,6 @@ fn mcp_http_listener_reports_bound_address_and_stops_on_supervisor_signal() {
         let result = run_mcp_http_server_inner(
             &paths,
             None,
-            &[],
-            McpToolPackModeArg::Static,
             &options,
             None,
             McpHttpLifecycle {
@@ -363,7 +345,6 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
                     paths: paths.clone(),
                     ceiling_profile: "readonly".to_string(),
                     default_profile: "readonly".to_string(),
-                    eligible_tool_packs: vec!["notes-read".to_string()],
                 },
             )]),
             authorization_store: McpAuthorizationStore::at(temporary.path().join("state")),
@@ -388,15 +369,8 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
             "shared-test-signing-key",
         )
         .expect("shared signing key");
-        let token = named_listener_test_token(
-            &paths,
-            &named,
-            &options,
-            name,
-            "readonly",
-            &["notes-read"],
-            &["mcp:tools"],
-        );
+        let token =
+            named_listener_test_token(&paths, &named, &options, name, "readonly", &["mcp:tools"]);
         let hosted = named_listener_hosted_execution(
             &scheduler,
             runtime.handle(),
@@ -411,8 +385,6 @@ fn two_named_hosted_http_listeners_bind_and_stop_independently() {
             let result = run_mcp_http_server_with_named_runtime(
                 &paths,
                 Some("readonly"),
-                &[McpToolPackArg::NotesRead],
-                McpToolPackModeArg::Static,
                 &options,
                 named,
                 McpHttpLifecycle {
@@ -593,23 +565,11 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                         wiki_id: wiki_id.clone(),
                         ceiling_profile: "unrestricted".to_string(),
                         default_profile: "readonly".to_string(),
-                        tool_packs: vec![
-                            "notes-read".to_string(),
-                            "notes-write".to_string(),
-                            "notes-manage".to_string(),
-                            "tasks".to_string(),
-                        ],
                     },
                     vulcan_daemon::mcp_remote::McpRemoteVault {
                         wiki_id: team_id.clone(),
                         ceiling_profile: "unrestricted".to_string(),
                         default_profile: "readonly".to_string(),
-                        tool_packs: vec![
-                            "notes-read".to_string(),
-                            "notes-write".to_string(),
-                            "notes-manage".to_string(),
-                            "tasks".to_string(),
-                        ],
                     },
                 ],
                 redirect_hosts: Vec::new(),
@@ -641,12 +601,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                     paths: paths.clone(),
                     ceiling_profile: "unrestricted".to_string(),
                     default_profile: "readonly".to_string(),
-                    eligible_tool_packs: vec![
-                        "notes-read".to_string(),
-                        "notes-write".to_string(),
-                        "notes-manage".to_string(),
-                        "tasks".to_string(),
-                    ],
                 },
             ),
             (
@@ -655,12 +609,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                     paths: team_paths.clone(),
                     ceiling_profile: "unrestricted".to_string(),
                     default_profile: "readonly".to_string(),
-                    eligible_tool_packs: vec![
-                        "notes-read".to_string(),
-                        "notes-write".to_string(),
-                        "notes-manage".to_string(),
-                        "tasks".to_string(),
-                    ],
                 },
             ),
         ]),
@@ -672,7 +620,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "readonly",
-        &["notes-read", "tasks"],
         &["mcp:tools", "mcp:resources", "mcp:prompts"],
     );
     let same_authority_peer_token = named_listener_test_token(
@@ -681,7 +628,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "readonly",
-        &["notes-read", "tasks"],
         &["mcp:tools", "mcp:resources", "mcp:prompts"],
     );
     let existing_grants = named
@@ -697,7 +643,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "readonly",
-        &["notes-read"],
         &["mcp:tools"],
     );
     let foreground_revocable_grant = named
@@ -714,7 +659,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "unrestricted",
-        &["notes-write", "notes-manage", "tasks"],
         &["mcp:tools"],
     );
     let foreground_tool_change_token = named_listener_test_token(
@@ -723,7 +667,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "tool-change-foreground",
-        &["notes-write"],
         &["mcp:tools"],
     );
     let resident_tool_change_token = named_listener_test_token(
@@ -732,7 +675,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "tool-change-resident",
-        &["notes-write"],
         &["mcp:tools"],
     );
     let prompt_reader_token = named_listener_test_token(
@@ -741,7 +683,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "personal",
         "prompt-reader",
-        &["notes-read"],
         &["mcp:resources", "mcp:prompts"],
     );
     let team_token = named_listener_test_token(
@@ -750,7 +691,6 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token_options,
         "team",
         "unrestricted",
-        &["notes-write"],
         &["mcp:tools"],
     );
     let endpoints = (
@@ -1006,7 +946,8 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         named_listener_tools(address, "parity", &write_token, &foreground_write_session);
     assert!(foreground_write_tools.contains("\"name\":\"note_create\""));
     assert!(foreground_write_tools.contains("\"name\":\"task_create\""));
-    assert!(!foreground_write_tools.contains("\"name\":\"note_get\""));
+    // The grant's profile decides the list: it can read as well as write.
+    assert!(foreground_write_tools.contains("\"name\":\"note_get\""));
     assert!(named_listener_method(
         address,
         "parity",
@@ -1671,7 +1612,6 @@ fn named_listener_test_token(
     options: &McpHttpOptions,
     name: &str,
     profile: &str,
-    packs: &[&str],
     scopes: &[&str],
 ) -> String {
     let store = &named.authorization_store;
@@ -1689,7 +1629,6 @@ fn named_listener_test_token(
                 approved_permissions: resolve_permission_profile(paths, Some(profile))
                     .expect("permission profile")
                     .grant,
-                tool_packs: packs.iter().map(|pack| (*pack).to_string()).collect(),
                 scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
                 audience: options.public_url.clone().expect("public URL"),
                 created_at: now,
@@ -3426,8 +3365,6 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
         inner: McpHttpHost {
             paths: paths.clone(),
             requested_profile: Some("readonly".to_string()),
-            selected_tool_packs: BTreeSet::from([McpToolPack::NotesRead, McpToolPack::Search]),
-            tool_pack_mode: McpToolPackMode::Static,
             endpoint: "/mcp".to_string(),
             auth_token: None,
             oauth: Some(McpOAuthMode::Local(issuer)),
@@ -3493,17 +3430,10 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
         None,
         None,
         Some("readonly".to_string()),
-        vec!["notes-read".to_string()],
         Vec::new(),
     );
     let session_id = Ulid::new().to_string();
-    let core = McpServerCore::new(
-        &paths,
-        Some("readonly"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let core = McpServerCore::new(&paths, Some("readonly")).expect("MCP core");
     let session = Arc::new(McpHttpSession::new(core, authority.clone()));
     context
         .sessions
@@ -3559,13 +3489,7 @@ fn mcp_http_cancellation_tokens_are_request_and_session_local() {
     let paths = VaultPaths::new(temporary.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
     let make_session = || {
-        let core = McpServerCore::new(
-            &paths,
-            Some("readonly"),
-            &[McpToolPackArg::NotesRead],
-            McpToolPackModeArg::Static,
-        )
-        .expect("MCP core");
+        let core = McpServerCore::new(&paths, Some("readonly")).expect("MCP core");
         McpHttpSession::new(
             core,
             McpSessionAuthority::direct(
@@ -3574,7 +3498,6 @@ fn mcp_http_cancellation_tokens_are_request_and_session_local() {
                 None,
                 None,
                 Some("readonly".to_string()),
-                vec!["notes-read".to_string()],
                 Vec::new(),
             ),
         )
@@ -3619,20 +3542,8 @@ fn list_change_notifications_ignore_files_outside_the_read_grant() {
     )
     .expect("visible prompt");
     fs::write(&hidden, "---\nname: hidden\n---\nInitial hidden prompt.\n").expect("hidden prompt");
-    let mut scoped = McpServerCore::new(
-        &paths,
-        Some("scoped"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("scoped MCP core");
-    let mut blind = McpServerCore::new(
-        &paths,
-        Some("blind"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("blind MCP core");
+    let mut scoped = McpServerCore::new(&paths, Some("scoped")).expect("scoped MCP core");
+    let mut blind = McpServerCore::new(&paths, Some("blind")).expect("blind MCP core");
 
     fs::write(&hidden, "---\nname: hidden\n---\nChanged hidden prompt.\n")
         .expect("change hidden prompt");
@@ -3668,13 +3579,7 @@ fn mcp_http_broadcast_filters_list_changes_by_connection_scopes() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
-    let core = McpServerCore::new(
-        &paths,
-        Some("readonly"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let core = McpServerCore::new(&paths, Some("readonly")).expect("MCP core");
     let session = McpHttpSession::new(
         core,
         McpSessionAuthority::direct(
@@ -3683,7 +3588,6 @@ fn mcp_http_broadcast_filters_list_changes_by_connection_scopes() {
             None,
             None,
             Some("readonly".to_string()),
-            vec!["notes-read".to_string()],
             vec!["mcp:tools".to_string()],
         ),
     );
@@ -3705,13 +3609,7 @@ fn mcp_http_broadcast_drops_a_lagging_subscriber_without_blocking_another() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
-    let core = McpServerCore::new(
-        &paths,
-        Some("readonly"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let core = McpServerCore::new(&paths, Some("readonly")).expect("MCP core");
     let session = McpHttpSession::new(
         core,
         McpSessionAuthority::direct(
@@ -3720,7 +3618,6 @@ fn mcp_http_broadcast_drops_a_lagging_subscriber_without_blocking_another() {
             None,
             None,
             Some("readonly".to_string()),
-            vec!["notes-read".to_string()],
             vec!["mcp:tools".to_string()],
         ),
     );
@@ -3765,7 +3662,6 @@ fn malformed_initialize_requests_do_not_admit_http_sessions() {
         None,
         None,
         Some("readonly".to_string()),
-        vec!["notes-read".to_string()],
         Vec::new(),
     );
     for payload in [
@@ -3804,20 +3700,13 @@ fn mcp_http_session_limit_rejects_new_sessions_and_reclaims_expired_ones() {
     let context = consent_test_context(&paths, issuer);
     let make_session = |idle_timeout| {
         Arc::new(McpHttpSession::new_with_idle_timeout(
-            McpServerCore::new(
-                &paths,
-                Some("readonly"),
-                &[McpToolPackArg::NotesRead],
-                McpToolPackModeArg::Static,
-            )
-            .expect("MCP core"),
+            McpServerCore::new(&paths, Some("readonly")).expect("MCP core"),
             McpSessionAuthority::direct(
                 context.instance_id,
                 "credential",
                 None,
                 None,
                 Some("readonly".to_string()),
-                vec!["notes-read".to_string()],
                 Vec::new(),
             ),
             idle_timeout,
@@ -3887,7 +3776,6 @@ fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
         None,
         None,
         Some("readonly".to_string()),
-        vec!["notes-read".to_string()],
         Vec::new(),
     );
     let other_authority = McpSessionAuthority::direct(
@@ -3896,16 +3784,9 @@ fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
         None,
         None,
         Some("readonly".to_string()),
-        vec!["notes-read".to_string()],
         Vec::new(),
     );
-    let core = McpServerCore::new(
-        &paths,
-        Some("readonly"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let core = McpServerCore::new(&paths, Some("readonly")).expect("MCP core");
     let session = Arc::new(McpHttpSession::new(core, authority.clone()));
     let session_id = Ulid::new().to_string();
     context
@@ -4030,9 +3911,7 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
     assert!(html.contains("client-a"));
     assert!(html.contains("https://identity.example.test/alice"));
     assert!(html.contains("readonly"));
-    assert!(
-        html.contains("<span class=\"chip\">notes-read</span><span class=\"chip\">search</span>")
-    );
+    assert!(!html.contains("Tool packs"), "consent offers no tool packs");
     assert!(form
         .extra_headers
         .iter()
@@ -4163,7 +4042,6 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
                 paths: paths.clone(),
                 ceiling_profile: "remote_ceiling".to_string(),
                 default_profile: "agent".to_string(),
-                eligible_tool_packs: vec!["notes-read".to_string(), "search".to_string()],
             },
         )]),
         authorization_store: store.clone(),
@@ -4233,7 +4111,6 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
     );
     let grants = store.list_grants(None).expect("durable grants");
     assert_eq!(grants.len(), 1);
-    assert_eq!(grants[0].tool_packs, ["notes-read"]);
     let code = context
         .oauth_codes
         .lock()
@@ -4301,7 +4178,6 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
     };
     let authority = authenticate_mcp_http_request(&context, &request).expect("grant authority");
     assert_eq!(authority.grant_id, Some(grants[0].id));
-    assert_eq!(authority.tool_packs, ["notes-read"]);
 
     let mut other_named = context.named_runtime.clone().expect("named runtime");
     other_named.remote_id =
@@ -4433,7 +4309,6 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
                     paths: first.clone(),
                     ceiling_profile: "readonly".to_string(),
                     default_profile: "readonly".to_string(),
-                    eligible_tool_packs: vec!["notes-read".to_string()],
                 },
             ),
             (
@@ -4442,7 +4317,6 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
                     paths: second.clone(),
                     ceiling_profile: "readonly".to_string(),
                     default_profile: "readonly".to_string(),
-                    eligible_tool_packs: vec!["search".to_string()],
                 },
             ),
         ]),
@@ -4486,7 +4360,6 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
         .expect("ULID");
     let grant = store.show_grant(grant_id).expect("durable grant");
     assert_eq!(grant.wiki_id, team_id);
-    assert_eq!(grant.tool_packs, ["search"]);
     let token = issuer
         .issue_access_token_for_authorization(
             &pending.subject,
@@ -4619,7 +4492,6 @@ fn named_runtime_locks_conflict_per_remote_but_not_across_remotes() {
             wiki_id: vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
             ceiling_profile: "readonly".to_string(),
             default_profile: "readonly".to_string(),
-            tool_packs: vec!["notes-read".to_string()],
         }],
         redirect_hosts: Vec::new(),
     };
@@ -4678,7 +4550,6 @@ fn named_runtime_rejects_a_definition_changed_before_listener_startup() {
                     wiki_id,
                     ceiling_profile: "readonly".to_string(),
                     default_profile: "readonly".to_string(),
-                    tool_packs: vec!["notes-read".to_string()],
                 }],
                 redirect_hosts: Vec::new(),
             },
@@ -4739,7 +4610,6 @@ fn resident_mcp_service_groups_instances_and_accepts_multi_vault_definitions() {
             wiki_id: vulcan_daemon::registry::WikiId::parse("personal").expect("wiki ID"),
             ceiling_profile: "readonly".to_string(),
             default_profile: "readonly".to_string(),
-            tool_packs: vec!["notes-read".to_string()],
         }],
         redirect_hosts: Vec::new(),
     };
@@ -4880,13 +4750,7 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
-    let mut core = McpServerCore::new(
-        &paths,
-        Some("unrestricted"),
-        &[McpToolPackArg::NotesWrite],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let mut core = McpServerCore::new(&paths, Some("unrestricted")).expect("MCP core");
     let issuer = Arc::new(
         LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: "https://mcp.example.test/personal".to_string(),
@@ -4904,7 +4768,6 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
     let mut http = consent_test_context(&paths, issuer);
     http.oauth = None;
     http.requested_profile = Some("unrestricted".to_string());
-    http.selected_tool_packs = BTreeSet::from([McpToolPack::NotesWrite]);
     let inbound = McpHttpRequest {
         method: "POST".to_string(),
         path: "/mcp".to_string(),
@@ -5014,13 +4877,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
-    let core = McpServerCore::new(
-        &paths,
-        Some("unrestricted"),
-        &[McpToolPackArg::NotesWrite],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let core = McpServerCore::new(&paths, Some("unrestricted")).expect("MCP core");
     let issuer = Arc::new(
         LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: "https://mcp.example.test/personal".to_string(),
@@ -5038,7 +4895,6 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
     let mut http = consent_test_context(&paths, issuer);
     http.oauth = None;
     http.requested_profile = Some("unrestricted".to_string());
-    http.selected_tool_packs = BTreeSet::from([McpToolPack::NotesWrite]);
     http.request_timeout = Duration::from_secs(5);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -5194,7 +5050,6 @@ fn named_mcp_operation_status_is_bound_to_grant_subject_and_audience() {
                 paths: paths.clone(),
                 ceiling_profile: "readonly".to_string(),
                 default_profile: "readonly".to_string(),
-                eligible_tool_packs: vec!["notes-read".to_string()],
             },
         )]),
         authorization_store: McpAuthorizationStore::at(temporary.path().join("state")),
@@ -5224,17 +5079,10 @@ fn named_mcp_operation_status_is_bound_to_grant_subject_and_audience() {
         wiki_id,
         "https://mcp.example.test/mcp".to_string(),
         "readonly".to_string(),
-        vec!["notes-read".to_string()],
         vec!["mcp:tools".to_string()],
         "token-a",
     );
-    let core = McpServerCore::new(
-        &paths,
-        Some("readonly"),
-        &[McpToolPackArg::NotesRead],
-        McpToolPackModeArg::Static,
-    )
-    .expect("core");
+    let core = McpServerCore::new(&paths, Some("readonly")).expect("core");
     let payload = serde_json::json!({
         "jsonrpc":"2.0","id":1,"method":"tools/call",
         "params":{"name":"note_create","arguments":{"path":"Idea.md"}}
@@ -5463,13 +5311,7 @@ fn named_mcp_session_profile_can_narrow_but_never_widen_without_reconsent() {
         "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
     )
     .expect("writable profile");
-    let mut core = McpServerCore::new(
-        &paths,
-        Some("agent"),
-        &[McpToolPackArg::NotesWrite],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let mut core = McpServerCore::new(&paths, Some("agent")).expect("MCP core");
     assert!(core.session.guard().check_write_path("Note.md").is_ok());
 
     fs::write(
@@ -5496,13 +5338,8 @@ fn mcp_tool_calls_return_structured_timeout_errors() {
     let tmp = tempfile::tempdir().expect("tempdir should be created");
     let paths = VaultPaths::new(tmp.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("vault should initialize");
-    let mut core = McpServerCore::new(
-        &paths,
-        Some("daily-wiki-agent"),
-        &[McpToolPackArg::Index],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core should initialize");
+    let mut core =
+        McpServerCore::new(&paths, Some("daily-wiki-agent")).expect("MCP core should initialize");
     let request = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 7,
@@ -5525,28 +5362,23 @@ fn mcp_tool_calls_return_structured_timeout_errors() {
 }
 
 #[test]
-fn catalog_pack_selection_and_permissions_filter_builtin_tools() {
-    let selected =
-        resolve_selected_tool_packs(&[McpToolPackArg::NotesRead], McpToolPackMode::Adaptive);
-    assert!(selected.contains(&McpToolPack::NotesRead));
-    assert!(selected.contains(&McpToolPack::ToolPacks));
-
+fn catalog_permissions_alone_filter_builtin_tools() {
     let readonly = PermissionProfile::readonly();
-    let visible = visible_tool_catalog(&selected, &readonly)
+    let visible = visible_tool_catalog(&readonly)
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
     assert!(visible.contains(&"note_get"));
-    assert!(visible.contains(&"tool_packs"));
     assert!(!visible.contains(&"note_set"));
+    assert!(!visible.iter().any(|name| name.starts_with("tool_pack")));
 }
 
 #[test]
 fn sync_tools_require_full_read_and_git_and_only_triggers_mutate() {
-    let selected = resolve_selected_tool_packs(&[McpToolPackArg::Sync], McpToolPackMode::Static);
-    let visible = visible_tool_catalog(&selected, &PermissionProfile::unrestricted())
+    let visible = visible_tool_catalog(&PermissionProfile::unrestricted())
         .into_iter()
         .map(|tool| tool.name)
+        .filter(|name| name.starts_with("sync_"))
         .collect::<Vec<_>>();
     assert_eq!(
         visible,
@@ -5559,17 +5391,13 @@ fn sync_tools_require_full_read_and_git_and_only_triggers_mutate() {
             "sync_resume"
         ]
     );
-    assert!(visible_tool_catalog(&selected, &PermissionProfile::readonly()).is_empty());
+    assert!(!visible_tool_catalog(&PermissionProfile::readonly())
+        .iter()
+        .any(|tool| tool.name.starts_with("sync_")));
 
     let tmp = tempfile::tempdir().expect("tempdir should be created");
     let paths = VaultPaths::new(tmp.path());
-    let mut core = McpServerCore::new(
-        &paths,
-        None,
-        &[McpToolPackArg::Sync],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core should initialize");
+    let mut core = McpServerCore::new(&paths, None).expect("MCP core should initialize");
     let result = core
         .protocol()
         .call_tool("sync_doctor", &Map::new())
@@ -5586,13 +5414,8 @@ fn daily_wiki_agent_can_use_index_scan_when_index_pack_is_selected() {
     let paths = VaultPaths::new(tmp.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("vault should initialize");
     fs::write(tmp.path().join("Home.md"), "# Home\n").expect("note should write");
-    let mut core = McpServerCore::new(
-        &paths,
-        Some("daily-wiki-agent"),
-        &[McpToolPackArg::Index],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core should initialize");
+    let mut core =
+        McpServerCore::new(&paths, Some("daily-wiki-agent")).expect("MCP core should initialize");
 
     let tools = core.protocol().visible_tool_items().expect("visible tools");
     assert!(
@@ -5612,13 +5435,7 @@ fn mcp_config_tools_preserve_dry_run_apply_and_show_report_shapes() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
-    let mut core = McpServerCore::new(
-        &paths,
-        Some("unrestricted"),
-        &[McpToolPackArg::Config],
-        McpToolPackModeArg::Static,
-    )
-    .expect("MCP core");
+    let mut core = McpServerCore::new(&paths, Some("unrestricted")).expect("MCP core");
     let mut set = Map::from_iter([
         (
             "key".to_string(),

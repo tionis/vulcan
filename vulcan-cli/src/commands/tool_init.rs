@@ -31,11 +31,9 @@ pub(crate) struct ToolInitCliOptions<'a> {
 pub(crate) fn init_skill_backed_tool(
     paths: &VaultPaths,
     options: &ToolInitCliOptions<'_>,
-    registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolInitReport, CliError> {
     let tool_alias = normalize_skill_backed_tool_name(options.name)?;
-    if registry_options
-        .reserved_names
+    if crate::custom_tool_reserved_names()
         .iter()
         .any(|reserved| reserved == &tool_alias)
     {
@@ -43,9 +41,7 @@ pub(crate) fn init_skill_backed_tool(
             "`{tool_alias}` is reserved by the built-in CLI surface"
         )));
     }
-    if tools::resolve_custom_tool_cli_name(paths, &tool_alias, registry_options).is_ok()
-        && !options.overwrite
-    {
+    if tools::resolve_custom_tool_cli_name(paths, &tool_alias).is_ok() && !options.overwrite {
         return Err(CliError::operation(format!(
             "tool `{tool_alias}` already exists; rerun with --overwrite to replace the scaffold"
         )));
@@ -73,7 +69,7 @@ pub(crate) fn init_skill_backed_tool(
         fs::create_dir_all(skill_root.join("scripts")).map_err(CliError::operation)?;
         fs::write(&manifest_path, manifest).map_err(CliError::operation)?;
         write_executable_vulcan_tool_script(&script_path, &script)?;
-        tools::show_custom_tool(paths, None, &tool_alias, registry_options)?;
+        tools::show_custom_tool(paths, None, &tool_alias)?;
     }
 
     Ok(ToolInitReport {
@@ -135,7 +131,6 @@ metadata:
       - id: {command}
         script: scripts/{command}.js
         sandbox: {sandbox}
-        packs: [custom]
         expose: true
         input_schema:
 {input_schema}

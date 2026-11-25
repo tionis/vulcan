@@ -379,7 +379,6 @@ mod tests {
                 wiki_id: WikiId::parse("personal").unwrap(),
                 ceiling_profile: "readonly".into(),
                 default_profile: "readonly".into(),
-                tool_packs: vec!["notes-read".into()],
             }],
             redirect_hosts: Vec::new(),
         }

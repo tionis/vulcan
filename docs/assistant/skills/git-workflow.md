@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault's committed history with `vulcan sync`.
-version: 66
+version: 67
 tools:
   - git_status
   - git_diff
@@ -33,7 +33,7 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
 
 ## Recommended Flow
 
-- Over MCP, enable the `git` tool pack: `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit` mirror the CLI commands below. Commit your own work unless auto-commit already did, since sync carries only commits. `git_commit` commits only the files your session's writes changed (including every file a `note_move` rewrote), so other writers' edits stay out of your commit; its result lists anything of yours still uncommitted as `session_uncommitted`. Use `scope: "all"` only after `git_status` shows every change is meant to go in, or `paths` to name files changed outside MCP writes. The commit records your client in `Vulcan-MCP-*` trailers, and so does a batched auto-commit that takes writes you left uncommitted.
+- Over MCP, a profile with Git access lists `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit` mirror the CLI commands below. Commit your own work unless auto-commit already did, since sync carries only commits. `git_commit` commits only the files your session's writes changed (including every file a `note_move` rewrote), so other writers' edits stay out of your commit; its result lists anything of yours still uncommitted as `session_uncommitted`. Use `scope: "all"` only after `git_status` shows every change is meant to go in, or `paths` to name files changed outside MCP writes. The commit records your client in `Vulcan-MCP-*` trailers, and so does a batched auto-commit that takes writes you left uncommitted.
 
 - For a larger or multi-step change that should not be half-visible (a restructure, many linked
   edits), start a changeset with `changeset_begin`. Your session's tools then work in a separate

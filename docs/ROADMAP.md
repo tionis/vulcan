@@ -8792,8 +8792,8 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.2 Remove tool packs
 
-- [ ] Catalog, CLI flags, `describe` exports, named-remote definitions, consent page and grant storage without packs; visibility by profile requirement only.
-- [ ] Grant migration: full-pack grants keep working; narrowed grants are revoked with a visible reason.
+- [x] Catalog, CLI flags, `describe` exports, named-remote definitions, consent page and grant storage without packs; visibility by profile requirement only. Skill-command `packs` frontmatter and the vestigial `CustomToolRegistryOptions` went too; `--tool-pack`/`--tool-pack-mode` are refused with an explanation; stored remote definitions and vault `[mcp_remote]` settings that still name packs load and ignore them.
+- [x] Grant migration: a grant approved under packs keeps them until its next token use or refresh, which keeps it (and forgets them) when they covered every pack its profile could use and otherwise revokes it, telling the client to reconnect.
 
 ### 9.43.3 Catalog redesign
 

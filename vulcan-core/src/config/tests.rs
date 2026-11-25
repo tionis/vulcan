@@ -5398,12 +5398,12 @@ fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
         vault_root.join(".vulcan/config.toml"),
         "[mcp_remote]\npublic_url = \"https://notes.example/mcp\"\n\
          identity = \"https://me.example/\"\nceiling_profile = \"writer\"\n\
-         tool_packs = [\"notes-read\"]\nredirect_hosts = [\"claude.ai\"]\n",
+         redirect_hosts = [\"claude.ai\"]\n",
     )
     .expect("shared config");
     fs::write(
         vault_root.join(".vulcan/config.local.toml"),
-        "[mcp_remote]\ntool_packs = [\"notes-read\", \"search\"]\n",
+        "[mcp_remote]\ndefault_profile = \"writer\"\n",
     )
     .expect("local config");
     let remote = load_vault_config(&paths).config.mcp_remote;
@@ -5412,10 +5412,9 @@ fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
         Some("https://notes.example/mcp")
     );
     assert_eq!(remote.ceiling_profile.as_deref(), Some("writer"));
-    assert_eq!(remote.default_profile, None);
     assert_eq!(
-        remote.tool_packs,
-        Some(vec!["notes-read".to_string(), "search".to_string()]),
+        remote.default_profile.as_deref(),
+        Some("writer"),
         "the local file wins per key"
     );
     assert_eq!(remote.redirect_hosts, Some(vec!["claude.ai".to_string()]));

@@ -117,17 +117,16 @@ mod tools {
     pub(crate) use vulcan_app::tools::{
         build_all_tool_types_report, build_custom_tool_js_registry, build_tool_compat_report,
         build_tool_types_report, lint_custom_tools, CustomToolCompatReport, CustomToolDescriptor,
-        CustomToolLintReport, CustomToolRegistryOptions, CustomToolRunOptions, CustomToolRunReport,
-        CustomToolShowReport, CustomToolTypesReport, CustomToolTypesSuiteReport,
+        CustomToolLintReport, CustomToolRunOptions, CustomToolRunReport, CustomToolShowReport,
+        CustomToolTypesReport, CustomToolTypesSuiteReport,
     };
     use vulcan_core::{DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths};
 
     pub(crate) fn list_custom_tools(
         paths: &VaultPaths,
         active_permission_profile: Option<&str>,
-        options: &CustomToolRegistryOptions,
     ) -> Result<Vec<CustomToolDescriptor>, CliError> {
-        vulcan_app::tools::list_custom_tools(paths, active_permission_profile, options)
+        vulcan_app::tools::list_custom_tools(paths, active_permission_profile)
             .map_err(CliError::operation)
     }
 
@@ -135,9 +134,8 @@ mod tools {
         paths: &VaultPaths,
         active_permission_profile: Option<&str>,
         name: &str,
-        options: &CustomToolRegistryOptions,
     ) -> Result<CustomToolShowReport, CliError> {
-        vulcan_app::tools::show_custom_tool(paths, active_permission_profile, name, options)
+        vulcan_app::tools::show_custom_tool(paths, active_permission_profile, name)
             .map_err(CliError::operation)
     }
 
@@ -146,7 +144,6 @@ mod tools {
         active_permission_profile: Option<&str>,
         name: &str,
         input: &Value,
-        registry_options: &CustomToolRegistryOptions,
         run_options: &CustomToolRunOptions,
     ) -> Result<CustomToolRunReport, CliError> {
         vulcan_app::tools::run_custom_tool(
@@ -154,7 +151,6 @@ mod tools {
             active_permission_profile,
             name,
             input,
-            registry_options,
             run_options,
         )
         .map_err(CliError::operation)
@@ -163,19 +159,16 @@ mod tools {
     pub(crate) fn resolve_custom_tool_cli_name(
         paths: &VaultPaths,
         name: &str,
-        registry_options: &CustomToolRegistryOptions,
     ) -> Result<String, CliError> {
-        vulcan_app::tools::resolve_custom_tool_cli_name(paths, name, registry_options)
-            .map_err(CliError::operation)
+        vulcan_app::tools::resolve_custom_tool_cli_name(paths, name).map_err(CliError::operation)
     }
 
     pub(crate) fn build_custom_tool_cli_input(
         paths: &VaultPaths,
         name: &str,
         args: &[String],
-        registry_options: &CustomToolRegistryOptions,
     ) -> Result<(String, Value), CliError> {
-        vulcan_app::tools::build_custom_tool_cli_input(paths, name, args, registry_options)
+        vulcan_app::tools::build_custom_tool_cli_input(paths, name, args)
             .map_err(CliError::operation)
     }
 
@@ -184,12 +177,7 @@ mod tools {
         active_permission_profile: Option<&str>,
         surface: &str,
     ) -> Arc<dyn DataviewJsToolRegistry> {
-        build_custom_tool_js_registry(
-            paths,
-            active_permission_profile,
-            surface,
-            &crate::custom_tool_registry_options(),
-        )
+        build_custom_tool_js_registry(paths, active_permission_profile, surface)
     }
 
     pub(crate) fn require_trusted_tool_execution(
@@ -219,27 +207,25 @@ pub(crate) use commands::docs::{
     cli_command_tree, collect_cli_leaf_tool_names, collect_help_command_topics,
     custom_tool_registry_entry, resolve_help_topic, McpToolsReport, ToolRegistryEntry,
 };
-pub(crate) fn custom_tool_registry_options() -> tools::CustomToolRegistryOptions {
-    static OPTIONS: std::sync::OnceLock<tools::CustomToolRegistryOptions> =
-        std::sync::OnceLock::new();
-    OPTIONS
+/// Names a new vault tool may not take: the assistant's own tool names and
+/// every CLI command, so a tool alias never shadows one.
+pub(crate) fn custom_tool_reserved_names() -> Vec<String> {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES
         .get_or_init(|| {
             std::thread::Builder::new()
-                .name("vulcan-custom-tool-registry".to_string())
+                .name("vulcan-custom-tool-names".to_string())
                 .stack_size(16 * 1024 * 1024)
                 .spawn(|| {
                     let mut reserved_names = default_assistant_tool_reserved_names()
                         .into_iter()
                         .collect::<BTreeSet<_>>();
                     reserved_names.extend(collect_cli_leaf_tool_names(&cli_command_tree()));
-                    tools::CustomToolRegistryOptions {
-                        reserved_names: reserved_names.into_iter().collect(),
-                        ..tools::CustomToolRegistryOptions::default()
-                    }
+                    reserved_names.into_iter().collect()
                 })
-                .expect("custom-tool registry builder should start")
+                .expect("custom-tool name builder should start")
                 .join()
-                .expect("custom-tool registry builder should complete")
+                .expect("custom-tool name builder should complete")
         })
         .clone()
 }
@@ -451,9 +437,9 @@ pub use cli::{
     ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, FolderNotePlacementArg,
     GitChangesetCommand, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
     IntegrationCommand, KanbanCommand, LoginModeArg, McpCommand, McpConnectionsCommand,
-    McpRemoteCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg, MdbaseCommand,
-    MdbaseWriteRepairCommand, MetabindCommand, NoteAppendPeriodicArg, NoteCheckboxState,
-    NoteCommand, NoteGetMode, NumeralsCommand, OrdinaryWriteRepairCommand,
+    McpRemoteCommand, McpTransportArg, MdbaseCommand, MdbaseWriteRepairCommand, MetabindCommand,
+    NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode, NumeralsCommand,
+    OrdinaryWriteRepairCommand,
     OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg, OutlineCollectionsCommand,
     OutlineCommand, OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
     PeriodicOpenArgs, PeriodicSubcommand, PinTargetArg, PluginCommand, PluginEventArg,
@@ -5137,8 +5123,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Mcp {
             ref command,
-            ref tool_pack,
-            tool_pack_mode,
+            ref removed_tool_pack,
+            ref removed_tool_pack_mode,
             transport,
             ref request_timeout,
             ref bind,
@@ -5165,6 +5151,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref oauth_indieauth_me,
             ref oauth_local_user,
         } => {
+            reject_removed_tool_pack_flags(
+                removed_tool_pack.as_ref(),
+                removed_tool_pack_mode.as_ref(),
+            )?;
             if let Some(command) = command {
                 return commands::mcp_remote::handle_mcp_command(cli, command);
             }
@@ -5174,8 +5164,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             mcp::run_mcp(
                 &paths,
                 cli.permissions.as_deref(),
-                tool_pack,
-                tool_pack_mode,
                 transport,
                 &mcp::McpHttpOptions {
                     bind: bind.clone(),
@@ -5232,16 +5220,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ),
         Command::Describe {
             format,
-            ref tool_pack,
-            tool_pack_mode,
-        } => commands::docs::handle_describe_command(
-            &paths,
-            cli.output,
-            format,
-            tool_pack,
-            tool_pack_mode,
-            cli.permissions.as_deref(),
-        ),
+            ref removed_tool_pack,
+            ref removed_tool_pack_mode,
+        } => {
+            reject_removed_tool_pack_flags(
+                removed_tool_pack.as_ref(),
+                removed_tool_pack_mode.as_ref(),
+            )?;
+            commands::docs::handle_describe_command(
+                &paths,
+                cli.output,
+                format,
+                cli.permissions.as_deref(),
+            )
+        }
         Command::Doctor {
             fix,
             dry_run,
@@ -10875,3 +10867,18 @@ fn append_change_rows(rows: &mut Vec<Value>, anchor: &str, kind: ChangeKind, ite
 
 #[cfg(test)]
 mod tests;
+
+/// `--tool-pack` and `--tool-pack-mode` were removed with tool packs; say so
+/// instead of failing on an unknown flag, since MCP client configurations
+/// often still pass them.
+fn reject_removed_tool_pack_flags(
+    tool_pack: Option<&Vec<String>>,
+    tool_pack_mode: Option<&String>,
+) -> Result<(), CliError> {
+    if tool_pack.is_some() || tool_pack_mode.is_some() {
+        return Err(CliError::operation(
+            "`--tool-pack` and `--tool-pack-mode` were removed: the permission profile alone decides which MCP tools are listed. Drop them and choose a profile with `--permissions <profile>` (see `vulcan help sandbox`).",
+        ));
+    }
+    Ok(())
+}

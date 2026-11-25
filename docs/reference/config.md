@@ -90,7 +90,8 @@ Named remote MCP definitions are intentionally outside the vault config describe
 them with `vulcan mcp remote init/list/show/set/run/remove`; Vulcan stores them alongside daemon
 configuration in the user config directory. Each definition contains a stable instance ID, a
 listener bind, exact public HTTPS resource URL, IndieAuth identity, and one or more registered wiki
-references with per-vault permission ceiling/default profile names and eligible tool packs. A
+references with per-vault permission ceiling/default profile names; the profile a connection
+is granted alone decides which tools it sees. A
 multi-vault consent selects exactly one wiki for each grant. `remote set --add-wiki <id>` adds a
 registered wiki, `--wiki <id>` selects one for policy edits, and `--remove-wiki <id>` revokes that
 wiki's grants before removal. Stop the instance before changing its definition. The definition
@@ -103,8 +104,8 @@ permission profiles remain normal shared/local `.vulcan` configuration and are r
 both the approved snapshot and current remote ceiling on every authenticated request.
 
 Migration from a long-form remote invocation is explicit: register its vault, translate the old
-`--permissions` value into the remote ceiling/default, translate its startup `--tool-pack` values
-into eligible packs, initialize the remote with the old exact `--public-url` and IndieAuth identity,
+`--permissions` value into the remote ceiling/default, initialize the remote with the old exact
+`--public-url` and IndieAuth identity,
 then remove secrets from the shell/service command and run `vulcan mcp remote run <name>`. Existing
 direct flags remain supported and are not imported automatically.
 
@@ -1383,9 +1384,6 @@ The named MCP remote this vault describes; devices opt in to serve it from daemo
 - `mcp_remote.redirect_hosts` — type: `array`; target: `shared|local|device`; default: `[0 items]`
   Hosts OAuth clients may send the authorization to (HTTPS on the host or its subdomains). Empty, the default, allows any valid redirect: HTTPS, loopback http for desktop and command-line clients, or an app scheme; the consent page shows the destination.
   Example: `vulcan config set mcp_remote.redirect_hosts <value>`
-- `mcp_remote.tool_packs` — type: `array`; target: `shared|local|device`; default: `[3 items]`
-  Tool packs a remote connection may choose; they select tools, the ceiling bounds authority.
-  Example: `vulcan config set mcp_remote.tool_packs <value>`
 
 ### Meta Bind
 

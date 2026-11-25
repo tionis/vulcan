@@ -453,10 +453,9 @@ mod tests {
         mcp_oauth_clients::OAuthClientRegistry,
         mcp_oauth_codes::McpAuthorizationCodeMap,
     };
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::sync::{mpsc, Arc, Mutex};
     use ulid::Ulid;
-    use vulcan_app::mcp_catalog::{McpToolPack, McpToolPackMode};
     use vulcan_core::PermissionProfile;
 
     struct Gate {
@@ -532,8 +531,6 @@ mod tests {
         McpHttpHost {
             paths: paths.clone(),
             requested_profile: Some("readonly".into()),
-            selected_tool_packs: BTreeSet::from([McpToolPack::NotesRead, McpToolPack::Search]),
-            tool_pack_mode: McpToolPackMode::Static,
             endpoint: "/mcp".into(),
             auth_token: None,
             bind_addr: "127.0.0.1:4321".parse().unwrap(),

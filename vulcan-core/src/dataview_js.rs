@@ -5487,7 +5487,7 @@ __vulcanRegisterHelp(
   tools.list,
   `tools.list(): Array<CustomTool>
 
-List visible exposed skill command tools with metadata such as description, sandbox, packs, and
+List visible exposed skill command tools with metadata such as description, sandbox, and
 callability.
 
 Example:

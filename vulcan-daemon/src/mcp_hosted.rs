@@ -271,7 +271,6 @@ mod tests {
                     paths,
                     ceiling_profile: "readonly".into(),
                     default_profile: "readonly".into(),
-                    eligible_tool_packs: vec!["notes-read".into()],
                 },
             )]),
             authorization_store: McpAuthorizationStore::at(vault.path()),
@@ -285,7 +284,6 @@ mod tests {
             wiki,
             "https://mcp.example.test/mcp".into(),
             "readonly".into(),
-            vec!["notes-read".into()],
             vec!["mcp:tools".into()],
             "private-token-marker",
         );
@@ -337,7 +335,6 @@ mod tests {
             Some("client".to_string()),
             Some("subject".to_string()),
             None,
-            vec![],
             vec![],
         );
         authority.grant_id = Some(grant_id);
@@ -417,7 +414,6 @@ mod tests {
             Some("subject".to_string()),
             None,
             vec![],
-            vec![],
         );
         let grant = PermissionGrant::from_profile(&PermissionProfile::default());
         let read = prepare_hosted_mcp_request(
@@ -465,7 +461,6 @@ mod tests {
             None,
             Some("subject".to_string()),
             None,
-            vec![],
             vec![],
         );
         let request = json!({"method": "tools/list", "id": 1});
@@ -530,7 +525,6 @@ mod tests {
             None,
             Some("subject".to_string()),
             None,
-            vec![],
             vec![],
         );
         let request = json!({"method": "tools/call", "id": 1});

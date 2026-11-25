@@ -4,31 +4,19 @@ use std::fs;
 use std::io::Read;
 use vulcan_core::{list_assistant_skills, AssistantSkillCommandCliArgAction, VaultPaths};
 
-use super::{
-    command_matches_allowed_packs, resolve_skill_command_tool_identifier, skill_command_tool_name,
-    CustomToolRegistryOptions,
-};
+use super::{resolve_skill_command_tool_identifier, skill_command_tool_name};
 
-pub fn resolve_custom_tool_cli_name(
-    paths: &VaultPaths,
-    name: &str,
-    registry_options: &CustomToolRegistryOptions,
-) -> Result<String, AppError> {
-    resolve_skill_command_tool_identifier(paths, name, registry_options)
-        .map(|(resolved_name, _, _)| resolved_name)
+pub fn resolve_custom_tool_cli_name(paths: &VaultPaths, name: &str) -> Result<String, AppError> {
+    resolve_skill_command_tool_identifier(paths, name).map(|(resolved_name, _, _)| resolved_name)
 }
 
 pub fn collect_custom_tool_cli_name_candidates(
     paths: &VaultPaths,
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<Vec<String>, AppError> {
     let mut seen = std::collections::BTreeSet::new();
     let mut candidates = Vec::new();
     for summary in list_assistant_skills(paths).map_err(AppError::operation)? {
         for command in summary.commands.iter().filter(|command| command.expose) {
-            if !command_matches_allowed_packs(&command.packs, registry_options) {
-                continue;
-            }
             let tool_name = skill_command_tool_name(&summary.name, &command.id);
             if seen.insert(tool_name.clone()) {
                 candidates.push(tool_name);
@@ -48,10 +36,8 @@ pub fn collect_custom_tool_cli_name_candidates(
 pub fn collect_custom_tool_cli_flag_candidates(
     paths: &VaultPaths,
     name: &str,
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<Vec<String>, AppError> {
-    let (_resolved_name, _skill, command) =
-        resolve_skill_command_tool_identifier(paths, name, registry_options)?;
+    let (_resolved_name, _skill, command) = resolve_skill_command_tool_identifier(paths, name)?;
     let Some(cli) = command.cli else {
         return Ok(Vec::new());
     };
@@ -70,10 +56,8 @@ pub fn collect_custom_tool_cli_choice_candidates(
     paths: &VaultPaths,
     name: &str,
     flag: &str,
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<Vec<String>, AppError> {
-    let (_resolved_name, _skill, command) =
-        resolve_skill_command_tool_identifier(paths, name, registry_options)?;
+    let (_resolved_name, _skill, command) = resolve_skill_command_tool_identifier(paths, name)?;
     let Some(cli) = command.cli else {
         return Ok(Vec::new());
     };
@@ -92,10 +76,8 @@ pub fn custom_tool_cli_flag_completion_context(
     paths: &VaultPaths,
     name: &str,
     flag: &str,
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<Option<String>, AppError> {
-    let (_resolved_name, _skill, command) =
-        resolve_skill_command_tool_identifier(paths, name, registry_options)?;
+    let (_resolved_name, _skill, command) = resolve_skill_command_tool_identifier(paths, name)?;
     let Some(cli) = command.cli else {
         return Ok(None);
     };
@@ -112,10 +94,8 @@ pub fn build_custom_tool_cli_input(
     paths: &VaultPaths,
     name: &str,
     args: &[String],
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<(String, Value), AppError> {
-    let (resolved_name, _skill, command) =
-        resolve_skill_command_tool_identifier(paths, name, registry_options)?;
+    let (resolved_name, _skill, command) = resolve_skill_command_tool_identifier(paths, name)?;
     let cli = command.cli.as_ref().ok_or_else(|| {
         AppError::operation(format!(
             "tool `{name}` does not declare custom CLI arguments; use --input-json or --input-file"

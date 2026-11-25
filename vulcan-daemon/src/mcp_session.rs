@@ -501,7 +501,6 @@ pub struct McpSessionAuthority {
     pub wiki_id: Option<WikiId>,
     pub audience: Option<String>,
     pub permission_profile: Option<String>,
-    pub tool_packs: Vec<String>,
     pub scopes: Vec<String>,
     #[serde(skip)]
     credential_fingerprint: String,
@@ -519,7 +518,6 @@ impl std::fmt::Debug for McpSessionAuthority {
             .field("wiki_id", &self.wiki_id)
             .field("audience", &self.audience)
             .field("permission_profile", &self.permission_profile)
-            .field("tool_packs", &self.tool_packs)
             .field("scopes", &self.scopes)
             .field("credential_fingerprint", &"[REDACTED]")
             .finish()
@@ -536,7 +534,6 @@ impl PartialEq for McpSessionAuthority {
             && self.wiki_id == other.wiki_id
             && self.audience == other.audience
             && self.permission_profile == other.permission_profile
-            && self.tool_packs == other.tool_packs
             && self.scopes == other.scopes
             && bool::from(
                 self.credential_fingerprint
@@ -554,7 +551,6 @@ impl McpSessionAuthority {
         client_id: Option<String>,
         subject: Option<String>,
         permission_profile: Option<String>,
-        tool_packs: Vec<String>,
         scopes: Vec<String>,
     ) -> Self {
         Self {
@@ -566,7 +562,6 @@ impl McpSessionAuthority {
             wiki_id: None,
             audience: None,
             permission_profile,
-            tool_packs,
             scopes,
             credential_fingerprint: fingerprint(credential),
         }
@@ -583,7 +578,6 @@ impl McpSessionAuthority {
         wiki_id: WikiId,
         audience: String,
         permission_profile: String,
-        tool_packs: Vec<String>,
         scopes: Vec<String>,
         credential: &str,
     ) -> Self {
@@ -596,7 +590,6 @@ impl McpSessionAuthority {
             wiki_id: Some(wiki_id),
             audience: Some(audience),
             permission_profile: Some(permission_profile),
-            tool_packs,
             scopes,
             credential_fingerprint: fingerprint(credential),
         }
@@ -636,7 +629,6 @@ mod tests {
             WikiId::parse("personal").expect("wiki"),
             "https://mcp.example.test/personal".to_string(),
             "readonly".to_string(),
-            vec!["notes-read".to_string()],
             vec!["mcp:tools".to_string()],
             credential,
         )

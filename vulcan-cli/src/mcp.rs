@@ -4,17 +4,15 @@ mod catalog;
 
 use crate::{
     cli_command_tree, collect_help_command_topics, custom_tool_registry_entry,
-    permission_error_to_cli, resolve_help_topic, CliError, McpToolPackArg, McpToolPackModeArg,
-    McpToolsReport, McpTransportArg, ToolRegistryEntry,
+    permission_error_to_cli, resolve_help_topic, CliError, McpToolsReport, McpTransportArg,
+    ToolRegistryEntry,
 };
-use catalog::{
-    default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
-    resolve_selected_tool_packs, visible_tool_catalog, McpToolPack, McpToolPackMode,
-};
+use catalog::{mcp_tool_registry_entry, visible_tool_catalog};
 use fs2::FileExt;
 use serde_json::Value;
 #[cfg(feature = "oauth")]
 use std::collections::BTreeMap;
+#[cfg(feature = "oauth")]
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead};
@@ -45,7 +43,6 @@ use vulcan_app::mcp_dispatch::{jsonrpc_error, McpHttpProcessResult, McpMethodHan
 use vulcan_app::mcp_help;
 use vulcan_app::mcp_protocol::{McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION};
 use vulcan_app::mcp_session_protocol::{McpProtocolCore, McpProtocolHost};
-use vulcan_app::tools::{self as app_tools, CustomToolDescriptor};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
 #[cfg(all(test, feature = "oauth"))]
@@ -248,20 +245,14 @@ impl DerefMut for McpHttpServerContext {
 pub(crate) fn build_mcp_tool_definitions(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_args: &[McpToolPackArg],
-    tool_pack_mode_arg: McpToolPackModeArg,
 ) -> Result<McpToolsReport, CliError> {
-    let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
-    let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
-    let tools = build_mcp_tool_registry_entries(paths, requested_profile, &selected_tool_packs)?
+    let tools = build_mcp_tool_registry_entries(paths, requested_profile)?
         .into_iter()
         .map(|tool| tool.to_mcp_definition())
         .collect::<Vec<_>>();
 
     Ok(McpToolsReport {
         protocol_version: MCP_PROTOCOL_VERSION.to_string(),
-        tool_pack_mode: tool_pack_mode.as_str().to_string(),
-        selected_tool_packs: pack_name_list(&selected_tool_packs),
         tools,
     })
 }
@@ -269,42 +260,21 @@ pub(crate) fn build_mcp_tool_definitions(
 pub(crate) fn build_openai_tool_registry_entries(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_args: &[McpToolPackArg],
-    tool_pack_mode_arg: McpToolPackModeArg,
 ) -> Result<Vec<ToolRegistryEntry>, CliError> {
-    let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
-    let selected_tool_packs =
-        if tool_pack_args.is_empty() || is_default_tool_pack_args(tool_pack_args) {
-            default_openai_tool_packs()
-        } else {
-            resolve_selected_tool_packs(tool_pack_args, tool_pack_mode)
-        };
-    build_mcp_tool_registry_entries(paths, requested_profile, &selected_tool_packs)
+    build_mcp_tool_registry_entries(paths, requested_profile)
 }
 
 pub(crate) fn run_mcp(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_args: &[McpToolPackArg],
-    tool_pack_mode_arg: McpToolPackModeArg,
     transport_arg: McpTransportArg,
     http_options: &McpHttpOptions,
 ) -> Result<(), CliError> {
     match transport_arg {
-        McpTransportArg::Stdio => run_mcp_stdio_server(
-            paths,
-            requested_profile,
-            tool_pack_args,
-            tool_pack_mode_arg,
-            http_options.request_timeout,
-        ),
-        McpTransportArg::Http => run_mcp_http_server(
-            paths,
-            requested_profile,
-            tool_pack_args,
-            tool_pack_mode_arg,
-            http_options,
-        ),
+        McpTransportArg::Stdio => {
+            run_mcp_stdio_server(paths, requested_profile, http_options.request_timeout)
+        }
+        McpTransportArg::Http => run_mcp_http_server(paths, requested_profile, http_options),
     }
 }
 
@@ -350,14 +320,12 @@ fn run_named_mcp_remote_with_endpoints(
             .show(&vault.wiki_id)
             .map_err(CliError::operation)?
             .registration;
-        mcp_tool_pack_args_from_names(&vault.tool_packs)?;
         vaults.insert(
             vault.wiki_id.clone(),
             NamedMcpVaultRuntime {
                 paths: VaultPaths::new(registration.path),
                 ceiling_profile: vault.ceiling_profile.clone(),
                 default_profile: vault.default_profile.clone(),
-                eligible_tool_packs: vault.tool_packs.clone(),
             },
         );
     }
@@ -366,7 +334,6 @@ fn run_named_mcp_remote_with_endpoints(
     })?;
     let paths = first.paths.clone();
     let default_profile = first.default_profile.clone();
-    let tool_packs = mcp_tool_pack_args_from_names(&first.eligible_tool_packs)?;
     let McpRemoteAuthentication::IndieAuth { identity } = &remote.authentication;
     let endpoint = public_url_path(&remote.public_url)?;
     let storage_dir = process
@@ -473,8 +440,6 @@ fn run_named_mcp_remote_with_endpoints(
     run_mcp_http_server_with_named_runtime(
         &paths,
         Some(&default_profile),
-        &tool_packs,
-        McpToolPackModeArg::Static,
         &options,
         NamedMcpRuntime {
             remote_id: remote.id.clone(),
@@ -739,32 +704,6 @@ pub(crate) fn acquire_named_remote_runtime_lock(
     Ok(file)
 }
 
-#[cfg(feature = "oauth")]
-fn mcp_tool_pack_args_from_names(names: &[String]) -> Result<Vec<McpToolPackArg>, CliError> {
-    names
-        .iter()
-        .map(|name| match name.as_str() {
-            "notes-read" => Ok(McpToolPackArg::NotesRead),
-            "search" => Ok(McpToolPackArg::Search),
-            "status" => Ok(McpToolPackArg::Status),
-            "graph" => Ok(McpToolPackArg::Graph),
-            "custom" => Ok(McpToolPackArg::Custom),
-            "daily" => Ok(McpToolPackArg::Daily),
-            "tasks" => Ok(McpToolPackArg::Tasks),
-            "notes-write" => Ok(McpToolPackArg::NotesWrite),
-            "notes-manage" => Ok(McpToolPackArg::NotesManage),
-            "web" => Ok(McpToolPackArg::Web),
-            "config" => Ok(McpToolPackArg::Config),
-            "index" => Ok(McpToolPackArg::Index),
-            "sync" => Ok(McpToolPackArg::Sync),
-            "git" => Ok(McpToolPackArg::Git),
-            _ => Err(CliError::operation(format!(
-                "named MCP remote contains unknown tool pack `{name}`"
-            ))),
-        })
-        .collect()
-}
-
 #[cfg(not(feature = "oauth"))]
 pub(crate) fn run_named_mcp_remote(
     _process: &DaemonProcessContext,
@@ -801,13 +740,10 @@ fn install_mcp_sync_host() -> Option<vulcan_app::mcp_sync::SyncHostRegistration>
 fn run_mcp_stdio_server(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_args: &[McpToolPackArg],
-    tool_pack_mode_arg: McpToolPackModeArg,
     request_timeout: Duration,
 ) -> Result<(), CliError> {
     let _sync_host = install_mcp_sync_host();
-    let mut server =
-        McpServerCore::new(paths, requested_profile, tool_pack_args, tool_pack_mode_arg)?;
+    let mut server = McpServerCore::new(paths, requested_profile)?;
     let stdin = io::stdin();
 
     for line in stdin.lock().lines() {
@@ -838,15 +774,11 @@ fn run_mcp_stdio_server(
 fn run_mcp_http_server(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_args: &[McpToolPackArg],
-    tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
 ) -> Result<(), CliError> {
     run_mcp_http_server_inner(
         paths,
         requested_profile,
-        tool_pack_args,
-        tool_pack_mode_arg,
         options,
         #[cfg(feature = "oauth")]
         None,
@@ -858,8 +790,6 @@ fn run_mcp_http_server(
 fn run_mcp_http_server_with_named_runtime(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_args: &[McpToolPackArg],
-    tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
     named_runtime: NamedMcpRuntime,
     lifecycle: McpHttpLifecycle<'_>,
@@ -867,8 +797,6 @@ fn run_mcp_http_server_with_named_runtime(
     run_mcp_http_server_inner(
         paths,
         requested_profile,
-        tool_pack_args,
-        tool_pack_mode_arg,
         options,
         Some(named_runtime),
         lifecycle,
@@ -879,8 +807,6 @@ fn run_mcp_http_server_with_named_runtime(
 fn run_mcp_http_server_inner(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_args: &[McpToolPackArg],
-    tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
     #[cfg(feature = "oauth")] named_runtime: Option<NamedMcpRuntime>,
     lifecycle: McpHttpLifecycle<'_>,
@@ -920,11 +846,6 @@ fn run_mcp_http_server_inner(
         inner: McpHttpHost {
             paths: paths.clone(),
             requested_profile: requested_profile.map(ToOwned::to_owned),
-            selected_tool_packs: resolve_selected_tool_packs(
-                tool_pack_args,
-                McpToolPackMode::from(tool_pack_mode_arg),
-            ),
-            tool_pack_mode: McpToolPackMode::from(tool_pack_mode_arg),
             endpoint,
             auth_token: options.auth_token.clone(),
             #[cfg(feature = "oauth")]
@@ -1182,13 +1103,8 @@ fn mcp_http_driver(
         inner: &context.inner,
         hosted,
         core_factory: |config| {
-            let mut core = McpServerCore::new_resolved(
-                &config.paths,
-                config.permission_profile.as_deref(),
-                config.selected_tool_packs,
-                config.tool_pack_mode,
-            )
-            .map_err(|error| error.to_string())?;
+            let mut core = McpServerCore::new(&config.paths, config.permission_profile.as_deref())
+                .map_err(|error| error.to_string())?;
             core.inner
                 .session
                 .set_authenticated_client(config.client_id, config.subject);
@@ -1283,38 +1199,14 @@ fn authenticate_mcp_http_request(
 }
 
 impl McpServerCore {
-    fn new(
-        paths: &VaultPaths,
-        requested_profile: Option<&str>,
-        tool_pack_args: &[McpToolPackArg],
-        tool_pack_mode_arg: McpToolPackModeArg,
-    ) -> Result<Self, CliError> {
-        let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
-        let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
-        Self::new_resolved(
-            paths,
-            requested_profile,
-            selected_tool_packs,
-            tool_pack_mode,
-        )
-    }
-
-    fn new_resolved(
-        paths: &VaultPaths,
-        requested_profile: Option<&str>,
-        selected_tool_packs: BTreeSet<McpToolPack>,
-        tool_pack_mode: McpToolPackMode,
-    ) -> Result<Self, CliError> {
+    fn new(paths: &VaultPaths, requested_profile: Option<&str>) -> Result<Self, CliError> {
         // One core per session, stdio or HTTP: the session is starting.
         crate::signal_session_activity(paths.vault_root());
         Ok(Self {
             inner: McpProtocolCore::new(
                 paths,
                 requested_profile,
-                selected_tool_packs,
-                tool_pack_mode,
                 McpProtocolHost {
-                    registry_options: crate::custom_tool_registry_options,
                     command_help: resolve_command_help_for_mcp,
                     help_candidates: help_topic_completion_candidates,
                     server_version: env!("CARGO_PKG_VERSION"),
@@ -2030,45 +1922,20 @@ fn mcp_oauth_policy_error_response(error: McpOAuthPolicyError) -> McpHttpRespons
 fn build_mcp_tool_registry_entries(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    selected_tool_packs: &BTreeSet<McpToolPack>,
 ) -> Result<Vec<ToolRegistryEntry>, CliError> {
     let selection = vulcan_core::resolve_selected_permission_profile(paths, requested_profile)
         .map_err(permission_error_to_cli)?;
-    let mut tools = visible_tool_catalog(selected_tool_packs, &selection.profile)
+    let mut tools = visible_tool_catalog(&selection.profile)
         .into_iter()
         .map(mcp_tool_registry_entry)
         .collect::<Vec<_>>();
     tools.extend(
-        visible_custom_tools(paths, requested_profile, selected_tool_packs)?
+        mcp_assistant::visible_custom_tools(paths, requested_profile)
+            .map_err(|error| CliError::operation(format!("{error:?}")))?
             .iter()
             .map(custom_tool_registry_entry),
     );
     Ok(tools)
-}
-
-fn visible_custom_tools(
-    paths: &VaultPaths,
-    active_permission_profile: Option<&str>,
-    selected_tool_packs: &BTreeSet<McpToolPack>,
-) -> Result<Vec<CustomToolDescriptor>, CliError> {
-    if !selected_tool_packs.contains(&McpToolPack::Custom) {
-        return Ok(Vec::new());
-    }
-    let selected_pack_names = pack_name_list(selected_tool_packs)
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    Ok(app_tools::list_custom_tools(
-        paths,
-        active_permission_profile,
-        &crate::custom_tool_registry_options(),
-    )
-    .map_err(CliError::operation)?
-    .into_iter()
-    .filter(|tool| tool.callable)
-    .filter(|tool| {
-        mcp_assistant::custom_tool_matches_selected_packs(&tool.summary.packs, &selected_pack_names)
-    })
-    .collect())
 }
 
 fn help_topic_completion_candidates(prefix: &str) -> Vec<String> {

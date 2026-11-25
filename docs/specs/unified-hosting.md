@@ -222,7 +222,7 @@ Routing is explicit and happens before dispatch:
 
 MCP stdio remains client-owned. Foreground and resident MCP HTTP must use one shared dispatcher,
 router, OAuth implementation, and named-remote definition. A resident instance cannot reinterpret
-its audience, grants, tool packs, vault ceiling, session keys, or revocation state.
+its audience, grants, vault ceiling, session keys, or revocation state.
 The daemon's host-service injection now supervises named remotes as an aggregate ingress
 service while invoking the same foreground listener, OAuth implementation, and session state per
 instance. Shutdown closes active MCP sessions and SSE streams after stopping the listener.

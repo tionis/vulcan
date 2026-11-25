@@ -55,7 +55,6 @@ identity = "https://me.example/"
 wiki_id = "grimoire"
 ceiling_profile = "grimoire-rw"
 default_profile = "grimoire-rw"
-tool_packs = ["notes-read", "notes-write", "search", "status"]
 ```
 
 - **Vaults.** `path` is required; `source` is optional. Without `source`, a missing path is an
@@ -187,7 +186,6 @@ identity = "https://me.example/"
 wiki_id = "grimoire"
 ceiling_profile = "grimoire-rw"
 default_profile = "grimoire-rw"
-tool_packs = ["notes-read", "search", "status"]
 {{- end }}
 
 [permissions.profiles.grimoire-rw]
@@ -211,7 +209,6 @@ public_url = "https://grimoire.proxy.example/mcp"
 identity = "https://me.example/"
 ceiling_profile = "writer"
 default_profile = "writer"
-tool_packs = ["notes-read", "notes-write", "search", "status"]
 ```
 
 A device serves it only after opting in, which also chooses where it listens:
@@ -232,7 +229,7 @@ Anyone who can push to the vault can edit these settings, so:
 
 - Only the device decides whether to serve the vault and on which address.
 - The ceiling must be a built-in profile such as `writer` or one this device defines, as for every
-  remote; tool packs and the default profile only choose within it.
+  remote; the default profile only chooses within it.
 - The IndieAuth identity that may approve connections is recorded per device the first time the
   device serves the remote. If the vault later names another identity, the remote keeps the
   accepted one, `vulcan daemon plan` reports an error, and `vulcan daemon apply` changes nothing

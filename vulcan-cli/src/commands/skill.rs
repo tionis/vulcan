@@ -169,10 +169,6 @@ pub(crate) fn handle_skill_command(
 
 fn validate_visible_skills(cli: &Cli, paths: &VaultPaths) -> Result<SkillValidateReport, CliError> {
     let skills = visible_skills(cli, paths)?;
-    let allowed_packs = crate::custom_tool_registry_options()
-        .allowed_pack_names
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut command_count = 0;
@@ -190,14 +186,6 @@ fn validate_visible_skills(cli: &Cli, paths: &VaultPaths) -> Result<SkillValidat
                 if resolve_permission_profile(paths, Some(profile)).is_err() {
                     errors.push(format!(
                         "{}:{} references unknown permission profile `{profile}`",
-                        summary.name, command.id
-                    ));
-                }
-            }
-            for pack in &command.packs {
-                if !allowed_packs.contains(pack) {
-                    errors.push(format!(
-                        "{}:{} references unknown tool pack `{pack}`",
                         summary.name, command.id
                     ));
                 }
@@ -719,7 +707,7 @@ fn render_skill_manifest(name: &str, description: &str, starter_command: Option<
     let commands = starter_command.map_or(String::new(), |command| {
         let command = normalize_skill_name(command).unwrap_or_else(|_| "main".to_string());
         format!(
-            "metadata:\n  vulcan:\n    commands:\n      - id: {command}\n        script: scripts/{command}.js\n        sandbox: strict\n        packs: [custom]\n        expose: true\n        input_schema:\n          type: object\n"
+            "metadata:\n  vulcan:\n    commands:\n      - id: {command}\n        script: scripts/{command}.js\n        sandbox: strict\n        expose: true\n        input_schema:\n          type: object\n"
         )
     });
     format!(

@@ -20,14 +20,12 @@ Recommended setup:
      --identity https://example.com/ \
      --ceiling-profile daily-wiki-agent \
      --default-profile daily-wiki-agent \
-     --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom,index,git \
      --dry-run
    vulcan --vault /path/to/vault mcp remote init personal-chatgpt \
      --public-url https://wiki.example.com/mcp \
      --identity https://example.com/ \
      --ceiling-profile daily-wiki-agent \
-     --default-profile daily-wiki-agent \
-     --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom,index
+     --default-profile daily-wiki-agent
    vulcan mcp remote run personal-chatgpt
    ```
 
@@ -39,7 +37,7 @@ Recommended setup:
    before changing it; an active instance lock rejects `set` and `remove`. To use one MCP URL for
    multiple vaults, register each vault and run `vulcan mcp remote set personal-chatgpt
    --add-wiki <id> --dry-run`, then apply it without `--dry-run`. `remote set --wiki <id>` changes
-   only that vault's ceiling/default/packs. `remote set --remove-wiki <id>` revokes that vault's
+   only that vault's ceiling or default profile. `remote set --remove-wiki <id>` revokes that vault's
    grants and refresh tokens; it cannot remove the final vault.
 
    Startup fetches the IndieAuth identity page and, when advertised, its metadata. Each discovery
@@ -49,7 +47,7 @@ Recommended setup:
 2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/mcp/operations/*`, `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
 3. In ChatGPT, open **Settings → Security and login**, enable **Developer mode**, then open **ChatGPT Plugins**, add a connection, and enter the public MCP URL including `/mcp`.
 4. Sign in through IndieAuth. On Vulcan's consent page, verify the client, identity, exact MCP URL,
-   vault, permission profile, tool packs, scopes, and expiry before approving.
+   vault, permission profile, scopes, and expiry before approving. The profile decides which tools ChatGPT sees.
 5. Inspect or revoke access later with `vulcan mcp connections list`, `show <id>`, or
    `revoke <id>`. Removing a remote revokes its grants unless `--preserve-grants` is explicit.
 
@@ -129,15 +127,10 @@ For private development without publishing a public Vulcan endpoint, ChatGPT als
 
 ## ChatGPT Developer Mode
 
-In ChatGPT Developer Mode, add the HTTPS MCP URL exposed by your front door. Prefer a complete static startup selection: OpenAI-hosted workflows may retain imported MCP tool definitions in conversation context, so mid-conversation registry changes are not a portable discovery mechanism. After changing server tool metadata, use the connection's **Refresh** action and start a new conversation before retesting.
-
-Use adaptive mode only when the host demonstrably refreshes `tools/list` after pack mutations. Startup-selected packs remain pinned, and optional packs are changed through `tool_packs`:
+In ChatGPT Developer Mode, add the HTTPS MCP URL exposed by your front door. ChatGPT loads every tool the connection's profile allows and keeps imported tool definitions in conversation context, so it does not notice registry changes on its own. After changing server tool metadata, use the connection's **Refresh** action and start a new conversation before retesting. ChatGPT asks for confirmation before any tool not marked read-only.
 
 ```sh
-vulcan --permissions daily-wiki-agent mcp \
-  --transport http \
-  --tool-pack-mode adaptive \
-  --tool-pack notes-read,search,status,daily,tasks,index
+vulcan --permissions daily-wiki-agent mcp --transport http
 ```
 
 `--permissions` names this device's own limit: a built-in such as `daily-wiki-agent`, or a profile

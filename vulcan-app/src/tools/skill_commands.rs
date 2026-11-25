@@ -7,28 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use vulcan_core::Verbosity;
 use vulcan_core::{
-    default_assistant_tool_reserved_names, evaluate_dataview_js_with_options,
-    list_assistant_skills, load_assistant_skill, load_vault_config, resolve_permission_profile,
-    validate_json_value_against_schema, AssistantSkill, AssistantSkillCommandSummary,
-    AssistantSkillSummary, AssistantTool, AssistantToolRuntime, AssistantToolSummary,
-    DataviewJsEvalOptions, DataviewJsToolDefinition, DataviewJsToolDescriptor,
-    DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths,
+    evaluate_dataview_js_with_options, list_assistant_skills, load_assistant_skill,
+    load_vault_config, resolve_permission_profile, validate_json_value_against_schema,
+    AssistantSkill, AssistantSkillCommandSummary, AssistantSkillSummary, AssistantTool,
+    AssistantToolRuntime, AssistantToolSummary, DataviewJsEvalOptions, DataviewJsToolDefinition,
+    DataviewJsToolDescriptor, DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustomToolRegistryOptions {
-    pub reserved_names: Vec<String>,
-    pub allowed_pack_names: Vec<String>,
-}
-
-impl Default for CustomToolRegistryOptions {
-    fn default() -> Self {
-        Self {
-            reserved_names: default_assistant_tool_reserved_names(),
-            allowed_pack_names: vec!["custom".to_string()],
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomToolRunOptions {
@@ -86,7 +70,6 @@ impl CustomToolJsRegistryContext {
 #[derive(Debug, Clone)]
 struct JsCustomToolRegistry {
     paths: VaultPaths,
-    registry_options: CustomToolRegistryOptions,
     context: CustomToolJsRegistryContext,
 }
 
@@ -118,10 +101,8 @@ pub struct CustomToolRunReport {
 pub fn list_custom_tools(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
-    options: &CustomToolRegistryOptions,
 ) -> Result<Vec<CustomToolDescriptor>, AppError> {
-    let mut descriptors =
-        skill_command_tool_descriptors(paths, active_permission_profile, options)?;
+    let mut descriptors = skill_command_tool_descriptors(paths, active_permission_profile)?;
     descriptors.sort_by(|left, right| left.summary.name.cmp(&right.summary.name));
     Ok(descriptors)
 }
@@ -130,9 +111,8 @@ pub fn show_custom_tool(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     name: &str,
-    options: &CustomToolRegistryOptions,
 ) -> Result<CustomToolShowReport, AppError> {
-    let tool = skill_command_tool(paths, name, options).map_err(AppError::operation)?;
+    let tool = skill_command_tool(paths, name).map_err(AppError::operation)?;
     Ok(CustomToolShowReport {
         callable: custom_tool_is_callable(
             paths,
@@ -140,7 +120,6 @@ pub fn show_custom_tool(
             &tool.summary.name,
             tool.summary.permission_profile.as_deref(),
             tool.summary.sandbox,
-            options,
         ),
         tool,
     })
@@ -151,23 +130,19 @@ pub fn build_custom_tool_js_registry(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     surface: &str,
-    options: &CustomToolRegistryOptions,
 ) -> Arc<dyn DataviewJsToolRegistry> {
     build_custom_tool_js_registry_with_context(
         paths,
-        options,
         CustomToolJsRegistryContext::root(surface, active_permission_profile),
     )
 }
 
 fn build_custom_tool_js_registry_with_context(
     paths: &VaultPaths,
-    options: &CustomToolRegistryOptions,
     context: CustomToolJsRegistryContext,
 ) -> Arc<dyn DataviewJsToolRegistry> {
     Arc::new(JsCustomToolRegistry {
         paths: paths.clone(),
-        registry_options: options.clone(),
         context,
     })
 }
@@ -191,12 +166,11 @@ pub fn run_custom_tool(
     active_permission_profile: Option<&str>,
     name: &str,
     input: &Value,
-    registry_options: &CustomToolRegistryOptions,
     run_options: &CustomToolRunOptions,
 ) -> Result<CustomToolRunReport, AppError> {
     let context =
         CustomToolJsRegistryContext::root(&run_options.surface, active_permission_profile);
-    run_custom_tool_with_context(paths, &context, name, input, registry_options, run_options)
+    run_custom_tool_with_context(paths, &context, name, input, run_options)
 }
 
 fn run_custom_tool_with_context(
@@ -204,15 +178,11 @@ fn run_custom_tool_with_context(
     context: &CustomToolJsRegistryContext,
     name: &str,
     input: &Value,
-    registry_options: &CustomToolRegistryOptions,
     run_options: &CustomToolRunOptions,
 ) -> Result<CustomToolRunReport, AppError> {
-    let Some(trust_root) = tool_trust_root(
-        paths,
-        context.active_permission_profile.as_deref(),
-        name,
-        registry_options,
-    ) else {
+    let Some(trust_root) =
+        tool_trust_root(paths, context.active_permission_profile.as_deref(), name)
+    else {
         let in_trusted_changeset = crate::changesets::changeset_vault(paths.vault_root())
             .is_some_and(|vault| trust::is_trusted(&vault));
         if in_trusted_changeset {
@@ -226,15 +196,7 @@ fn run_custom_tool_with_context(
             "tool `{name}` cannot run with trust here"
         )));
     };
-    run_skill_command_tool_with_context(
-        paths,
-        &trust_root,
-        context,
-        name,
-        input,
-        registry_options,
-        run_options,
-    )
+    run_skill_command_tool_with_context(paths, &trust_root, context, name, input, run_options)
 }
 
 /// The vault whose trust and device grants a skill command runs under: the
@@ -248,7 +210,6 @@ fn tool_trust_root(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     name: &str,
-    options: &CustomToolRegistryOptions,
 ) -> Option<VaultPaths> {
     if trust::is_trusted(paths.vault_root()) {
         return Some(paths.clone());
@@ -257,8 +218,8 @@ fn tool_trust_root(
     if !trust::is_trusted(vault.vault_root()) {
         return None;
     }
-    let (skill, command) = resolve_skill_command_tool(paths, name, options).ok()?;
-    let (vault_skill, vault_command) = resolve_skill_command_tool(&vault, name, options).ok()?;
+    let (skill, command) = resolve_skill_command_tool(paths, name).ok()?;
+    let (vault_skill, vault_command) = resolve_skill_command_tool(&vault, name).ok()?;
     let here = crate::tool_grants::skill_digest(&skill_directory(paths, &skill.summary).ok()?);
     let there =
         crate::tool_grants::skill_digest(&skill_directory(&vault, &vault_skill.summary).ok()?);
@@ -295,7 +256,6 @@ fn tool_trust_root(
 fn skill_command_tool_descriptors(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
-    options: &CustomToolRegistryOptions,
 ) -> Result<Vec<CustomToolDescriptor>, AppError> {
     let skills = list_assistant_skills(paths).map_err(AppError::operation)?;
     Ok(skills
@@ -306,7 +266,6 @@ fn skill_command_tool_descriptors(
                 .clone()
                 .into_iter()
                 .filter(|command| command.expose)
-                .filter(|command| command_matches_allowed_packs(&command.packs, options))
                 .map(move |command| CustomToolDescriptor {
                     callable: custom_tool_is_callable(
                         paths,
@@ -314,7 +273,6 @@ fn skill_command_tool_descriptors(
                         &skill_command_tool_name(&skill.name, &command.id),
                         command.permission_profile.as_deref(),
                         command.sandbox.unwrap_or(JsRuntimeSandbox::Strict),
-                        options,
                     ),
                     summary: skill_command_tool_summary(paths, &skill, &command),
                 })
@@ -323,13 +281,8 @@ fn skill_command_tool_descriptors(
         .collect())
 }
 
-fn skill_command_tool(
-    paths: &VaultPaths,
-    name: &str,
-    options: &CustomToolRegistryOptions,
-) -> Result<AssistantTool, AppError> {
-    let (_resolved_name, skill, command) =
-        resolve_skill_command_tool_identifier(paths, name, options)?;
+fn skill_command_tool(paths: &VaultPaths, name: &str) -> Result<AssistantTool, AppError> {
+    let (_resolved_name, skill, command) = resolve_skill_command_tool_identifier(paths, name)?;
     Ok(AssistantTool {
         summary: skill_command_tool_summary(paths, &skill.summary, &command),
         body: skill.body,
@@ -359,11 +312,6 @@ fn skill_command_tool_summary(
         sandbox: command.sandbox.unwrap_or(JsRuntimeSandbox::Strict),
         permission_profile: command.permission_profile.clone(),
         timeout_ms: None,
-        packs: if command.packs.is_empty() {
-            vec!["custom".to_string()]
-        } else {
-            command.packs.clone()
-        },
         secrets: Vec::new(),
         read_only: !matches!(command.sandbox, Some(JsRuntimeSandbox::None)),
         destructive: false,
@@ -381,11 +329,10 @@ fn run_skill_command_tool_with_context(
     context: &CustomToolJsRegistryContext,
     name: &str,
     input: &Value,
-    registry_options: &CustomToolRegistryOptions,
     run_options: &CustomToolRunOptions,
 ) -> Result<CustomToolRunReport, AppError> {
     let _ = run_options;
-    let (skill, command) = resolve_skill_command_tool(paths, name, registry_options)?;
+    let (skill, command) = resolve_skill_command_tool(paths, name)?;
     validate_json_value_against_schema(input, &command.input_schema).map_err(|error| {
         AppError::operation(format!(
             "skill command tool `{name}` input validation failed: {error}"
@@ -435,7 +382,6 @@ fn run_skill_command_tool_with_context(
             )),
             tool_registry: Some(build_custom_tool_js_registry_with_context(
                 paths,
-                registry_options,
                 runtime_context,
             )),
             granted_host_commands: granted_host_commands.clone(),
@@ -479,27 +425,20 @@ fn run_skill_command_tool_with_context(
 fn resolve_skill_command_tool(
     paths: &VaultPaths,
     name: &str,
-    options: &CustomToolRegistryOptions,
 ) -> Result<(AssistantSkill, AssistantSkillCommandSummary), AppError> {
-    resolve_skill_command_tool_identifier(paths, name, options)
+    resolve_skill_command_tool_identifier(paths, name)
         .map(|(_resolved_name, skill, command)| (skill, command))
 }
 
 pub(crate) fn resolve_skill_command_tool_identifier(
     paths: &VaultPaths,
     name: &str,
-    options: &CustomToolRegistryOptions,
 ) -> Result<(String, AssistantSkill, AssistantSkillCommandSummary), AppError> {
     let mut alias_matches = Vec::new();
     for summary in list_assistant_skills(paths).map_err(AppError::operation)? {
         for command in summary.commands.iter().filter(|command| command.expose) {
             let tool_name = skill_command_tool_name(&summary.name, &command.id);
             if tool_name == name {
-                if !command_matches_allowed_packs(&command.packs, options) {
-                    return Err(AppError::operation(format!(
-                        "skill command tool `{name}` is not in an allowed tool pack"
-                    )));
-                }
                 let skill =
                     load_assistant_skill(paths, &summary.name).map_err(AppError::operation)?;
                 return Ok((tool_name, skill, command.clone()));
@@ -508,7 +447,6 @@ pub(crate) fn resolve_skill_command_tool_identifier(
                 .cli
                 .as_ref()
                 .is_some_and(|cli| cli.aliases.iter().any(|alias| alias == name))
-                && command_matches_allowed_packs(&command.packs, options)
             {
                 alias_matches.push((tool_name, summary.name.clone(), command.clone()));
             }
@@ -576,9 +514,8 @@ fn skill_directory(paths: &VaultPaths, skill: &AssistantSkillSummary) -> Result<
 pub(crate) fn skill_command_host_commands(
     paths: &VaultPaths,
     name: &str,
-    options: &CustomToolRegistryOptions,
 ) -> Result<(String, PathBuf, Vec<Vec<String>>), AppError> {
-    let (tool_name, skill, command) = resolve_skill_command_tool_identifier(paths, name, options)?;
+    let (tool_name, skill, command) = resolve_skill_command_tool_identifier(paths, name)?;
     Ok((
         tool_name,
         skill_directory(paths, &skill.summary)?,
@@ -638,29 +575,11 @@ fn normalize_tool_name_component(value: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn command_matches_allowed_packs(
-    packs: &[String],
-    options: &CustomToolRegistryOptions,
-) -> bool {
-    let packs = if packs.is_empty() {
-        vec!["custom".to_string()]
-    } else {
-        packs.to_vec()
-    };
-    packs.iter().all(|pack| {
-        options
-            .allowed_pack_names
-            .iter()
-            .any(|allowed| allowed == pack)
-    })
-}
-
 impl DataviewJsToolRegistry for JsCustomToolRegistry {
     fn list(&self) -> Result<Vec<DataviewJsToolDescriptor>, String> {
         list_custom_tools(
             &self.paths,
             self.context.active_permission_profile.as_deref(),
-            &self.registry_options,
         )
         .map(|tools| {
             tools
@@ -679,7 +598,6 @@ impl DataviewJsToolRegistry for JsCustomToolRegistry {
             &self.paths,
             self.context.active_permission_profile.as_deref(),
             name,
-            &self.registry_options,
         )
         .map(|tool| DataviewJsToolDefinition {
             tool: tool.tool,
@@ -714,7 +632,6 @@ impl DataviewJsToolRegistry for JsCustomToolRegistry {
             },
             name,
             input,
-            &self.registry_options,
             &CustomToolRunOptions {
                 surface: self.context.nested_call_surface(),
             },
@@ -768,9 +685,8 @@ fn custom_tool_is_callable(
     tool_name: &str,
     requested_permission_profile: Option<&str>,
     sandbox: JsRuntimeSandbox,
-    options: &CustomToolRegistryOptions,
 ) -> bool {
-    if tool_trust_root(paths, active_permission_profile, tool_name, options).is_none() {
+    if tool_trust_root(paths, active_permission_profile, tool_name).is_none() {
         return false;
     }
     let Ok(effective_permission_profile) = effective_tool_permission_profile(

@@ -1,8 +1,7 @@
 use crate::output::print_json;
 use crate::terminal_markdown;
 use crate::{
-    app_config, mcp, print_markdown_output, tools, Cli, CliError, DescribeFormatArg,
-    McpToolPackArg, McpToolPackModeArg, OutputFormat,
+    app_config, mcp, print_markdown_output, tools, Cli, CliError, DescribeFormatArg, OutputFormat,
 };
 use clap::CommandFactory;
 use serde::Serialize;
@@ -30,18 +29,9 @@ pub(crate) fn handle_describe_command(
     paths: &VaultPaths,
     output: OutputFormat,
     format: DescribeFormatArg,
-    tool_pack: &[McpToolPackArg],
-    tool_pack_mode: McpToolPackModeArg,
     requested_profile: Option<&str>,
 ) -> Result<(), CliError> {
-    print_describe_report(
-        paths,
-        output,
-        format,
-        tool_pack,
-        tool_pack_mode,
-        requested_profile,
-    )
+    print_describe_report(paths, output, format, requested_profile)
 }
 
 fn render_help_search_markdown(keyword: &str, report: &HelpSearchReport) -> String {
@@ -97,8 +87,6 @@ pub(crate) fn print_describe_report(
     paths: &VaultPaths,
     output: OutputFormat,
     format: DescribeFormatArg,
-    tool_pack: &[McpToolPackArg],
-    tool_pack_mode: McpToolPackModeArg,
     requested_profile: Option<&str>,
 ) -> Result<(), CliError> {
     match format {
@@ -113,8 +101,7 @@ pub(crate) fn print_describe_report(
             }
         }
         DescribeFormatArg::OpenaiTools => {
-            let tools =
-                build_openai_tool_definitions(paths, requested_profile, tool_pack, tool_pack_mode)?;
+            let tools = build_openai_tool_definitions(paths, requested_profile)?;
             match output {
                 OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
@@ -127,12 +114,7 @@ pub(crate) fn print_describe_report(
             }
         }
         DescribeFormatArg::Mcp => {
-            let tools = mcp::build_mcp_tool_definitions(
-                paths,
-                requested_profile,
-                tool_pack,
-                tool_pack_mode,
-            )?;
+            let tools = mcp::build_mcp_tool_definitions(paths, requested_profile)?;
             match output {
                 OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
@@ -269,10 +251,6 @@ pub(crate) struct OpenAiFunctionDefinition {
 pub(crate) struct McpToolsReport {
     #[serde(rename = "protocolVersion")]
     pub(crate) protocol_version: String,
-    #[serde(rename = "toolPackMode")]
-    pub(crate) tool_pack_mode: String,
-    #[serde(rename = "selectedToolPacks")]
-    pub(crate) selected_tool_packs: Vec<String>,
     pub(crate) tools: Vec<McpToolDefinition>,
 }
 
@@ -286,8 +264,6 @@ pub(crate) struct McpToolDefinition {
     #[serde(rename = "outputSchema", skip_serializing_if = "Option::is_none")]
     pub(crate) output_schema: Option<Value>,
     pub(crate) annotations: McpToolAnnotations,
-    #[serde(rename = "toolPacks")]
-    pub(crate) tool_packs: Vec<String>,
     pub(crate) examples: Vec<String>,
 }
 
@@ -301,7 +277,6 @@ pub(crate) struct ToolRegistryEntry {
     pub(crate) input_schema: Value,
     pub(crate) output_schema: Option<Value>,
     pub(crate) annotations: McpToolAnnotations,
-    pub(crate) tool_packs: Vec<String>,
     pub(crate) examples: Vec<String>,
 }
 
@@ -326,7 +301,6 @@ impl ToolRegistryEntry {
             input_schema: self.input_schema.clone(),
             output_schema: self.output_schema.clone(),
             annotations: self.annotations,
-            tool_packs: self.tool_packs.clone(),
             examples: self.examples.clone(),
         }
     }
@@ -383,7 +357,7 @@ fn command_input_schema(command: &clap::Command) -> Value {
     let mut required = Vec::new();
     for argument in command
         .get_arguments()
-        .filter(|argument| !argument.is_global_set())
+        .filter(|argument| !argument.is_global_set() && !argument.is_hide_set())
     {
         properties.insert(
             argument.get_id().to_string(),
@@ -599,7 +573,7 @@ fn help_topic_from_command(command: &clap::Command, path: &[String]) -> HelpTopi
         body: sections.join("\n\n"),
         options: command
             .get_arguments()
-            .filter(|argument| !argument.is_global_set())
+            .filter(|argument| !argument.is_global_set() && !argument.is_hide_set())
             .map(describe_argument)
             .collect(),
         subcommands,
@@ -642,9 +616,10 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
             .to_string(),
     );
     lines.push(
-        "references with per-vault permission ceiling/default profile names and eligible tool packs. A"
+        "references with per-vault permission ceiling/default profile names; the profile a connection"
             .to_string(),
     );
+    lines.push("is granted alone decides which tools it sees. A".to_string());
     lines.push("multi-vault consent selects exactly one wiki for each grant. `remote set --add-wiki <id>` adds a".to_string());
     lines.push("registered wiki, `--wiki <id>` selects one for policy edits, and `--remove-wiki <id>` revokes that".to_string());
     lines.push("wiki's grants before removal. Stop the instance before changing its definition. The definition".to_string());
@@ -678,13 +653,10 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
             .to_string(),
     );
     lines.push(
-        "`--permissions` value into the remote ceiling/default, translate its startup `--tool-pack` values"
+        "`--permissions` value into the remote ceiling/default, initialize the remote with the old exact"
             .to_string(),
     );
-    lines.push(
-        "into eligible packs, initialize the remote with the old exact `--public-url` and IndieAuth identity,"
-            .to_string(),
-    );
+    lines.push("`--public-url` and IndieAuth identity,".to_string());
     lines.push(
         "then remove secrets from the shell/service command and run `vulcan mcp remote run <name>`. Existing"
             .to_string(),
@@ -929,19 +901,12 @@ fn find_command<'a>(command: &'a clap::Command, path: &[&str]) -> Option<&'a cla
 fn build_openai_tool_definitions(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack: &[McpToolPackArg],
-    tool_pack_mode: McpToolPackModeArg,
 ) -> Result<OpenAiToolsReport, CliError> {
-    let tools = mcp::build_openai_tool_registry_entries(
-        paths,
-        requested_profile,
-        tool_pack,
-        tool_pack_mode,
-    )?
-    .into_iter()
-    .chain(openai_cli_helper_tool_entries())
-    .map(ToolRegistryEntry::into_openai_definition)
-    .collect::<Vec<_>>();
+    let tools = mcp::build_openai_tool_registry_entries(paths, requested_profile)?
+        .into_iter()
+        .chain(openai_cli_helper_tool_entries())
+        .map(ToolRegistryEntry::into_openai_definition)
+        .collect::<Vec<_>>();
     Ok(OpenAiToolsReport { tools })
 }
 
@@ -973,7 +938,6 @@ fn command_to_openai_helper_entry(
         input_schema: command_input_schema(command),
         output_schema: None,
         annotations: McpToolAnnotations::default(),
-        tool_packs: vec!["assistant".to_string()],
         examples: extract_examples(command),
     })
 }
@@ -995,7 +959,6 @@ pub(crate) fn custom_tool_registry_entry(tool: &tools::CustomToolDescriptor) -> 
             idempotent_hint: tool.summary.read_only && !tool.summary.destructive,
             open_world_hint: matches!(tool.summary.sandbox, vulcan_core::JsRuntimeSandbox::Net),
         },
-        tool_packs: tool.summary.packs.clone(),
         examples: Vec::new(),
     }
 }
@@ -1030,7 +993,7 @@ fn describe_command(command: &clap::Command) -> CliCommandDescribe {
         after_help: command.get_after_help().map(ToString::to_string),
         options: command
             .get_arguments()
-            .filter(|argument| !argument.is_global_set())
+            .filter(|argument| !argument.is_global_set() && !argument.is_hide_set())
             .map(describe_argument)
             .collect(),
         subcommands: command

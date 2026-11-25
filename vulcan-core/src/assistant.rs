@@ -99,8 +99,6 @@ pub struct AssistantSkillCommandSummary {
     #[serde(default)]
     pub permission_profile: Option<String>,
     #[serde(default)]
-    pub packs: Vec<String>,
-    #[serde(default)]
     pub expose: bool,
     #[serde(default = "default_object_schema")]
     pub input_schema: JsonValue,
@@ -204,7 +202,6 @@ pub struct AssistantToolSummary {
     pub sandbox: JsRuntimeSandbox,
     pub permission_profile: Option<String>,
     pub timeout_ms: Option<usize>,
-    pub packs: Vec<String>,
     pub secrets: Vec<AssistantToolSecretSpec>,
     pub read_only: bool,
     pub destructive: bool,
@@ -393,11 +390,6 @@ pub fn default_assistant_tool_reserved_names() -> Vec<String> {
     vec![
         "tool_init".to_string(),
         "tool_list".to_string(),
-        "tool_pack_disable".to_string(),
-        "tool_pack_enable".to_string(),
-        "tool_pack_list".to_string(),
-        "tool_pack_set".to_string(),
-        "tool_packs".to_string(),
         "tool_run".to_string(),
         "tool_set".to_string(),
         "tool_show".to_string(),
@@ -1103,7 +1095,6 @@ metadata:
         script: scripts/suggest-bridges.js
         sandbox: strict
         permission_profile: readonly
-        packs: [notes-read]
         expose: true
         cli:
           aliases: [suggest-bridges]

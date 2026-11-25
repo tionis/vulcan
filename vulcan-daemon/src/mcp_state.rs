@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use subtle::ConstantTimeEq;
 use ulid::Ulid;
 use vulcan_app::keyed_state::{KeyedStateStore, TrackedMap};
-use vulcan_core::PermissionGrant;
+use vulcan_app::mcp_catalog::{requirement_met, McpVisibilityRequirement};
+use vulcan_core::{PermissionGrant, PermissionMode, PermissionProfile};
 
 use crate::mcp_remote::McpRemoteId;
 use crate::registry::WikiId;
@@ -49,7 +50,15 @@ pub struct ConnectionGrant {
     pub wiki_id: WikiId,
     pub permission_profile: String,
     pub approved_permissions: PermissionGrant,
-    pub tool_packs: Vec<String>,
+    /// The tool packs a grant approved before Vulcan removed tool packs
+    /// (2026-11); `None` for grants made since. The first use settles it:
+    /// see [`McpAuthorizationStore::settle_legacy_tool_packs`].
+    #[serde(
+        default,
+        rename = "tool_packs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub legacy_tool_packs: Option<Vec<String>>,
     pub scopes: Vec<String>,
     pub audience: String,
     pub created_at: u64,
@@ -77,7 +86,6 @@ impl ConnectionGrant {
             wiki_id: self.wiki_id.clone(),
             permission_profile: self.permission_profile.clone(),
             approved_permissions: self.approved_permissions.clone(),
-            tool_packs: self.tool_packs.clone(),
             scopes: self.scopes.clone(),
             audience: self.audience.clone(),
             created_at: self.created_at,
@@ -97,7 +105,6 @@ pub struct CreateConnectionGrant {
     pub wiki_id: WikiId,
     pub permission_profile: String,
     pub approved_permissions: PermissionGrant,
-    pub tool_packs: Vec<String>,
     pub scopes: Vec<String>,
     pub audience: String,
     pub created_at: u64,
@@ -114,7 +121,6 @@ pub struct ConnectionGrantReport {
     pub wiki_id: WikiId,
     pub permission_profile: String,
     pub approved_permissions: PermissionGrant,
-    pub tool_packs: Vec<String>,
     pub scopes: Vec<String>,
     pub audience: String,
     pub created_at: u64,
@@ -275,7 +281,7 @@ impl McpAuthorizationStore {
                 wiki_id: request.wiki_id,
                 permission_profile: request.permission_profile,
                 approved_permissions: request.approved_permissions,
-                tool_packs: sorted_unique(request.tool_packs),
+                legacy_tool_packs: None,
                 scopes: sorted_unique(request.scopes),
                 audience: request.audience,
                 created_at: request.created_at,
@@ -346,6 +352,41 @@ impl McpAuthorizationStore {
             revoke_families(state, &BTreeSet::from([id]), revoked_at);
             Ok(report)
         })
+    }
+
+    /// Settle a grant approved while Vulcan had tool packs. Packs once also
+    /// limited which tools a connection could call; now the permission profile
+    /// alone does. A grant whose packs covered every pack its profile could
+    /// use keeps working (and forgets them); any other would now reach tools
+    /// its consent left out, so it is revoked and the client must ask again.
+    /// Returns whether the grant is still active.
+    pub fn settle_legacy_tool_packs(
+        &self,
+        id: Ulid,
+        profile: &PermissionProfile,
+        now: u64,
+    ) -> Result<bool, McpStateError> {
+        let state = self.load()?;
+        let Some(grant) = state.grants.get(&id.to_string()) else {
+            return Err(McpStateError::UnknownGrant(id));
+        };
+        let Some(packs) = grant.legacy_tool_packs.clone() else {
+            return Ok(grant.is_active_at(now));
+        };
+        let covered = legacy_packs_cover_profile(&packs, profile);
+        self.mutate(false, |state| {
+            let grant = state
+                .grants
+                .get_mut(&id.to_string())
+                .ok_or(McpStateError::UnknownGrant(id))?;
+            grant.legacy_tool_packs = None;
+            if !covered {
+                grant.revoked_at.get_or_insert(now);
+                revoke_families(state, &BTreeSet::from([id]), now);
+            }
+            Ok(())
+        })?;
+        Ok(covered)
     }
 
     pub fn mark_grant_used(
@@ -768,12 +809,39 @@ fn prune_inactive(state: &mut AuthorizationState, now: u64) {
     }
 }
 
+/// What each former tool pack needed from a profile to offer any tool.
+const LEGACY_TOOL_PACK_REQUIREMENTS: &[(&str, McpVisibilityRequirement)] = &[
+    ("notes-read", McpVisibilityRequirement::Read),
+    ("search", McpVisibilityRequirement::Read),
+    ("status", McpVisibilityRequirement::None),
+    ("graph", McpVisibilityRequirement::Read),
+    ("daily", McpVisibilityRequirement::Read),
+    ("tasks", McpVisibilityRequirement::Read),
+    ("notes-write", McpVisibilityRequirement::Write),
+    ("notes-manage", McpVisibilityRequirement::Read),
+    ("web", McpVisibilityRequirement::Network),
+    ("config", McpVisibilityRequirement::ConfigRead),
+    ("index", McpVisibilityRequirement::Index),
+    ("sync", McpVisibilityRequirement::GitReadAll),
+    ("git", McpVisibilityRequirement::GitReadAll),
+];
+
+/// Whether `packs` included every former pack that `profile` could use,
+/// counting the `custom` pack when the profile may run vault code.
+fn legacy_packs_cover_profile(packs: &[String], profile: &PermissionProfile) -> bool {
+    let has = |name: &str| packs.iter().any(|pack| pack == name);
+    let custom_ok = !matches!(profile.execute, PermissionMode::Allow) || has("custom");
+    custom_ok
+        && LEGACY_TOOL_PACK_REQUIREMENTS
+            .iter()
+            .all(|(name, requirement)| has(name) || !requirement_met(*requirement, false, profile))
+}
+
 fn validate_create_grant(request: &CreateConnectionGrant) -> Result<(), McpStateError> {
     validate_text(&request.client_id, "OAuth client ID", 2_048)?;
     validate_https_url(&request.subject, "subject")?;
     validate_text(&request.permission_profile, "permission profile", 128)?;
     validate_https_url(&request.audience, "audience")?;
-    validate_string_set(&request.tool_packs, "tool packs", 32, 128)?;
     validate_string_set(&request.scopes, "scopes", 32, 128)?;
     if request.expires_at <= request.created_at {
         return Err(McpStateError::Invalid(
@@ -809,6 +877,9 @@ fn validate_state(state: &AuthorizationState) -> Result<(), McpStateError> {
 }
 
 fn validate_grant(grant: &ConnectionGrant) -> Result<(), McpStateError> {
+    if let Some(packs) = &grant.legacy_tool_packs {
+        validate_string_set(packs, "tool packs", 32, 128)?;
+    }
     if grant.version != MCP_CONNECTION_GRANT_VERSION {
         return Err(McpStateError::Invalid(
             "connection grants contain an unsupported version".to_string(),
@@ -826,7 +897,6 @@ fn validate_grant(grant: &ConnectionGrant) -> Result<(), McpStateError> {
         wiki_id: grant.wiki_id.clone(),
         permission_profile: grant.permission_profile.clone(),
         approved_permissions: grant.approved_permissions.clone(),
-        tool_packs: grant.tool_packs.clone(),
         scopes: grant.scopes.clone(),
         audience: grant.audience.clone(),
         created_at: grant.created_at,
@@ -1200,12 +1270,104 @@ mod tests {
             wiki_id: WikiId::parse("personal").expect("wiki"),
             permission_profile: "readonly".to_string(),
             approved_permissions: permission_grant(),
-            tool_packs: vec!["status".to_string(), "notes-read".to_string()],
             scopes: vec!["mcp:tools".to_string()],
             audience: format!("https://mcp.example.test/{remote}"),
             created_at: 1_000,
             expires_at: 10_000,
         }
+    }
+
+    fn store_with_legacy_grant(packs: &[&str]) -> (tempfile::TempDir, McpAuthorizationStore, Ulid) {
+        let temporary = tempdir().expect("temporary");
+        let store = McpAuthorizationStore::at(temporary.path());
+        let report = store
+            .create_grant(
+                grant_request(
+                    "personal",
+                    "https://client.example.test/metadata.json",
+                    "https://identity.example.test/alice",
+                ),
+                false,
+            )
+            .expect("grant");
+        let packs = packs.iter().map(ToString::to_string).collect::<Vec<_>>();
+        store
+            .mutate(false, |state| {
+                state
+                    .grants
+                    .get_mut(&report.id.to_string())
+                    .expect("stored grant")
+                    .legacy_tool_packs = Some(packs);
+                Ok(())
+            })
+            .expect("legacy packs");
+        (temporary, store, report.id)
+    }
+
+    #[test]
+    fn legacy_pack_grants_survive_only_when_their_packs_covered_the_profile() {
+        let readonly = PermissionProfile::readonly();
+        let every_read_pack = [
+            "notes-read",
+            "search",
+            "status",
+            "graph",
+            "daily",
+            "tasks",
+            "notes-manage",
+            "config",
+        ];
+        let (_temporary, store, id) = store_with_legacy_grant(&every_read_pack);
+        assert!(store
+            .settle_legacy_tool_packs(id, &readonly, 2_000)
+            .expect("settled"));
+        let state = store.load().expect("state");
+        let grant = &state.grants[&id.to_string()];
+        assert_eq!(grant.legacy_tool_packs, None, "settled grants forget packs");
+        assert!(grant.is_active_at(2_000));
+
+        // The old default packs left out tools a readonly profile now sees.
+        let (_temporary, store, id) = store_with_legacy_grant(&["notes-read", "search", "status"]);
+        assert!(!store
+            .settle_legacy_tool_packs(id, &readonly, 2_000)
+            .expect("settled"));
+        let state = store.load().expect("state");
+        let grant = &state.grants[&id.to_string()];
+        assert_eq!(grant.revoked_at, Some(2_000));
+        assert_eq!(grant.legacy_tool_packs, None);
+
+        // Grants made since packs were removed carry none and are left alone.
+        let temporary = tempdir().expect("temporary");
+        let store = McpAuthorizationStore::at(temporary.path());
+        let report = store
+            .create_grant(
+                grant_request(
+                    "personal",
+                    "https://client.example.test/m.json",
+                    "https://identity.example.test/bob",
+                ),
+                false,
+            )
+            .expect("grant");
+        assert!(store
+            .settle_legacy_tool_packs(report.id, &PermissionProfile::unrestricted(), 2_000)
+            .expect("settled"));
+    }
+
+    #[test]
+    fn stored_grants_keep_their_legacy_packs_until_settled() {
+        let (_temporary, store, id) = store_with_legacy_grant(&["notes-read"]);
+        store
+            .mark_grant_used(id, 2_000)
+            .expect("touch rewrites the grant");
+        let state = store.load().expect("state");
+        assert_eq!(
+            state.grants[&id.to_string()].legacy_tool_packs,
+            Some(vec!["notes-read".to_string()])
+        );
+        assert!(!store
+            .settle_legacy_tool_packs(id, &PermissionProfile::writer(), 2_001)
+            .expect("settled"));
     }
 
     #[test]
@@ -1219,7 +1381,6 @@ mod tests {
         );
         let instance_id = request.remote_instance_id;
         let report = store.create_grant(request, false).expect("grant");
-        assert_eq!(report.tool_packs, ["notes-read", "status"]);
         assert!(store
             .resolve_active_grant(
                 report.id,

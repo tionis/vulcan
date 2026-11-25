@@ -23,7 +23,7 @@ use vulcan_core::config::VaultMcpRemoteConfig;
 
 use crate::mcp_remote::{
     validate_definition, AddMcpRemoteRequest, McpRemoteAuthentication, McpRemoteDefinition,
-    McpRemoteId, McpRemoteVault, DEFAULT_MCP_TOOL_PACKS,
+    McpRemoteId, McpRemoteVault,
 };
 use crate::registry::{DaemonConfig, WikiRegistration};
 
@@ -150,7 +150,6 @@ fn build(
         identity,
         ceiling_profile,
         default_profile,
-        tool_packs,
         redirect_hosts,
     } = settings;
     let public_url = public_url.ok_or("the vault's [mcp_remote] sets no public_url")?;
@@ -164,12 +163,6 @@ fn build(
             wiki_id: wiki.id.clone(),
             ceiling_profile: ceiling_profile.unwrap_or_else(|| "readonly".to_string()),
             default_profile: default_profile.unwrap_or_else(|| "readonly".to_string()),
-            tool_packs: tool_packs.unwrap_or_else(|| {
-                DEFAULT_MCP_TOOL_PACKS
-                    .iter()
-                    .map(|pack| (*pack).to_string())
-                    .collect()
-            }),
         }],
         redirect_hosts: redirect_hosts.unwrap_or_default(),
     };

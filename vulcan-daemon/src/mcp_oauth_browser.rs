@@ -132,7 +132,6 @@ pub struct ConsentPage<'a> {
     pub client_name: &'a str,
     pub fallback_vault_root: &'a str,
     pub profile: &'a str,
-    pub packs: &'a [String],
     pub named_runtime: Option<&'a NamedMcpRuntime>,
     /// The time and time zone in which expiry choices are shown.
     pub clock: GrantClock,
@@ -160,8 +159,6 @@ dt{color:var(--muted)}
 dd{margin:0;min-width:0;overflow-wrap:anywhere}
 .chips{display:flex;flex-wrap:wrap;gap:.35rem}
 .chip{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:.05rem .6rem;font-size:.85rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-label.pack{display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--line);border-radius:999px;padding:.2rem .75rem .2rem .55rem;cursor:pointer}
-label.pack:has(input:checked){border-color:var(--accent);background:var(--soft)}
 fieldset{border:0;margin:0;padding:0;min-width:0}
 legend{padding:0}
 fieldset.vault{border:1px solid var(--line);border-radius:10px;padding:.75rem 1rem;margin-bottom:.75rem}
@@ -243,16 +240,15 @@ fn chips<'a>(items: impl IntoIterator<Item = &'a String>) -> String {
     })
 }
 
-/// The vault, permission profile, and tool pack part of the consent page.
+/// The vault and permission profile part of the consent page.
 fn render_access(page: &ConsentPage<'_>) -> String {
     use std::fmt::Write as _;
 
     let Some(named) = page.named_runtime else {
         return format!(
-            "<dl><dt>Vault</dt><dd>{}</dd><dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd><span class=\"chips\">{}</span></dd></dl>",
+            "<dl><dt>Vault</dt><dd>{}</dd><dt>Permission profile</dt><dd>{}</dd></dl>",
             html_escape(page.fallback_vault_root),
             html_escape(page.profile),
-            chips(page.packs),
         );
     };
     let multi = named.vaults.len() > 1;
@@ -267,28 +263,9 @@ fn render_access(page: &ConsentPage<'_>) -> String {
         } else {
             "permission_profile".to_string()
         };
-        let packs = vault
-            .eligible_tool_packs
-            .iter()
-            .fold(String::new(), |mut output, pack| {
-                let field = if multi {
-                    format!("pack_{wiki}_{pack}")
-                } else {
-                    format!("pack_{pack}")
-                };
-                write!(
-                    output,
-                    "<label class=\"pack\"><input type=\"checkbox\" name=\"{}\" value=\"on\" checked> {}</label>",
-                    html_escape(&field),
-                    html_escape(pack)
-                )
-                .expect("writing to a String cannot fail");
-                output
-            });
         let root = html_escape(&vault.paths.vault_root().display().to_string());
         let controls = format!(
-            "<label class=\"field\"><span>Permission profile</span><input name=\"{profile_field}\" value=\"{default}\" list=\"profiles_{wiki}\" required><datalist id=\"profiles_{wiki}\"><option value=\"{default}\"><option value=\"{ceiling}\"></datalist></label>\
-             <div class=\"field\"><span>Tool packs</span><div class=\"chips\">{packs}</div></div>",
+            "<label class=\"field\"><span>Permission profile</span><input name=\"{profile_field}\" value=\"{default}\" list=\"profiles_{wiki}\" required><datalist id=\"profiles_{wiki}\"><option value=\"{default}\"><option value=\"{ceiling}\"></datalist></label>",
             default = html_escape(&vault.default_profile),
             ceiling = html_escape(&vault.ceiling_profile),
         );
@@ -339,7 +316,7 @@ pub fn render_consent_page(page: &ConsentPage<'_>) -> McpHttpResponse {
          <section><h2>Request</h2><dl><dt>Client</dt><dd>{}</dd><dt>Identity</dt><dd>{}</dd>\
          <dt>Resource</dt><dd>{}</dd><dt>OAuth scopes</dt><dd><span class=\"chips\">{scopes}</span></dd></dl></section>\
          <section><h2>Access</h2>{access}\
-         <p class=\"note\">Tool packs control which tools the client sees. The permission profile remains the authority ceiling.</p></section>\
+         <p class=\"note\">The permission profile decides which tools the client sees and what they may do.</p></section>\
          {expiry}\
          <input type=\"hidden\" name=\"transaction\" value=\"{}\">\
          <input type=\"hidden\" name=\"csrf_token\" value=\"{}\">\
@@ -558,7 +535,6 @@ mod tests {
             client_name: "<bad-client>",
             fallback_vault_root: "/vault<&>",
             profile: "readonly",
-            packs: &["notes-read".into()],
             named_runtime: None,
             clock: GrantClock::utc(1_794_830_400),
         });
@@ -606,7 +582,6 @@ mod tests {
             client_name: "Claude",
             fallback_vault_root: "/vault",
             profile: "readonly",
-            packs: &[],
             named_runtime: None,
             clock: GrantClock::utc(1_794_830_400),
         });
@@ -636,7 +611,6 @@ mod tests {
                         paths: VaultPaths::new(temp.path().join(name)),
                         ceiling_profile: "agent".into(),
                         default_profile: "readonly".into(),
-                        eligible_tool_packs: vec!["notes-read".into(), "search".into()],
                     },
                 )
             })
@@ -653,7 +627,6 @@ mod tests {
             client_name: "client",
             fallback_vault_root: "ignored",
             profile: "ignored",
-            packs: &[],
             named_runtime: Some(&named),
             clock: GrantClock::utc(1_794_830_400),
         });
@@ -661,8 +634,7 @@ mod tests {
         assert_eq!(html.matches("name=\"wiki_id\"").count(), 2);
         assert!(html.contains("permission_profile_personal"));
         assert!(html.contains("permission_profile_work"));
-        assert!(html.contains("pack_personal_search"));
-        assert!(html.contains("pack_work_search"));
+        assert!(!html.contains("pack_"), "consent offers no tool packs");
         assert!(!html.contains("expiry_days"));
         assert_eq!(
             html.matches("name=\"expiry\"").count(),
@@ -685,7 +657,6 @@ mod tests {
             client_name: "client",
             fallback_vault_root: "/vault",
             profile: "readonly",
-            packs: &[],
             named_runtime: None,
             clock: GrantClock::utc(1_794_830_400),
         });

@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use vulcan_core::VaultPaths;
 
-use super::{show_custom_tool, CustomToolRegistryOptions};
+use super::show_custom_tool;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CustomToolTypesReport {
@@ -25,9 +25,8 @@ pub fn build_tool_types_report(
     paths: &VaultPaths,
     active_profile: Option<&str>,
     name: &str,
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<CustomToolTypesReport, AppError> {
-    let show = show_custom_tool(paths, active_profile, name, registry_options)?;
+    let show = show_custom_tool(paths, active_profile, name)?;
     let base_name = ts_type_name(&show.tool.summary.name);
     let input_type = format!("{base_name}Input");
     let output_type = format!("{base_name}Output");
@@ -52,13 +51,10 @@ pub fn build_tool_types_report(
 pub fn build_all_tool_types_report(
     paths: &VaultPaths,
     active_profile: Option<&str>,
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<CustomToolTypesSuiteReport, AppError> {
-    let reports = super::list_custom_tools(paths, active_profile, registry_options)?
+    let reports = super::list_custom_tools(paths, active_profile)?
         .iter()
-        .map(|tool| {
-            build_tool_types_report(paths, active_profile, &tool.summary.name, registry_options)
-        })
+        .map(|tool| build_tool_types_report(paths, active_profile, &tool.summary.name))
         .collect::<Result<Vec<_>, _>>()?;
     let source = reports
         .iter()

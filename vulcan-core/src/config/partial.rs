@@ -44,7 +44,6 @@ pub(super) struct PartialMcpRemoteConfig {
     pub(super) identity: Option<String>,
     pub(super) ceiling_profile: Option<String>,
     pub(super) default_profile: Option<String>,
-    pub(super) tool_packs: Option<Vec<String>>,
     pub(super) redirect_hosts: Option<Vec<String>>,
 }
 

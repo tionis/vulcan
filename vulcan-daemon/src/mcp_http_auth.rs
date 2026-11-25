@@ -34,12 +34,12 @@ impl McpOAuthMode {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct McpHttpAuthOptions<'a> {
     pub instance_id: Ulid,
     pub bind_addr: SocketAddr,
     pub auth_token: Option<&'a str>,
     pub permission_profile: Option<&'a str>,
-    pub packs: Vec<String>,
     #[cfg(feature = "oauth")]
     pub oauth: Option<&'a McpOAuthMode>,
     #[cfg(feature = "oauth")]
@@ -171,7 +171,6 @@ pub fn authenticate_mcp_http_request(
         client_id,
         subject,
         permission_profile,
-        options.packs,
         scopes,
     ))
 }
@@ -193,7 +192,6 @@ mod tests {
             bind_addr: "127.0.0.1:4321".parse().unwrap(),
             auth_token: Some("secret"),
             permission_profile: Some("readonly"),
-            packs: vec!["notes-read".into()],
             #[cfg(feature = "oauth")]
             oauth: None,
             #[cfg(feature = "oauth")]
@@ -256,7 +254,6 @@ mod tests {
         assert_eq!(authority.client_id.as_deref(), Some("client"));
         assert_eq!(authority.scopes, scopes);
         assert_eq!(authority.permission_profile.as_deref(), Some("readonly"));
-        assert_eq!(authority.tool_packs, vec!["notes-read"]);
         assert!(!format!("{authority:?}").contains(&token));
         let invalid = BTreeMap::from([("authorization".into(), "Bearer invalid".into())]);
         assert!(matches!(

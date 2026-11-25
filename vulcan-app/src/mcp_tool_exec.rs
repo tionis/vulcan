@@ -6,10 +6,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use vulcan_core::{PermissionProfile, ProfilePermissionGuard, VaultPaths};
 
-use crate::mcp_catalog::{
-    active_tool_names, authorize_builtin_tool_call, mutate_tool_packs, require_adaptive_pack_mode,
-    tool_pack_state, McpToolId, McpToolPack, McpToolPackMode,
-};
+use crate::mcp_catalog::{active_tool_names, authorize_builtin_tool_call, McpToolId};
 use crate::mcp_protocol::{
     self, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs, McpDailyShowArgs,
     McpGraphCommunitiesArgs, McpIndexScanArgs, McpMethodError, McpNoteAppendArgs,
@@ -17,12 +14,10 @@ use crate::mcp_protocol::{
     McpNotePatchArgs, McpNoteSetArgs, McpQueryArgs, McpSearchArgs, McpSuggestLinksArgs,
     McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
     McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskReminderAddArgs,
-    McpTaskReminderRemoveArgs, McpTaskRescheduleArgs, McpToolPackMutationArgs,
-    McpToolResourceStore, McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT,
-    MCP_QUERY_DEFAULT_LIMIT, MCP_STRUCTURED_CONTENT_LIMIT,
+    McpTaskReminderRemoveArgs, McpTaskRescheduleArgs, McpToolResourceStore, McpWebFetchArgs,
+    McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT, MCP_QUERY_DEFAULT_LIMIT, MCP_STRUCTURED_CONTENT_LIMIT,
 };
 use crate::mcp_read_tools::MCP_QUERY_HARD_MAX;
-use crate::tools::CustomToolRegistryOptions;
 use crate::{
     browse, mcp_changesets, mcp_config, mcp_custom, mcp_files, mcp_git, mcp_graph, mcp_notes,
     mcp_read_tools, mcp_scan, mcp_sync, mcp_tasks, mcp_web,
@@ -34,11 +29,7 @@ pub struct McpToolExecution<'a> {
     pub guard: &'a ProfilePermissionGuard,
     pub profile_name: &'a str,
     pub profile: &'a PermissionProfile,
-    pub selected_packs: &'a mut BTreeSet<McpToolPack>,
-    pub pinned_packs: &'a BTreeSet<McpToolPack>,
-    pub pack_mode: McpToolPackMode,
     pub resources: &'a mut McpToolResourceStore,
-    pub custom_registry: &'a CustomToolRegistryOptions,
     pub client: &'a crate::mcp_session::McpClientAttribution,
     /// Paths this session wrote and has not committed; `git_commit` takes
     /// these by default.
@@ -58,30 +49,15 @@ impl McpToolExecution<'_> {
         // write this connection may touch, so it does not block the call. A
         // failure leaves it pending for the tool to report.
         let _ = crate::mdbase::recover_interrupted_mdbase_write_with_guard(self.paths, self.guard);
-        let Some(authorized) = authorize_builtin_tool_call(
-            name,
-            arguments,
-            self.selected_packs,
-            self.profile,
-            self.profile_name,
-        )?
-        else {
-            let report = mcp_custom::call_custom_tool(
-                self.paths,
-                self.profile_name,
-                self.selected_packs,
-                self.custom_registry,
-                name,
-                arguments,
-            )?;
+        let Some(tool) = authorize_builtin_tool_call(name, self.profile, self.profile_name)? else {
+            let report =
+                mcp_custom::call_custom_tool(self.paths, self.profile_name, name, arguments)?;
             return Ok(self.resources.custom_success_response(
                 &report.name,
                 report.result,
                 report.text.as_deref(),
             ));
         };
-        let tool = authorized.tool;
-        let arguments = authorized.arguments.as_ref();
         let flag = |name: &str| arguments.get(name).and_then(Value::as_bool) == Some(true);
         let commit_probe = (reports_commit(tool.id) && !flag("dry_run")).then(|| {
             (
@@ -124,19 +100,12 @@ impl McpToolExecution<'_> {
                 self.report(tool.name, &report)
             }
             McpToolId::Capabilities => {
-                let names = active_tool_names(self.selected_packs, self.profile);
-                let state = tool_pack_state(
-                    self.selected_packs,
-                    self.pinned_packs,
-                    self.pack_mode,
-                    self.profile,
-                );
+                let names = active_tool_names(self.profile);
                 self.value(
                     tool.name,
                     json!({
                         "routing": mcp_protocol::routing_guidance(&names),
                         "activeTools": names,
-                        "toolPacks": state,
                         "resultLimits": {
                             "inlineTextBytes": MCP_INLINE_TEXT_LIMIT,
                             "structuredContentBytes": MCP_STRUCTURED_CONTENT_LIMIT,
@@ -417,18 +386,6 @@ impl McpToolExecution<'_> {
                     &mcp_scan::index_scan(self.paths, self.guard, self.profile_name, &args)?,
                 )
             }
-            McpToolId::ToolPacks => {
-                require_adaptive_pack_mode(self.pack_mode)?;
-                let args: McpToolPackMutationArgs = parse(arguments)?;
-                let state = mutate_tool_packs(
-                    self.selected_packs,
-                    self.pinned_packs,
-                    self.pack_mode,
-                    self.profile,
-                    &args,
-                )?;
-                self.value(tool.name, state)
-            }
         });
         let structured = structured?;
         crate::write_attribution::record_batched_writes(
@@ -504,33 +461,21 @@ fn parse<T: DeserializeOwned>(arguments: &Map<String, Value>) -> Result<T, McpMe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp_catalog::resolve_selected_tool_packs;
     use vulcan_core::resolve_permission_profile;
 
     #[test]
-    fn shared_executor_preserves_session_pack_state_and_readonly_denial() {
+    fn shared_executor_lists_profile_tools_and_denies_readonly_writes() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
         let selection = resolve_permission_profile(&paths, Some("readonly")).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut selected = resolve_selected_tool_packs(&[], McpToolPackMode::Adaptive);
-        let pinned = BTreeSet::from([
-            McpToolPack::NotesRead,
-            McpToolPack::Search,
-            McpToolPack::Status,
-        ]);
         let mut resources = McpToolResourceStore::default();
-        let registry = CustomToolRegistryOptions::default();
         let mut executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            selected_packs: &mut selected,
-            pinned_packs: &pinned,
-            pack_mode: McpToolPackMode::Adaptive,
             resources: &mut resources,
-            custom_registry: &registry,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
             changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
@@ -541,9 +486,6 @@ mod tests {
             .unwrap()
             .iter()
             .any(|name| name == "note_get"));
-        let enable = Map::from_iter([("packs".to_string(), json!(["notes-write"]))]);
-        executor.call_tool("tool_pack_enable", &enable).unwrap();
-        assert!(executor.selected_packs.contains(&McpToolPack::NotesWrite));
         assert!(matches!(
             executor.call_tool("note_create", &Map::new()),
             Err(McpMethodError::Tool { .. })
@@ -574,20 +516,13 @@ mod tests {
         let paths = VaultPaths::new(root);
         let selection = resolve_permission_profile(&paths, Some("unrestricted")).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut selected = BTreeSet::from([McpToolPack::NotesWrite]);
-        let pinned = BTreeSet::new();
         let mut resources = McpToolResourceStore::default();
-        let registry = CustomToolRegistryOptions::default();
         let mut executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            selected_packs: &mut selected,
-            pinned_packs: &pinned,
-            pack_mode: McpToolPackMode::Static,
             resources: &mut resources,
-            custom_registry: &registry,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
             changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
@@ -602,27 +537,19 @@ mod tests {
     fn call(
         root: &std::path::Path,
         profile: &str,
-        packs: &[McpToolPack],
         name: &str,
         arguments: &Value,
     ) -> Result<Value, McpMethodError> {
         let paths = VaultPaths::new(root);
         let selection = resolve_permission_profile(&paths, Some(profile)).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut selected = packs.iter().copied().collect::<BTreeSet<_>>();
-        let pinned = BTreeSet::new();
         let mut resources = McpToolResourceStore::default();
-        let registry = CustomToolRegistryOptions::default();
         let mut executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            selected_packs: &mut selected,
-            pinned_packs: &pinned,
-            pack_mode: McpToolPackMode::Static,
             resources: &mut resources,
-            custom_registry: &registry,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
             changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
@@ -648,13 +575,7 @@ mod tests {
         vulcan_core::scan_vault(&VaultPaths::new(root), vulcan_core::ScanMode::Full).unwrap();
 
         // A read-only connection sees no commit tool.
-        let denied = call(
-            root,
-            "readonly",
-            &[McpToolPack::Git],
-            "git_commit",
-            &json!({"message": "x"}),
-        );
+        let denied = call(root, "readonly", "git_commit", &json!({"message": "x"}));
         assert!(
             matches!(denied, Err(McpMethodError::Tool { .. })),
             "{denied:?}"
@@ -663,7 +584,6 @@ mod tests {
         let moved = call(
             root,
             "unrestricted",
-            &[McpToolPack::NotesManage],
             "note_move",
             &json!({"note": "Inbox/Idea", "destination": "Projects/Idea", "no_commit": true}),
         )
@@ -678,13 +598,11 @@ mod tests {
             "{moved}"
         );
 
-        let git_pack = [McpToolPack::Git];
-        let status = call(root, "unrestricted", &git_pack, "git_status", &json!({})).unwrap();
+        let status = call(root, "unrestricted", "git_status", &json!({})).unwrap();
         assert_eq!(status["clean"], false, "{status}");
         let diff = call(
             root,
             "unrestricted",
-            &git_pack,
             "git_diff",
             &json!({"path": "Home.md"}),
         )
@@ -699,27 +617,18 @@ mod tests {
         let committed = call(
             root,
             "unrestricted",
-            &git_pack,
             "git_commit",
             &json!({"message": "Move the idea", "scope": "all"}),
         )
         .unwrap();
         assert_eq!(committed["committed"], true, "{committed}");
-        let log = call(
-            root,
-            "unrestricted",
-            &git_pack,
-            "git_log",
-            &json!({"limit": 1}),
-        )
-        .unwrap();
+        let log = call(root, "unrestricted", "git_log", &json!({"limit": 1})).unwrap();
         assert_eq!(log["entries"].as_array().unwrap().len(), 1, "{log}");
-        let status = call(root, "unrestricted", &git_pack, "git_status", &json!({})).unwrap();
+        let status = call(root, "unrestricted", "git_status", &json!({})).unwrap();
         assert_eq!(status["clean"], true, "{status}");
         let blame = call(
             root,
             "unrestricted",
-            &git_pack,
             "git_blame",
             &json!({"path": "Home.md"}),
         )
@@ -743,22 +652,15 @@ mod tests {
         git(root, &["commit", "--quiet", "-m", "seed"]);
         vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
 
-        let mut session = crate::mcp_session::McpSessionState::new(
-            &paths,
-            Some("unrestricted"),
-            BTreeSet::from([McpToolPack::NotesManage, McpToolPack::Git]),
-            McpToolPackMode::Static,
-            CustomToolRegistryOptions::default,
-        )
-        .unwrap();
+        let mut session =
+            crate::mcp_session::McpSessionState::new(&paths, Some("unrestricted")).unwrap();
         session.record_client_info(Some(
             &json!({"clientInfo": {"name": "Agent\nX", "version": "2"}}),
         ));
         session.set_authenticated_client(Some("https://client.example/".into()), None);
-        let registry = CustomToolRegistryOptions::default();
         let mut call = |name: &str, arguments: Value| {
             session
-                .call_tool(&registry, name, arguments.as_object().unwrap())
+                .call_tool(name, arguments.as_object().unwrap())
                 .map(|result| result["structuredContent"].clone())
         };
 
@@ -798,7 +700,7 @@ mod tests {
 
         let mut call = |name: &str, arguments: Value| {
             session
-                .call_tool(&registry, name, arguments.as_object().unwrap())
+                .call_tool(name, arguments.as_object().unwrap())
                 .map(|result| result["structuredContent"].clone())
         };
         let again = call("git_commit", json!({"message": "Again"})).unwrap();

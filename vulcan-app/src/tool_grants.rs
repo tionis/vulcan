@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use vulcan_core::durable::{self, Durability};
 use vulcan_core::VaultPaths;
 
-use crate::tools::CustomToolRegistryOptions;
 use crate::AppError;
 
 pub const TOOL_GRANTS_FILE_NAME: &str = "tool_grants.json";
@@ -135,11 +134,9 @@ pub fn skill_digest(directory: &Path) -> Result<String, AppError> {
 pub fn grant_tool(
     paths: &VaultPaths,
     tool: &str,
-    options: &CustomToolRegistryOptions,
     dry_run: bool,
 ) -> Result<ToolGrantReport, AppError> {
-    let (name, directory, declared) =
-        crate::tools::skill_command_host_commands(paths, tool, options)?;
+    let (name, directory, declared) = crate::tools::skill_command_host_commands(paths, tool)?;
     if declared.is_empty() {
         return Err(AppError::operation(format!(
             "tool `{name}` declares no `host_commands`, so there is nothing to grant"
@@ -184,18 +181,14 @@ pub fn revoke_tool_grant(paths: &VaultPaths, tool: &str, dry_run: bool) -> Resul
 }
 
 /// This vault's grants and whether each still applies.
-pub fn list_tool_grants(
-    paths: &VaultPaths,
-    options: &CustomToolRegistryOptions,
-) -> Result<Vec<ToolGrantStatus>, AppError> {
+pub fn list_tool_grants(paths: &VaultPaths) -> Result<Vec<ToolGrantStatus>, AppError> {
     let vault = vault_key(paths)?;
     Ok(load()?
         .grants
         .into_iter()
         .filter(|grant| grant.vault == vault)
         .map(|grant| {
-            let state = match crate::tools::skill_command_host_commands(paths, &grant.tool, options)
-            {
+            let state = match crate::tools::skill_command_host_commands(paths, &grant.tool) {
                 Ok((_, directory, _)) => {
                     if skill_digest(&directory).is_ok_and(|digest| digest == grant.digest) {
                         ToolGrantState::Active

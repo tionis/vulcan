@@ -1,6 +1,6 @@
 use crate::config::{load_config_file_toml, set_config_toml_value};
 use crate::mdbase::mdbase_js_mutation_committer;
-use crate::tools::{build_custom_tool_js_registry, CustomToolRegistryOptions};
+use crate::tools::build_custom_tool_js_registry;
 use crate::{trust, AppError};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -258,7 +258,6 @@ fn invoke_plugin(
                 paths,
                 runtime_permission_profile.as_deref(),
                 &format!("plugin.{}.{}", plugin.descriptor.name, handler_name),
-                &CustomToolRegistryOptions::default(),
             )),
             ..DataviewJsEvalOptions::default()
         },

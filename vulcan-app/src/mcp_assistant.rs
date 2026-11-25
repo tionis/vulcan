@@ -3,7 +3,7 @@
 #![allow(clippy::must_use_candidate)]
 
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use vulcan_core::{
@@ -13,70 +13,38 @@ use vulcan_core::{
     AssistantSkillSummary, PermissionGuard, PermissionProfile, ProfilePermissionGuard, VaultPaths,
 };
 
-use crate::mcp_catalog::{pack_name_list, visible_tool_catalog, McpToolPack};
+use crate::mcp_catalog::visible_tool_catalog;
 use crate::mcp_protocol::{McpMethodError, MCP_RESOURCE_NOT_FOUND};
-use crate::tools::{self, CustomToolDescriptor, CustomToolRegistryOptions};
+use crate::tools::{self, CustomToolDescriptor};
 
-pub fn custom_tool_matches_selected_packs(
-    packs: &[String],
-    selected_pack_names: &BTreeSet<String>,
-) -> bool {
-    if packs.is_empty() {
-        return selected_pack_names.contains("custom");
-    }
-    packs.iter().any(|pack| selected_pack_names.contains(pack))
-}
-
+/// The vault-defined tools this profile may call.
 pub fn visible_custom_tools(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
-    selected_pack_names: &BTreeSet<String>,
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<Vec<CustomToolDescriptor>, McpMethodError> {
-    if !selected_pack_names.contains("custom") {
-        return Ok(Vec::new());
-    }
-    Ok(
-        tools::list_custom_tools(paths, active_permission_profile, registry_options)
-            .map_err(|error| McpMethodError::tool(error.to_string()))?
-            .into_iter()
-            .filter(|tool| tool.callable)
-            .filter(|tool| {
-                custom_tool_matches_selected_packs(&tool.summary.packs, selected_pack_names)
-            })
-            .collect(),
-    )
+    Ok(tools::list_custom_tools(paths, active_permission_profile)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?
+        .into_iter()
+        .filter(|tool| tool.callable)
+        .collect())
 }
 
-/// Fingerprint the built-in and custom tools discoverable under one profile and pack selection.
+/// Fingerprint the built-in and custom tools discoverable under one profile.
 pub fn tool_catalog_fingerprint(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
-    selected_tool_packs: &BTreeSet<McpToolPack>,
     profile: &PermissionProfile,
-    registry_options: impl FnOnce() -> CustomToolRegistryOptions,
 ) -> String {
-    let mut parts = visible_tool_catalog(selected_tool_packs, profile)
+    let mut parts = visible_tool_catalog(profile)
         .into_iter()
         .map(|tool| tool.name.to_string())
         .collect::<Vec<_>>();
-    if selected_tool_packs.contains(&McpToolPack::Custom) {
-        let pack_names = pack_name_list(selected_tool_packs)
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let registry_options = registry_options();
-        if let Ok(custom_tools) = visible_custom_tools(
-            paths,
-            active_permission_profile,
-            &pack_names,
-            &registry_options,
-        ) {
-            parts.extend(
-                custom_tools
-                    .into_iter()
-                    .filter_map(|tool| serde_json::to_string(&tool.summary).ok()),
-            );
-        }
+    if let Ok(custom_tools) = visible_custom_tools(paths, active_permission_profile) {
+        parts.extend(
+            custom_tools
+                .into_iter()
+                .filter_map(|tool| serde_json::to_string(&tool.summary).ok()),
+        );
     }
     parts.join("\n")
 }
@@ -85,50 +53,39 @@ pub fn tool_catalog_fingerprint(
 pub fn read_custom_tool_resource(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
-    selected_pack_names: &BTreeSet<String>,
-    registry_options: &CustomToolRegistryOptions,
     uri: &str,
 ) -> Option<Result<Value, McpMethodError>> {
     let result = match uri {
-        "vulcan://assistant/skill-commands/index" => visible_custom_tools(
-            paths,
-            active_permission_profile,
-            selected_pack_names,
-            registry_options,
-        )
-        .and_then(|tools| {
-            let commands = tools
-                .into_iter()
-                .filter(|tool| tool.summary.name.starts_with("skill_"))
-                .collect::<Vec<_>>();
-            if commands.is_empty() {
-                Err(resource_not_found_error(
-                    uri,
-                    "Resource not found".to_string(),
-                ))
-            } else {
-                json_resource(uri, &commands)
-            }
-        }),
-        "vulcan://assistant/tools/index" => visible_custom_tools(
-            paths,
-            active_permission_profile,
-            selected_pack_names,
-            registry_options,
-        )
-        .and_then(|tools| {
-            if tools.is_empty() {
-                Err(resource_not_found_error(
-                    uri,
-                    "Resource not found".to_string(),
-                ))
-            } else {
-                json_resource(uri, &tools)
-            }
-        }),
+        "vulcan://assistant/skill-commands/index" => {
+            visible_custom_tools(paths, active_permission_profile).and_then(|tools| {
+                let commands = tools
+                    .into_iter()
+                    .filter(|tool| tool.summary.name.starts_with("skill_"))
+                    .collect::<Vec<_>>();
+                if commands.is_empty() {
+                    Err(resource_not_found_error(
+                        uri,
+                        "Resource not found".to_string(),
+                    ))
+                } else {
+                    json_resource(uri, &commands)
+                }
+            })
+        }
+        "vulcan://assistant/tools/index" => visible_custom_tools(paths, active_permission_profile)
+            .and_then(|tools| {
+                if tools.is_empty() {
+                    Err(resource_not_found_error(
+                        uri,
+                        "Resource not found".to_string(),
+                    ))
+                } else {
+                    json_resource(uri, &tools)
+                }
+            }),
         _ => {
             if let Some(name) = uri.strip_prefix("vulcan://assistant/skill-commands/") {
-                tools::show_custom_tool(paths, active_permission_profile, name, registry_options)
+                tools::show_custom_tool(paths, active_permission_profile, name)
                     .map_err(|error| resource_not_found_error(uri, error.to_string()))
                     .and_then(|report| {
                         if report.callable && report.tool.summary.name.starts_with("skill_") {
@@ -142,21 +99,10 @@ pub fn read_custom_tool_resource(
                     })
             } else {
                 let name = uri.strip_prefix("vulcan://assistant/tools/")?;
-                if selected_pack_names.contains("custom") {
-                    tools::show_custom_tool(
-                        paths,
-                        active_permission_profile,
-                        name,
-                        registry_options,
-                    )
+                tools::show_custom_tool(paths, active_permission_profile, name)
                     .map_err(|error| resource_not_found_error(uri, error.to_string()))
                     .and_then(|report| {
-                        if report.callable
-                            && custom_tool_matches_selected_packs(
-                                &report.tool.summary.packs,
-                                selected_pack_names,
-                            )
-                        {
+                        if report.callable {
                             json_resource(uri, &report)
                         } else {
                             Err(custom_resource_permission_error(
@@ -165,12 +111,6 @@ pub fn read_custom_tool_resource(
                             ))
                         }
                     })
-                } else {
-                    Err(custom_resource_permission_error(
-                        uri,
-                        active_permission_profile,
-                    ))
-                }
             }
         }
     };
@@ -346,7 +286,7 @@ pub fn visible_skills(
 }
 
 /// List stable MCP resources for one effective authority. Custom tool names must already be
-/// filtered by the caller's selected packs and permission profile.
+/// filtered by the caller's permission profile.
 pub fn visible_resources(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
@@ -425,7 +365,7 @@ pub fn visible_resources(
 
 pub fn visible_resource_templates(
     guard: &ProfilePermissionGuard,
-    custom_pack_selected: bool,
+    has_custom_tools: bool,
 ) -> Vec<Value> {
     let mut templates = vec![serde_json::json!({
         "uriTemplate": "vulcan://help/{topic}",
@@ -450,7 +390,7 @@ pub fn visible_resource_templates(
             "description": "Read one visible projected skill command as structured JSON.",
             "mimeType": "application/json",
         }));
-        if custom_pack_selected {
+        if has_custom_tools {
             templates.push(serde_json::json!({
                 "uriTemplate": "vulcan://assistant/tools/{name}",
                 "name": "Assistant Tools",
@@ -780,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_catalog_snapshot_tracks_profile_and_pack_visibility() {
+    fn tool_catalog_snapshot_tracks_profile_visibility() {
         let temporary = tempfile::tempdir().expect("temporary vault");
         let paths = VaultPaths::new(temporary.path());
         let readonly = resolve_permission_profile(&paths, Some("readonly"))
@@ -789,30 +729,11 @@ mod tests {
         let unrestricted = resolve_permission_profile(&paths, Some("unrestricted"))
             .expect("unrestricted profile")
             .profile;
-        let read_packs = BTreeSet::from([McpToolPack::NotesRead]);
-        let write_packs = BTreeSet::from([McpToolPack::NotesWrite]);
-        let read =
-            tool_catalog_fingerprint(&paths, Some("readonly"), &read_packs, &readonly, || {
-                panic!("non-custom tool snapshots must not construct registry options")
-            });
-        let denied_write = tool_catalog_fingerprint(
-            &paths,
-            Some("readonly"),
-            &write_packs,
-            &readonly,
-            CustomToolRegistryOptions::default,
-        );
-        let allowed_write = tool_catalog_fingerprint(
-            &paths,
-            Some("unrestricted"),
-            &write_packs,
-            &unrestricted,
-            CustomToolRegistryOptions::default,
-        );
+        let read = tool_catalog_fingerprint(&paths, Some("readonly"), &readonly);
+        let write = tool_catalog_fingerprint(&paths, Some("unrestricted"), &unrestricted);
         assert!(read.contains("note_get"));
         assert!(!read.contains("note_create"));
-        assert!(!denied_write.contains("note_create"));
-        assert!(allowed_write.contains("note_create"));
+        assert!(write.contains("note_create"));
     }
 
     #[test]
@@ -866,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_discovery_preserves_authority_and_custom_pack_visibility() {
+    fn resource_discovery_preserves_authority_and_custom_tool_visibility() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
         fs::create_dir_all(temporary.path().join(".vulcan")).unwrap();
@@ -917,18 +838,14 @@ mod tests {
     }
 
     #[test]
-    fn custom_tool_resources_require_the_pack_even_for_guessed_uris() {
+    fn unknown_custom_tool_resources_are_not_found_even_for_guessed_uris() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
-        let options = CustomToolRegistryOptions::default();
         let uri = "vulcan://assistant/tools/skill_example_run";
-        let no_packs = BTreeSet::new();
-        assert!(
-            visible_custom_tools(&paths, Some("readonly"), &no_packs, &options)
-                .unwrap()
-                .is_empty()
-        );
-        let denied = read_custom_tool_resource(&paths, Some("readonly"), &no_packs, &options, uri)
+        assert!(visible_custom_tools(&paths, Some("readonly"))
+            .unwrap()
+            .is_empty());
+        let denied = read_custom_tool_resource(&paths, Some("readonly"), uri)
             .unwrap()
             .unwrap_err();
         assert!(matches!(
@@ -938,19 +855,8 @@ mod tests {
                 ..
             }
         ));
-        let selected = BTreeSet::from(["custom".to_string()]);
-        assert!(custom_tool_matches_selected_packs(&[], &selected));
-        assert!(!custom_tool_matches_selected_packs(
-            &["admin".to_string()],
-            &selected
-        ));
-        assert!(read_custom_tool_resource(
-            &paths,
-            Some("readonly"),
-            &selected,
-            &options,
-            "vulcan://help/overview"
-        )
-        .is_none());
+        assert!(
+            read_custom_tool_resource(&paths, Some("readonly"), "vulcan://help/overview").is_none()
+        );
     }
 }

@@ -825,9 +825,7 @@ Examples:
   vulcan --output json describe
   vulcan describe --format openai-tools
   vulcan describe --format mcp
-  vulcan describe --format mcp --tool-pack notes-read,search,daily,tasks
-  vulcan describe --format mcp --tool-pack search,custom
-  vulcan describe --format mcp --tool-pack-mode adaptive
+  vulcan --permissions readonly describe --format mcp
   vulcan --output json describe > vulcan-schema.json";
 
 const HELP_COMMAND_AFTER_HELP: &str = "\
@@ -1290,8 +1288,6 @@ Notes:
   Start with `--vault <path>` so all tool calls operate on the correct vault.
   `--permissions <profile>` filters the exposed tool set before requests are handled.
   `--transport stdio|http` selects local subprocess stdio or networked Streamable HTTP.
-  `--tool-pack <name>` may be repeated or comma-separated to compose the exposed tool surface.
-  `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
   `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.
   `mcp remote init|list|show|set|run|migrate-credentials|remove` manages device-global hosted-client instances.
   `vulcan help mcp-remotes` explains read-only setup, multi-vault hosting, consent, and recovery.
@@ -1301,24 +1297,19 @@ Notes:
   Named remotes use IndieAuth login plus explicit Vulcan consent, audience-bound short access tokens, rotating refresh tokens, CIMD/DCR client validation, and revocable grants.
   Advanced direct local OAuth mode remains available through the long-form flags.
   External OAuth mode validates bearer tokens from an external OIDC provider such as Authentik.
-  Available packs include `notes-read`, `search`, `status`, `graph`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, `index`, and `sync`.
-  `graph` contains the less-common community and link-suggestion tools; it is not part of the default navigation surface.
-  `adaptive` mode exposes one `tool_packs` controller. Startup packs are pinned, and optional changes still require a client that refreshes `tools/list` after `notifications/tools/list_changed`.
+  The permission profile (`--permissions`) alone decides which tools are listed: every tool it allows, nothing else.
   Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
   Tool output uses structured JSON reports up to a fixed byte budget; larger results are returned as readable MCP resource links.
 
 Examples:
   vulcan mcp --vault ~/notes
   vulcan mcp --vault ~/notes --permissions readonly
-  vulcan mcp --vault ~/notes --tool-pack notes-read,search,daily,tasks
-  vulcan mcp --vault ~/notes --permissions daily-wiki-agent --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom
-  vulcan mcp --vault ~/notes --tool-pack custom
-  vulcan mcp --vault ~/notes --tool-pack-mode adaptive
+  vulcan mcp --vault ~/notes --permissions daily-wiki-agent
   vulcan mcp --vault ~/notes --request-timeout 30s
   vulcan mcp --transport http --bind 127.0.0.1:8765
   vulcan mcp remote init personal-chatgpt --public-url https://wiki.example.com/mcp --identity https://example.com/ --dry-run
   vulcan mcp remote set personal-chatgpt --add-wiki team --dry-run
-  vulcan mcp remote set personal-chatgpt --wiki team --tool-pack notes-read,search
+  vulcan mcp remote set personal-chatgpt --wiki team --default-profile readonly
   vulcan mcp remote run personal-chatgpt
   vulcan mcp connections list --remote personal-chatgpt
   vulcan --permissions daily-wiki-agent mcp --transport http --public-url https://wiki.example.com/mcp --oauth-dcr --oauth-indieauth-me https://example.com/
@@ -6469,31 +6460,6 @@ pub enum DescribeFormatArg {
     Mcp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum McpToolPackArg {
-    NotesRead,
-    Search,
-    Status,
-    Graph,
-    Custom,
-    Daily,
-    Tasks,
-    NotesWrite,
-    NotesManage,
-    Web,
-    Config,
-    Index,
-    Sync,
-    Git,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
-pub enum McpToolPackModeArg {
-    #[default]
-    Static,
-    Adaptive,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum McpTransportArg {
     #[default]
@@ -6538,14 +6504,6 @@ pub enum McpRemoteCommand {
         default_profile: String,
         #[arg(
             long,
-            value_enum,
-            value_delimiter = ',',
-            default_value = "notes-read,search,status",
-            help = "Tool packs eligible for consent"
-        )]
-        tool_pack: Vec<McpToolPackArg>,
-        #[arg(
-            long,
             value_name = "HOST",
             help = "Only let OAuth clients redirect to HTTPS on this host or its subdomains (repeatable); by default any valid redirect is allowed and consent shows where it goes"
         )]
@@ -6567,12 +6525,12 @@ pub enum McpRemoteCommand {
     Set {
         #[arg(help = "Named remote to update")]
         name: String,
-        #[arg(long, conflicts_with_all = ["add_wiki", "remove_wiki"], help = "Existing registered wiki whose ceiling or packs should change")]
+        #[arg(long, conflicts_with_all = ["add_wiki", "remove_wiki"], help = "Existing registered wiki whose profiles should change")]
         wiki: Option<String>,
         #[arg(
             long,
             conflicts_with = "remove_wiki",
-            help = "Expose another registered wiki with its own ceiling and packs"
+            help = "Expose another registered wiki with its own profiles"
         )]
         add_wiki: Option<String>,
         #[arg(long, help = "Stop exposing a wiki and revoke its connection grants")]
@@ -6587,13 +6545,6 @@ pub enum McpRemoteCommand {
         ceiling_profile: Option<String>,
         #[arg(long, help = "Replacement recommended consent profile")]
         default_profile: Option<String>,
-        #[arg(
-            long,
-            value_enum,
-            value_delimiter = ',',
-            help = "Replace the tool packs eligible for consent"
-        )]
-        tool_pack: Vec<McpToolPackArg>,
         #[arg(
             long,
             value_name = "HOST",
@@ -9211,21 +9162,12 @@ Examples:
             help = "Schema export format"
         )]
         format: DescribeFormatArg,
-        #[arg(
-            long,
-            value_enum,
-            value_delimiter = ',',
-            default_value = "notes-read,search,status",
-            help = "MCP tool packs to include when exporting MCP or OpenAI tool schemas"
-        )]
-        tool_pack: Vec<McpToolPackArg>,
-        #[arg(
-            long,
-            value_enum,
-            default_value_t = McpToolPackModeArg::Static,
-            help = "Whether MCP tool-pack selection is fixed or user-selectable"
-        )]
-        tool_pack_mode: McpToolPackModeArg,
+        /// Removed: tool packs no longer exist; rejected with an explanation.
+        #[arg(long = "tool-pack", hide = true, num_args = 0.., value_delimiter = ',')]
+        removed_tool_pack: Option<Vec<String>>,
+        /// Removed: tool packs no longer exist; rejected with an explanation.
+        #[arg(long = "tool-pack-mode", hide = true)]
+        removed_tool_pack_mode: Option<String>,
     },
     #[command(
         about = "Generate shell completion scripts",
@@ -9288,21 +9230,12 @@ Examples:
     Mcp {
         #[command(subcommand)]
         command: Option<McpCommand>,
-        #[arg(
-            long,
-            value_enum,
-            value_delimiter = ',',
-            default_value = "notes-read,search,status",
-            help = "MCP tool packs to expose"
-        )]
-        tool_pack: Vec<McpToolPackArg>,
-        #[arg(
-            long,
-            value_enum,
-            default_value_t = McpToolPackModeArg::Static,
-            help = "Whether MCP tool-pack selection is fixed or user-selectable"
-        )]
-        tool_pack_mode: McpToolPackModeArg,
+        /// Removed: tool packs no longer exist; rejected with an explanation.
+        #[arg(long = "tool-pack", hide = true, num_args = 0.., value_delimiter = ',')]
+        removed_tool_pack: Option<Vec<String>>,
+        /// Removed: tool packs no longer exist; rejected with an explanation.
+        #[arg(long = "tool-pack-mode", hide = true)]
+        removed_tool_pack_mode: Option<String>,
         #[arg(
             long,
             value_enum,

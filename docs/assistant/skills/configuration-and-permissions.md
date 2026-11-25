@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, schedule vault jobs, and understand trust boundaries. Use when the user asks about registered vaults, daemon.toml, setting up a device (`daemon plan`/`apply`), config, permissions, profiles, access control, sandboxing, trust, scheduled or recurring jobs, the Telegram chat bot, setup, or why a command/tool is denied.
-version: 39
+version: 40
 tools:
   - config_show
   - config_get
@@ -121,9 +121,9 @@ permission profiles, or diagnoses permission and trust failures.
 - Trust is an execution gate, not a permission profile. A trusted vault can still be denied by a profile.
 - Importing folder-note settings configures the convention; it does not auto-detect or move existing folder notes. Use `vulcan refactor folder-notes --dry-run` for a layout conversion.
 - `vulcan sync status` and `vulcan sync run` both inspect repository and remote state and therefore require the selected profile's Git permission; `--dry-run` prevents mutation but does not bypass that permission boundary.
-- MCP's read-only `sync` tool pack additionally requires full-vault read access. Repository-wide status, doctor, plans, and conflict records can contain paths outside a partial read allowlist, so Vulcan hides the whole pack instead of returning a misleading or leaky partially filtered safety report.
+- MCP's `sync_*` tools additionally require full-vault read access. Repository-wide status, doctor, plans, and conflict records can contain paths outside a partial read allowlist, so Vulcan hides them all instead of returning a misleading or leaky partially filtered safety report.
 - A device's own limits (`--permissions`, a registration's `--permissions-profile`, a named MCP remote's ceiling, the schedule ceiling) resolve only from built-ins (`readonly`, `researcher`, `daily-wiki-agent`, `writer`, `maintainer`, `unrestricted`) and device-local profiles in `daemon.toml` or `.vulcan/config.local.toml`; prefer a built-in when one fits. If one is refused as "defined only in the vault's synced configuration" or "beyond this device's definition", show the user `vulcan config permissions profile pin <name> --dry-run` and let them decide; never run `pin` or `vulcan config permissions profile create <name> --target local` yourself to make a refusal go away, and never edit shared profiles to widen a device's limit.
-- Named MCP remote ceilings cannot use `unrestricted`. Tool packs control discovery rather than authority, and every approved connection remains bounded by both its permission snapshot and the remote's current ceiling.
+- Named MCP remote ceilings cannot use `unrestricted`. The permission profile alone decides which MCP tools a connection sees, and every approved connection remains bounded by both its permission snapshot and the remote's current ceiling.
 - Preview clone and registration mutations with `vulcan vault clone ... --dry-run`, `vault add ... --dry-run`, `vault set ... --dry-run`, or `vault remove ... --dry-run`. Clone dry-run does not contact the remote or create destinations. Removing a registration must never be treated as permission to delete its worktree or Git directory. Current registrations use full-tree materialization; sparse or partial sync is not enabled by selecting files-only.
 - To find vaults that are not registered yet, run `vulcan vault discover [<dir>...]` (or remember a parent folder once with `vulcan vault scan-dir add <dir>`). It only reports: each unregistered vault comes with a suggested ID and the `vulcan vault add` command to run. Show those to the user rather than registering every candidate yourself; whether a folder should be managed, and under which ID, is their choice.
 - Preview automatic-sync changes with `vulcan sync pause/resume ... --dry-run`. This state is device-local and does not alter repository policy or prevent an explicit manual sync.

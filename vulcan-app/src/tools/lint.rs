@@ -14,7 +14,7 @@ use vulcan_core::{
 };
 
 use super::typescript::{json_schema_required_fields, top_level_field_name};
-use super::{list_custom_tools, show_custom_tool, CustomToolRegistryOptions};
+use super::{list_custom_tools, show_custom_tool};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CustomToolLintReport {
@@ -56,16 +56,15 @@ pub fn lint_custom_tools(
     name: Option<&str>,
     strict: bool,
     fix: bool,
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<CustomToolLintReport, AppError> {
     let tools = if let Some(name) = name {
         vec![
-            show_custom_tool(paths, active_permission_profile, name, registry_options)?
+            show_custom_tool(paths, active_permission_profile, name)?
                 .tool
                 .summary,
         ]
     } else {
-        list_custom_tools(paths, active_permission_profile, registry_options)?
+        list_custom_tools(paths, active_permission_profile)?
             .into_iter()
             .map(|descriptor| descriptor.summary)
             .collect()
@@ -107,9 +106,8 @@ pub fn build_tool_compat_report(
     active_permission_profile: Option<&str>,
     name: &str,
     requested_surfaces: &[String],
-    registry_options: &CustomToolRegistryOptions,
 ) -> Result<CustomToolCompatReport, AppError> {
-    let show = show_custom_tool(paths, active_permission_profile, name, registry_options)?;
+    let show = show_custom_tool(paths, active_permission_profile, name)?;
     let surfaces = if requested_surfaces.is_empty() {
         vec![
             "cli".to_string(),

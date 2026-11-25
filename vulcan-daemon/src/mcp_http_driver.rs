@@ -511,21 +511,19 @@ mod tests {
     use super::*;
     use crate::mcp_session::McpSessionRegistry;
     use serde_json::json;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::time::Duration;
     use ulid::Ulid;
-    use vulcan_app::mcp_catalog::{McpToolPack, McpToolPackMode};
     use vulcan_app::mcp_session_protocol::{McpProtocolCore, McpProtocolHost};
     use vulcan_core::VaultPaths;
 
+    // The driver hands each factory its configuration by value.
+    #[allow(clippy::needless_pass_by_value)]
     fn factory(config: McpHttpProtocolConfig) -> Result<McpProtocolCore, String> {
         McpProtocolCore::new(
             &config.paths,
             config.permission_profile.as_deref(),
-            config.selected_tool_packs,
-            config.tool_pack_mode,
             McpProtocolHost {
-                registry_options: vulcan_app::tools::CustomToolRegistryOptions::default,
                 command_help: |_| Err("No host-specific help".into()),
                 help_candidates: |_| Vec::new(),
                 server_version: "test",
@@ -538,8 +536,6 @@ mod tests {
         McpHttpHost {
             paths: paths.clone(),
             requested_profile: Some("readonly".into()),
-            selected_tool_packs: BTreeSet::from([McpToolPack::NotesRead, McpToolPack::Search]),
-            tool_pack_mode: McpToolPackMode::Static,
             endpoint: "/mcp".into(),
             auth_token: None,
             bind_addr: "127.0.0.1:4321".parse().unwrap(),

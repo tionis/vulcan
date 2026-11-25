@@ -16,12 +16,11 @@ pub use lint::{
 };
 pub use skill_commands::{
     build_custom_tool_js_registry, list_custom_tools, require_trusted_tool_execution,
-    run_custom_tool, show_custom_tool, CustomToolDescriptor, CustomToolRegistryOptions,
-    CustomToolRunOptions, CustomToolRunReport, CustomToolShowReport,
+    run_custom_tool, show_custom_tool, CustomToolDescriptor, CustomToolRunOptions,
+    CustomToolRunReport, CustomToolShowReport,
 };
 pub(crate) use skill_commands::{
-    command_matches_allowed_packs, resolve_skill_command_tool_identifier,
-    skill_command_host_commands, skill_command_tool_name,
+    resolve_skill_command_tool_identifier, skill_command_host_commands, skill_command_tool_name,
 };
 pub use typescript::{
     build_all_tool_types_report, build_tool_types_report, json_schema_to_typescript,

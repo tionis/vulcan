@@ -6450,30 +6450,13 @@ fn parses_config_import_folder_notes_command() {
 fn parses_help_and_describe_format_commands() {
     let help = Cli::try_parse_from(["vulcan", "help", "note", "get", "--output", "json"])
         .expect("help should parse");
-    let describe = Cli::try_parse_from([
-        "vulcan",
-        "describe",
-        "--format",
-        "openai-tools",
-        "--tool-pack",
-        "notes-read,search",
-        "--tool-pack",
-        "web",
-        "--tool-pack-mode",
-        "adaptive",
-    ])
-    .expect("describe should parse");
+    let describe = Cli::try_parse_from(["vulcan", "describe", "--format", "openai-tools"])
+        .expect("describe should parse");
     let mcp = Cli::try_parse_from([
         "vulcan",
         "--permissions",
         "readonly",
         "mcp",
-        "--tool-pack",
-        "notes-read,notes-manage",
-        "--tool-pack",
-        "index",
-        "--tool-pack-mode",
-        "adaptive",
         "--transport",
         "http",
         "--bind",
@@ -6496,24 +6479,16 @@ fn parses_help_and_describe_format_commands() {
         describe.command,
         Command::Describe {
             format: DescribeFormatArg::OpenaiTools,
-            tool_pack: vec![
-                McpToolPackArg::NotesRead,
-                McpToolPackArg::Search,
-                McpToolPackArg::Web,
-            ],
-            tool_pack_mode: McpToolPackModeArg::Adaptive,
+            removed_tool_pack: None,
+            removed_tool_pack_mode: None,
         }
     );
     assert_eq!(
         mcp.command,
         Command::Mcp {
             command: None,
-            tool_pack: vec![
-                McpToolPackArg::NotesRead,
-                McpToolPackArg::NotesManage,
-                McpToolPackArg::Index,
-            ],
-            tool_pack_mode: McpToolPackModeArg::Adaptive,
+            removed_tool_pack: None,
+            removed_tool_pack_mode: None,
             transport: McpTransportArg::Http,
             request_timeout: "120s".to_string(),
             bind: "127.0.0.1:9123".to_string(),
@@ -6868,7 +6843,6 @@ fn tool_registry_entry_converts_to_openai_and_mcp_shapes() {
             idempotent_hint: true,
             open_world_hint: false,
         },
-        tool_packs: vec!["custom".to_string()],
         examples: vec!["demo_tool {\"note\":\"Projects/Alpha.md\"}".to_string()],
     };
 
@@ -6885,7 +6859,6 @@ fn tool_registry_entry_converts_to_openai_and_mcp_shapes() {
     assert_eq!(mcp.name, "demo_tool");
     assert_eq!(mcp.title, "Demo Tool");
     assert!(mcp.annotations.read_only_hint);
-    assert_eq!(mcp.tool_packs, vec!["custom".to_string()]);
     assert_eq!(
         mcp.output_schema.as_ref().expect("output schema")["type"],
         "object"

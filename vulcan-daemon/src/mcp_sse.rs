@@ -125,7 +125,6 @@ mod tests {
                 None,
                 None,
                 None,
-                Vec::new(),
                 scopes.iter().map(|scope| (*scope).to_string()).collect(),
             ),
         ))

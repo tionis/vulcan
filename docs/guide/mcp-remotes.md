@@ -34,11 +34,11 @@ chunked request transfer encoding is unsupported. HTTPS ingress supplies transpo
 security; Vulcan still authenticates and authorizes each connection.
 
 The human signs in through IndieAuth, then separately approves a vault, permission
-profile, eligible tool packs, scopes, and expiry on Vulcan's consent page. The
+profile, scopes, and expiry on Vulcan's consent page. The
 approval lasts 1 hour, 1 day, 7, 30 (the default) or 90 days, or 1 year, or until the
 end of a chosen day at most a year ahead, read in the server's time zone; a longer
-connection is approved again. Packs
-select tools; permission profiles constrain authority. The server ceiling is the
+connection is approved again. The chosen profile decides both which tools the
+connection sees and what they may do. The server ceiling is the
 maximum, not an automatic grant. A ceiling cannot be `unrestricted`, and it must be a built-in
 profile (`writer` suits a remote that edits notes) or one defined in this device's `daemon.toml` or
 the vault's device-local `.vulcan/config.local.toml`: a profile the
@@ -83,7 +83,7 @@ vault's `[mcp_remote]` takes the same key.
 
 Instead of `mcp remote init` on every device, a vault can carry its remote's settings in
 `[mcp_remote]` of its shared `.vulcan/config.toml` (public URL, IndieAuth identity, ceiling,
-default profile, tool packs, and optionally `redirect_hosts`). Each device opts in with `vulcan vault set <id> --serve-remote
+default profile, and optionally `redirect_hosts`). Each device opts in with `vulcan vault set <id> --serve-remote
 0.0.0.0:8765` and runs `vulcan daemon apply`. A push cannot expose the vault or widen the ceiling,
 and a changed identity waits for `vulcan daemon apply --accept-remote <id>` on each device. See
 `vulcan help device-config`.
@@ -103,11 +103,11 @@ changes. To expose another registered vault through one URL:
 ```sh
 vulcan mcp remote set personal-agent --add-wiki team --dry-run
 vulcan mcp remote set personal-agent --add-wiki team
-vulcan mcp remote set personal-agent --wiki team --tool-pack notes-read,search --dry-run
+vulcan mcp remote set personal-agent --wiki team --default-profile readonly --dry-run
 ```
 
 Review the last preview and apply without `--dry-run` when intended. `--wiki`
-selects the existing vault whose ceiling/default/packs change. Both foreground
+selects the existing vault whose ceiling or default profile changes. Both foreground
 and resident hosting support multiple vaults, but each approval and MCP session
 is bound to one explicitly selected vault. `--remove-wiki <id>` revokes that
 vault's grants and refresh families and cannot remove the final vault.

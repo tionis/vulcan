@@ -1,7 +1,5 @@
 use crate::output::print_json;
-use crate::{
-    commands, custom_tool_registry_options, tools, Cli, CliError, OutputFormat, ToolCommand,
-};
+use crate::{commands, tools, Cli, CliError, OutputFormat, ToolCommand};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -71,34 +69,19 @@ pub(crate) fn handle_tool_command(
     paths: &VaultPaths,
     command: &ToolCommand,
 ) -> Result<(), CliError> {
-    let registry_options = custom_tool_registry_options();
     match command {
         ToolCommand::List => print_tool_list_report(
             cli.output,
             &ToolListReport {
-                tools: tools::list_custom_tools(
-                    paths,
-                    cli.permissions.as_deref(),
-                    &registry_options,
-                )?,
+                tools: tools::list_custom_tools(paths, cli.permissions.as_deref())?,
             },
         ),
         ToolCommand::Show { name } => {
-            let report = tools::show_custom_tool(
-                paths,
-                cli.permissions.as_deref(),
-                name,
-                &registry_options,
-            )?;
+            let report = tools::show_custom_tool(paths, cli.permissions.as_deref(), name)?;
             print_tool_show_report(cli.output, &report)
         }
         ToolCommand::Help { name } => {
-            let report = tools::show_custom_tool(
-                paths,
-                cli.permissions.as_deref(),
-                name,
-                &registry_options,
-            )?;
+            let report = tools::show_custom_tool(paths, cli.permissions.as_deref(), name)?;
             print_tool_help_report(cli.output, &report)
         }
         ToolCommand::Init {
@@ -119,7 +102,6 @@ pub(crate) fn handle_tool_command(
                     dry_run: *dry_run,
                     overwrite: *overwrite,
                 },
-                &registry_options,
             )?;
             commands::tool_init::print_tool_init_report(cli.output, &report)
         }
@@ -130,7 +112,6 @@ pub(crate) fn handle_tool_command(
                 name.as_deref(),
                 *strict,
                 *fix,
-                &registry_options,
             )
             .map_err(CliError::operation)?;
             let valid = report.valid;
@@ -155,7 +136,6 @@ pub(crate) fn handle_tool_command(
                     example.as_deref(),
                     profile.as_deref(),
                     *update_expected,
-                    &registry_options,
                 )?
             } else {
                 let name = name.as_deref().ok_or_else(|| {
@@ -168,7 +148,6 @@ pub(crate) fn handle_tool_command(
                     example.as_deref(),
                     profile.as_deref(),
                     *update_expected,
-                    &registry_options,
                 )?)
             };
             let passed = report.passed();
@@ -180,42 +159,28 @@ pub(crate) fn handle_tool_command(
             }
         }
         ToolCommand::Compat { name, surface } => {
-            let report = tools::build_tool_compat_report(
-                paths,
-                cli.permissions.as_deref(),
-                name,
-                surface,
-                &registry_options,
-            )
-            .map_err(CliError::operation)?;
+            let report =
+                tools::build_tool_compat_report(paths, cli.permissions.as_deref(), name, surface)
+                    .map_err(CliError::operation)?;
             print_tool_compat_report(cli.output, &report)
         }
         ToolCommand::Types { name, all } => {
             if *all {
-                let report = tools::build_all_tool_types_report(
-                    paths,
-                    cli.permissions.as_deref(),
-                    &registry_options,
-                )
-                .map_err(CliError::operation)?;
+                let report = tools::build_all_tool_types_report(paths, cli.permissions.as_deref())
+                    .map_err(CliError::operation)?;
                 print_tool_types_output(cli.output, &ToolTypesOutput::All(report))
             } else {
                 let name = name.as_deref().ok_or_else(|| {
                     CliError::operation("tool types requires a tool name unless --all is set")
                 })?;
-                let report = tools::build_tool_types_report(
-                    paths,
-                    cli.permissions.as_deref(),
-                    name,
-                    &registry_options,
-                )
-                .map_err(CliError::operation)?;
+                let report =
+                    tools::build_tool_types_report(paths, cli.permissions.as_deref(), name)
+                        .map_err(CliError::operation)?;
                 print_tool_types_output(cli.output, &ToolTypesOutput::One(report))
             }
         }
         ToolCommand::Ci { profile, surface } => {
-            let report =
-                build_tool_ci_report(cli, paths, profile.as_deref(), surface, &registry_options)?;
+            let report = build_tool_ci_report(cli, paths, profile.as_deref(), surface)?;
             let passed = report.passed;
             print_tool_ci_report(cli.output, &report)?;
             if passed {
@@ -225,9 +190,8 @@ pub(crate) fn handle_tool_command(
             }
         }
         ToolCommand::Grant { name, dry_run } => {
-            let name = tools::resolve_custom_tool_cli_name(paths, name, &registry_options)?;
-            let report =
-                vulcan_app::tool_grants::grant_tool(paths, &name, &registry_options, *dry_run)?;
+            let name = tools::resolve_custom_tool_cli_name(paths, name)?;
+            let report = vulcan_app::tool_grants::grant_tool(paths, &name, *dry_run)?;
             match cli.output {
                 OutputFormat::Json => print_json(&report),
                 OutputFormat::Human | OutputFormat::Markdown => {
@@ -267,7 +231,7 @@ pub(crate) fn handle_tool_command(
             }
         }
         ToolCommand::Grants => {
-            let grants = vulcan_app::tool_grants::list_tool_grants(paths, &registry_options)?;
+            let grants = vulcan_app::tool_grants::list_tool_grants(paths)?;
             match cli.output {
                 OutputFormat::Json => print_json(&json!({ "grants": grants })),
                 OutputFormat::Human | OutputFormat::Markdown => {
@@ -297,18 +261,17 @@ pub(crate) fn handle_tool_command(
             }
             let (name, input) = if args.is_empty() {
                 (
-                    tools::resolve_custom_tool_cli_name(paths, name, &registry_options)?,
+                    tools::resolve_custom_tool_cli_name(paths, name)?,
                     read_tool_input(input_json.as_deref(), input_file.as_deref())?,
                 )
             } else {
-                tools::build_custom_tool_cli_input(paths, name, args, &registry_options)?
+                tools::build_custom_tool_cli_input(paths, name, args)?
             };
             let report = tools::run_custom_tool(
                 paths,
                 cli.permissions.as_deref(),
                 &name,
                 &input,
-                &registry_options,
                 &tools::CustomToolRunOptions::default(),
             )?;
             print_tool_run_report(cli.output, &report)
@@ -335,21 +298,19 @@ fn build_tool_ci_report(
     paths: &VaultPaths,
     profile: Option<&str>,
     requested_surfaces: &[String],
-    registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolCiReport, CliError> {
     let active_profile = profile.or(cli.permissions.as_deref());
-    let lint = tools::lint_custom_tools(paths, active_profile, None, true, false, registry_options)
+    let lint = tools::lint_custom_tools(paths, active_profile, None, true, false)
         .map_err(CliError::operation)?;
-    let tests =
-        match run_all_tool_examples(cli, paths, None, active_profile, false, registry_options)? {
-            ToolTestOutput::All(report) => report,
-            ToolTestOutput::One(_) => {
-                return Err(CliError::operation(
-                    "internal error: tool CI expected an all-tools test report",
-                ))
-            }
-        };
-    let compatibility = tools::list_custom_tools(paths, active_profile, registry_options)?
+    let tests = match run_all_tool_examples(cli, paths, None, active_profile, false)? {
+        ToolTestOutput::All(report) => report,
+        ToolTestOutput::One(_) => {
+            return Err(CliError::operation(
+                "internal error: tool CI expected an all-tools test report",
+            ))
+        }
+    };
+    let compatibility = tools::list_custom_tools(paths, active_profile)?
         .iter()
         .map(|tool| {
             tools::build_tool_compat_report(
@@ -357,7 +318,6 @@ fn build_tool_ci_report(
                 active_profile,
                 &tool.summary.name,
                 requested_surfaces,
-                registry_options,
             )
             .map_err(CliError::operation)
         })
@@ -381,10 +341,9 @@ fn run_tool_examples(
     example_filter: Option<&str>,
     profile: Option<&str>,
     update_expected: bool,
-    registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolTestReport, CliError> {
     let active_profile = profile.or(cli.permissions.as_deref());
-    let show = tools::show_custom_tool(paths, active_profile, name, registry_options)?;
+    let show = tools::show_custom_tool(paths, active_profile, name)?;
     let example_base_dir = tool_example_base_dir(paths, &show.tool.summary)?;
     let examples = show
         .tool
@@ -401,7 +360,6 @@ fn run_tool_examples(
                     example_base_dir: &example_base_dir,
                     active_profile,
                     update_expected,
-                    registry_options,
                 },
                 example,
             )
@@ -445,10 +403,9 @@ fn run_all_tool_examples(
     example_filter: Option<&str>,
     profile: Option<&str>,
     update_expected: bool,
-    registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolTestOutput, CliError> {
     let active_profile = profile.or(cli.permissions.as_deref());
-    let tools = tools::list_custom_tools(paths, active_profile, registry_options)?;
+    let tools = tools::list_custom_tools(paths, active_profile)?;
     let reports = tools
         .iter()
         .filter(|tool| !tool.summary.examples.is_empty())
@@ -460,7 +417,6 @@ fn run_all_tool_examples(
                 example_filter,
                 profile,
                 update_expected,
-                registry_options,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -485,7 +441,6 @@ struct ToolExampleRunContext<'a> {
     example_base_dir: &'a Path,
     active_profile: Option<&'a str>,
     update_expected: bool,
-    registry_options: &'a tools::CustomToolRegistryOptions,
 }
 
 fn run_tool_example(
@@ -497,7 +452,6 @@ fn run_tool_example(
         context.requested_name,
         example,
         context.example_base_dir,
-        context.registry_options,
     ) {
         Ok(input) => input,
         Err(error) => {
@@ -533,7 +487,6 @@ fn run_tool_example(
         context.active_profile,
         context.resolved_name,
         &input,
-        context.registry_options,
         &tools::CustomToolRunOptions {
             surface: "cli.tool.test".to_string(),
         },
@@ -591,20 +544,14 @@ fn tool_example_input(
     requested_name: &str,
     example: &vulcan_core::AssistantSkillCommandExample,
     example_base_dir: &Path,
-    registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<Value, CliError> {
     if let Some(input) = &example.input {
         Ok(input.clone())
     } else if let Some(input_file) = &example.input_file {
         read_skill_example_json_file(example_base_dir, input_file)
     } else {
-        tools::build_custom_tool_cli_input(
-            paths,
-            requested_name,
-            &example.cli_args,
-            registry_options,
-        )
-        .map(|(_, input)| input)
+        tools::build_custom_tool_cli_input(paths, requested_name, &example.cli_args)
+            .map(|(_, input)| input)
     }
 }
 
@@ -771,15 +718,10 @@ fn print_tool_list_report(output: OutputFormat, report: &ToolListReport) -> Resu
                     "not callable"
                 };
                 println!(
-                    "- {} [{}; sandbox={}; packs={}] {}",
+                    "- {} [{}; sandbox={}] {}",
                     tool.summary.name,
                     callable,
                     tools::tool_sandbox(tool.summary.sandbox),
-                    if tool.summary.packs.is_empty() {
-                        "custom".to_string()
-                    } else {
-                        tool.summary.packs.join(", ")
-                    },
                     tool.summary.path
                 );
                 println!("  {}", tool.summary.description);
@@ -978,9 +920,6 @@ fn print_tool_show_report(
             );
             if let Some(permission_profile) = &report.tool.summary.permission_profile {
                 println!("permission profile: {permission_profile}");
-            }
-            if !report.tool.summary.packs.is_empty() {
-                println!("packs: {}", report.tool.summary.packs.join(", "));
             }
             if let Some(cli) = &report.tool.summary.cli {
                 if !cli.aliases.is_empty() {

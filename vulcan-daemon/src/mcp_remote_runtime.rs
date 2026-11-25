@@ -12,6 +12,9 @@ use crate::mcp_state::{
 };
 use crate::registry::WikiId;
 
+/// Why a connection approved under tool packs stopped working.
+const LEGACY_PACKS_REVOKED: &str = "this connection was approved with tool packs, which Vulcan no longer has, and its permission profile now reaches tools that approval left out; reconnect to approve it again";
+
 #[derive(Debug, Clone)]
 pub struct NamedMcpRuntime {
     pub remote_id: McpRemoteId,
@@ -24,7 +27,6 @@ pub struct NamedMcpVaultRuntime {
     pub paths: VaultPaths,
     pub ceiling_profile: String,
     pub default_profile: String,
-    pub eligible_tool_packs: Vec<String>,
 }
 
 pub struct NamedConsentRequest<'a> {
@@ -52,7 +54,6 @@ pub struct NamedTokenRequest<'a> {
 pub struct NamedMcpSessionConfig {
     pub paths: VaultPaths,
     pub permission_profile: String,
-    pub tool_packs: Vec<String>,
 }
 
 pub struct NamedRefreshRequest<'a> {
@@ -150,10 +151,6 @@ impl NamedMcpRuntime {
                 .scopes
                 .iter()
                 .all(|scope| grant.scopes.contains(scope))
-            || !grant
-                .tool_packs
-                .iter()
-                .all(|pack| vault.eligible_tool_packs.contains(pack))
         {
             return Err("authorization code does not match the connection grant".to_string());
         }
@@ -220,12 +217,7 @@ impl NamedMcpRuntime {
             .vaults
             .get(&grant.wiki_id)
             .ok_or_else(|| NamedRefreshError::invalid_grant("grant vault is no longer exposed"))?;
-        if grant.remote_id != self.remote_id
-            || !grant
-                .tool_packs
-                .iter()
-                .all(|pack| vault.eligible_tool_packs.contains(pack))
-        {
+        if grant.remote_id != self.remote_id {
             return Err(NamedRefreshError::invalid_grant(
                 "grant exceeds remote policy",
             ));
@@ -243,6 +235,13 @@ impl NamedMcpRuntime {
             return Err(NamedRefreshError::invalid_grant(
                 "grant policy is no longer valid",
             ));
+        }
+        if !self
+            .authorization_store
+            .settle_legacy_tool_packs(grant.id, &current_profile.profile, request.now)
+            .map_err(|error| NamedRefreshError::invalid_grant(error.to_string()))?
+        {
+            return Err(NamedRefreshError::invalid_grant(LEGACY_PACKS_REVOKED));
         }
         let scopes = match request.requested_scopes {
             Some(scopes) if scopes.iter().all(|scope| grant.scopes.contains(scope)) => {
@@ -291,11 +290,6 @@ impl NamedMcpRuntime {
             || authority.remote_instance_id != remote_instance_id
             || authority.grant_id.is_none()
             || authority.permission_profile.is_none()
-            || authority.tool_packs.is_empty()
-            || !authority
-                .tool_packs
-                .iter()
-                .all(|pack| vault.eligible_tool_packs.contains(pack))
         {
             return Err("grant authority does not match this remote");
         }
@@ -305,7 +299,6 @@ impl NamedMcpRuntime {
                 .permission_profile
                 .clone()
                 .expect("checked profile binding"),
-            tool_packs: authority.tool_packs.clone(),
         })
     }
 
@@ -334,10 +327,6 @@ impl NamedMcpRuntime {
                 .scopes
                 .iter()
                 .all(|scope| grant.scopes.contains(scope))
-            || !grant
-                .tool_packs
-                .iter()
-                .all(|pack| vault.eligible_tool_packs.contains(pack))
         {
             return Err("connection grant does not match this token authority".to_string());
         }
@@ -356,6 +345,13 @@ impl NamedMcpRuntime {
                     .to_string(),
             );
         }
+        if !self
+            .authorization_store
+            .settle_legacy_tool_packs(grant.id, &current_profile.profile, request.now)
+            .map_err(|error| error.to_string())?
+        {
+            return Err(LEGACY_PACKS_REVOKED.to_string());
+        }
         self.authorization_store
             .record_grant_use(grant.id, &current_profile.grant, request.now)
             .map_err(|error| error.to_string())?;
@@ -368,7 +364,6 @@ impl NamedMcpRuntime {
             grant.wiki_id,
             grant.audience,
             current_profile.name,
-            grant.tool_packs,
             request.scopes.to_vec(),
             request.credential,
         ))
@@ -410,22 +405,6 @@ impl NamedMcpRuntime {
                 "selected permission profile exceeds this remote's ceiling",
             ));
         }
-        let pack_prefix = if self.vaults.len() == 1 {
-            "pack_".to_string()
-        } else {
-            format!("pack_{wiki_id}_")
-        };
-        let tool_packs = vault
-            .eligible_tool_packs
-            .iter()
-            .filter(|pack| request.form.contains_key(&format!("{pack_prefix}{pack}")))
-            .cloned()
-            .collect::<Vec<_>>();
-        if tool_packs.is_empty() {
-            return Err(NamedConsentError::bad_request(
-                "select at least one eligible tool pack",
-            ));
-        }
         let expires_at = resolve_grant_expiry(request.form, &GrantClock::local(request.now))
             .map_err(NamedConsentError::bad_request)?;
         let report = self
@@ -439,7 +418,6 @@ impl NamedMcpRuntime {
                     wiki_id: wiki_id.clone(),
                     permission_profile: selected.name,
                     approved_permissions: selected.grant,
-                    tool_packs,
                     scopes: request.scopes.to_vec(),
                     audience: request.resource.to_string(),
                     created_at: request.now,
@@ -473,7 +451,6 @@ mod tests {
                     paths,
                     ceiling_profile: "readonly".to_string(),
                     default_profile: "readonly".to_string(),
-                    eligible_tool_packs: vec!["notes-read".to_string(), "search".to_string()],
                 },
             )]),
             authorization_store: McpAuthorizationStore::at(temporary.path().join("state")),
@@ -498,14 +475,11 @@ mod tests {
     }
 
     #[test]
-    fn consent_persists_only_selected_profile_packs_and_expiry() {
+    fn consent_persists_only_selected_profile_and_expiry() {
         let (_temporary, runtime) = runtime();
         let instance_id = Ulid::new();
         let scopes = vec!["mcp:tools".to_string()];
-        let form = BTreeMap::from([
-            ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry".to_string(), "7d".to_string()),
-        ]);
+        let form = BTreeMap::from([("expiry".to_string(), "7d".to_string())]);
         let id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
             .expect("approved consent");
@@ -520,7 +494,6 @@ mod tests {
             )
             .expect("durable grant");
         assert_eq!(grant.permission_profile, "readonly");
-        assert_eq!(grant.tool_packs, vec!["notes-read"]);
         assert_eq!(grant.scopes, scopes);
         assert_eq!(grant.expires_at, 1_700_000_000 + 7 * 24 * 60 * 60);
     }
@@ -531,7 +504,6 @@ mod tests {
         let instance_id = Ulid::new();
         let scopes = vec!["mcp:tools".to_string()];
         let mut form = BTreeMap::from([
-            ("pack_notes-read".to_string(), "on".to_string()),
             ("expiry".to_string(), "custom".to_string()),
             ("expiry_date".to_string(), "2023-12-01".to_string()),
         ]);
@@ -581,10 +553,7 @@ mod tests {
         let (_temporary, runtime) = runtime();
         let instance_id = Ulid::new();
         let scopes = vec!["mcp:tools".to_string()];
-        let form = BTreeMap::from([
-            ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry".to_string(), "7d".to_string()),
-        ]);
+        let form = BTreeMap::from([("expiry".to_string(), "7d".to_string())]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
             .expect("approved consent");
@@ -600,7 +569,6 @@ mod tests {
         };
         let authority = runtime.authorize_token(&token).expect("bound authority");
         assert_eq!(authority.grant_id, Some(grant_id));
-        assert_eq!(authority.tool_packs, vec!["notes-read"]);
         assert_eq!(authority.scopes, scopes);
         assert_eq!(authority.permission_profile.as_deref(), Some("readonly"));
 
@@ -630,10 +598,7 @@ mod tests {
         let (_temporary, runtime) = runtime();
         let instance_id = Ulid::new();
         let scopes = vec!["mcp:tools".to_string()];
-        let form = BTreeMap::from([
-            ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry".to_string(), "7d".to_string()),
-        ]);
+        let form = BTreeMap::from([("expiry".to_string(), "7d".to_string())]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
             .expect("approved consent");
@@ -700,10 +665,7 @@ mod tests {
         let (_temporary, mut runtime) = runtime();
         let instance_id = Ulid::new();
         let scopes = vec!["mcp:tools".to_string()];
-        let form = BTreeMap::from([
-            ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry".to_string(), "7d".to_string()),
-        ]);
+        let form = BTreeMap::from([("expiry".to_string(), "7d".to_string())]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
             .expect("approved consent");
@@ -753,14 +715,11 @@ mod tests {
     }
 
     #[test]
-    fn token_authority_rejects_removed_vault_or_eligible_pack() {
+    fn token_authority_rejects_a_removed_vault() {
         let (_temporary, mut runtime) = runtime();
         let instance_id = Ulid::new();
         let scopes = vec!["mcp:tools".to_string()];
-        let form = BTreeMap::from([
-            ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry".to_string(), "7d".to_string()),
-        ]);
+        let form = BTreeMap::from([("expiry".to_string(), "7d".to_string())]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
             .expect("approved consent");
@@ -774,13 +733,6 @@ mod tests {
             credential: "secret access token",
             now: 1_700_000_001,
         };
-        runtime
-            .vaults
-            .get_mut(&WikiId::parse("personal").expect("wiki ID"))
-            .expect("vault")
-            .eligible_tool_packs
-            .clear();
-        assert!(runtime.authorize_token(&token).is_err());
         runtime.vaults.clear();
         assert_eq!(
             runtime.authorize_token(&token).expect_err("removed vault"),
@@ -789,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn session_config_stays_bound_to_the_named_vault_profile_and_packs() {
+    fn session_config_stays_bound_to_the_named_vault_and_profile() {
         let (_temporary, runtime) = runtime();
         let instance_id = Ulid::new();
         let authority = McpSessionAuthority::granted(
@@ -801,7 +753,6 @@ mod tests {
             WikiId::parse("personal").expect("wiki ID"),
             "https://mcp.example/personal".to_string(),
             "readonly".to_string(),
-            vec!["notes-read".to_string()],
             vec!["mcp:tools".to_string()],
             "secret access token",
         );
@@ -818,7 +769,6 @@ mod tests {
                 .vault_root()
         );
         assert_eq!(selected.permission_profile, "readonly");
-        assert_eq!(selected.tool_packs, ["notes-read"]);
         assert!(runtime.session_config(&authority, Ulid::new()).is_err());
         let direct = McpSessionAuthority::direct(
             instance_id,
@@ -826,14 +776,10 @@ mod tests {
             None,
             None,
             Some("readonly".to_string()),
-            vec!["notes-read".to_string()],
             Vec::new(),
         );
         assert!(runtime.session_config(&direct, instance_id).is_err());
 
-        let mut wrong_pack = authority.clone();
-        wrong_pack.tool_packs = vec!["notes-write".to_string()];
-        assert!(runtime.session_config(&wrong_pack, instance_id).is_err());
         let mut missing_vault = authority.clone();
         missing_vault.wiki_id = None;
         assert_eq!(
@@ -877,10 +823,7 @@ mod tests {
         .expect("wide profile");
         let instance_id = Ulid::new();
         let scopes = vec!["mcp:tools".to_string()];
-        let form = BTreeMap::from([
-            ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry".to_string(), "7d".to_string()),
-        ]);
+        let form = BTreeMap::from([("expiry".to_string(), "7d".to_string())]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
             .expect("approved consent");
@@ -920,12 +863,11 @@ mod tests {
     }
 
     #[test]
-    fn consent_rejects_profile_expansion_and_unselected_packs() {
+    fn consent_rejects_profile_expansion() {
         let (_temporary, runtime) = runtime();
         let scopes = vec!["mcp:tools".to_string()];
         let form = BTreeMap::from([
             ("permission_profile".to_string(), "unrestricted".to_string()),
-            ("pack_notes-read".to_string(), "on".to_string()),
             ("expiry".to_string(), "1d".to_string()),
         ]);
         let error = runtime
@@ -934,15 +876,6 @@ mod tests {
         assert_eq!(error.status, 400);
         assert!(error.message.contains("ceiling"));
 
-        let forged = BTreeMap::from([
-            ("pack_notes-write".to_string(), "on".to_string()),
-            ("expiry".to_string(), "1d".to_string()),
-        ]);
-        let error = runtime
-            .create_connection_grant(&request(Ulid::new(), &forged, &scopes))
-            .expect_err("ineligible pack does not count as a selection");
-        assert_eq!(error.status, 400);
-        assert!(error.message.contains("at least one"));
         assert!(runtime
             .authorization_store
             .list_grants(None)
@@ -963,14 +896,10 @@ mod tests {
                 paths,
                 ceiling_profile: "readonly".to_string(),
                 default_profile: "readonly".to_string(),
-                eligible_tool_packs: vec!["search".to_string()],
             },
         );
         let scopes = vec!["mcp:tools".to_string()];
-        let mut form = BTreeMap::from([
-            ("pack_team_search".to_string(), "on".to_string()),
-            ("expiry".to_string(), "30d".to_string()),
-        ]);
+        let mut form = BTreeMap::from([("expiry".to_string(), "30d".to_string())]);
         let error = runtime
             .create_connection_grant(&request(Ulid::new(), &form, &scopes))
             .expect_err("vault selection required");
@@ -991,6 +920,5 @@ mod tests {
             )
             .expect("durable team grant");
         assert_eq!(grant.wiki_id.as_str(), "team");
-        assert_eq!(grant.tool_packs, vec!["search"]);
     }
 }

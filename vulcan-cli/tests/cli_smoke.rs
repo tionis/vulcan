@@ -8669,7 +8669,6 @@ fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
                 )
                 .unwrap()
                 .grant,
-                tool_packs: vec!["notes-read".into()],
                 scopes: vec!["mcp:tools".into()],
                 audience: remote.public_url.clone(),
                 created_at: now,
@@ -9017,9 +9016,17 @@ fn named_mcp_remote_cli_manages_multiple_vaults_and_revokes_removed_vault_grants
             .success()
     );
     assert!(
-        !run(&["mcp", "remote", "set", "shared", "--tool-pack", "search"])
-            .status
-            .success()
+        !run(&[
+            "mcp",
+            "remote",
+            "set",
+            "shared",
+            "--default-profile",
+            "readonly"
+        ])
+        .status
+        .success(),
+        "a multi-vault policy update must name its wiki"
     );
     assert!(
         !run(&[
@@ -9052,8 +9059,8 @@ fn named_mcp_remote_cli_manages_multiple_vaults_and_revokes_removed_vault_grants
                 "shared",
                 "--wiki",
                 "team",
-                "--tool-pack",
-                "search"
+                "--default-profile",
+                "readonly",
             ])
             .status
             .success(),
@@ -9069,17 +9076,14 @@ fn named_mcp_remote_cli_manages_multiple_vaults_and_revokes_removed_vault_grants
         "shared",
         "--wiki",
         "team",
-        "--tool-pack",
-        "search",
+        "--default-profile",
+        "readonly",
     ]));
     assert_eq!(
-        changed["remote"]["vaults"][0]["tool_packs"],
-        serde_json::json!(["notes-read", "search", "status"])
+        changed["remote"]["vaults"][1]["default_profile"],
+        "readonly"
     );
-    assert_eq!(
-        changed["remote"]["vaults"][1]["tool_packs"],
-        serde_json::json!(["search"])
-    );
+    assert!(changed["remote"]["vaults"][0].get("tool_packs").is_none());
 
     let store = vulcan_daemon::mcp_state::McpAuthorizationStore::at(state_home.join("vulcan"));
     let remote_id = vulcan_daemon::mcp_remote::McpRemoteId::parse("shared").expect("remote ID");
@@ -9097,7 +9101,6 @@ fn named_mcp_remote_cli_manages_multiple_vaults_and_revokes_removed_vault_grants
                     wiki_id: vulcan_daemon::registry::WikiId::parse(wiki).expect("wiki ID"),
                     permission_profile: "readonly".to_string(),
                     approved_permissions: profile.grant,
-                    tool_packs: vec!["search".to_string()],
                     scopes: vec!["mcp:tools".to_string()],
                     audience: "https://mcp.example.test/shared".to_string(),
                     created_at: 1_000,
@@ -18291,7 +18294,6 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("vulcan help mcp-remotes"));
     assert!(mcp_skill.contains("vulcan vault set <id> --serve-remote <bind>"));
     assert!(mcp_skill.contains("never run `vulcan daemon apply --accept-remote` yourself"));
-    assert!(mcp_skill.contains("`--tool-pack sync`"));
     assert!(mcp_skill.contains("does not expose conflict resolution"));
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));
     assert!(mcp_skill.contains("vulcan mcp remote migrate-credentials <name> --dry-run"));
@@ -18359,9 +18361,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         mcp_skill.contains("For browser-based local HTTP harnesses, send a valid `Origin` header")
     );
     assert!(mcp_skill.contains("one unambiguous `Content-Length`"));
-    assert!(mcp_skill.contains(
-        "resource details (`vulcan://assistant/tools/{name}`) require the selected `custom` pack"
-    ));
+    assert!(mcp_skill.contains("The permission profile alone decides which tools are listed"));
+    assert!(mcp_skill.contains("`--tool-pack` and `--tool-pack-mode` no longer exist"));
     let template_skill =
         fs::read_to_string(vault_root.join(".agents/skills/templates-and-capture/SKILL.md"))
             .expect("template skill should be readable");
@@ -18384,7 +18385,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )
     .expect("permission skill should be readable");
-    assert!(permission_skill.contains("read-only `sync` tool pack"));
+    assert!(permission_skill
+        .contains("MCP's `sync_*` tools additionally require full-vault read access"));
     assert!(permission_skill.contains("full-vault read access"));
     assert!(permission_skill.contains("Managed mdbase writes"));
     assert!(permission_skill.contains("incoming link constraints"));
@@ -28488,8 +28490,6 @@ fn describe_openai_and_mcp_formats_export_tool_definitions() {
             "describe",
             "--format",
             "mcp",
-            "--tool-pack",
-            "search,custom",
         ])
         .assert()
         .success();
@@ -28503,8 +28503,7 @@ fn describe_openai_and_mcp_formats_export_tool_definitions() {
         .any(|tool| tool["inputSchema"]["type"] == "object"));
     assert!(mcp_tools
         .iter()
-        .any(|tool| tool["name"] == summarize_tool
-            && tool["toolPacks"] == serde_json::json!(["custom"])));
+        .any(|tool| tool["name"] == summarize_tool && tool.get("toolPacks").is_none()));
 }
 
 #[test]
@@ -28526,19 +28525,20 @@ fn completions_command_emits_shell_script() {
 fn describe_mcp_sync_pack_exposes_bounded_reads_and_two_triggers() {
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
-        .args([
-            "--output",
-            "json",
-            "describe",
-            "--format",
-            "mcp",
-            "--tool-pack",
-            "sync",
-        ])
+        .args(["--output", "json", "describe", "--format", "mcp"])
         .assert()
         .success();
     let json = parse_stdout_json(&assert);
-    let tools = json["tools"].as_array().expect("MCP tools");
+    let tools = json["tools"]
+        .as_array()
+        .expect("MCP tools")
+        .iter()
+        .filter(|tool| {
+            tool["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("sync_"))
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
         tools
             .iter()
@@ -28572,14 +28572,16 @@ fn describe_mcp_sync_pack_exposes_bounded_reads_and_two_triggers() {
             "describe",
             "--format",
             "mcp",
-            "--tool-pack",
-            "sync",
         ])
         .assert()
         .success();
-    assert!(parse_stdout_json(&denied)["tools"]
+    assert!(!parse_stdout_json(&denied)["tools"]
         .as_array()
-        .is_some_and(Vec::is_empty));
+        .expect("MCP tools")
+        .iter()
+        .any(|tool| tool["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("sync_"))));
 }
 
 #[test]
@@ -32786,14 +32788,13 @@ Summarize {{note}} with updated instructions.
 }
 
 #[test]
-fn mcp_http_transport_adaptive_pack_mutation_refreshes_visible_tools() {
+fn mcp_http_transport_lists_profile_tools_and_streams_list_changes() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
     run_scan(&vault_root);
 
-    let session =
-        McpHttpSession::start(&vault_root, "/mcp", None, &["--tool-pack-mode", "adaptive"]);
+    let session = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
     let initialize = session.post(
         &serde_json::json!({
             "jsonrpc": "2.0",
@@ -32813,67 +32814,41 @@ fn mcp_http_transport_adaptive_pack_mutation_refreshes_visible_tools() {
         .cloned()
         .expect("initialize should return a session id");
 
-    let before = session.post(
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list"
-        }),
+    let tools = session.post(
+        &serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
         Some(&session_id),
     );
-    let before_tools = before.json_body()["result"]["tools"]
+    let tools = tools.json_body()["result"]["tools"]
         .as_array()
         .expect("tools/list should return a tool array")
         .clone();
-    assert!(
-        before_tools.iter().any(|tool| tool["name"] == "tool_packs"),
-        "adaptive mode should expose the bootstrap tool-pack mutators"
-    );
-    assert!(
-        !before_tools.iter().any(|tool| tool["name"] == "web_search"),
-        "adaptive mode should keep web tools hidden before their pack is enabled"
-    );
+    for expected in [
+        "note_get",
+        "note_create",
+        "web_search",
+        "git_status",
+        "task_list",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == expected),
+            "the default unrestricted profile lists `{expected}`"
+        );
+    }
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"].as_str().unwrap_or("").starts_with("tool_pack")));
 
     let mut sse = session.open_sse(&session_id);
-    let enable = session.post(
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "tool_packs",
-                "arguments": { "operation": "enable", "packs": ["web"] }
-            }
-        }),
-        Some(&session_id),
-    );
-    let enable_json = enable.json_body();
-    assert_eq!(
-        enable_json["result"]["structuredContent"]["selectedToolPacks"],
-        serde_json::json!(["notes-read", "search", "status", "web", "tool-packs"])
-    );
-
+    fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts folder");
+    fs::write(
+        vault_root.join("AI/Prompts/review.md"),
+        "---\nname: review\ndescription: Review a note.\n---\nReview it.\n",
+    )
+    .expect("prompt file");
     let notification = sse.read_event();
     assert_eq!(
         notification["method"].as_str(),
-        Some("notifications/tools/list_changed")
-    );
-
-    let after = session.post(
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/list"
-        }),
-        Some(&session_id),
-    );
-    let after_tools = after.json_body()["result"]["tools"]
-        .as_array()
-        .expect("tools/list should return a tool array")
-        .clone();
-    assert!(
-        after_tools.iter().any(|tool| tool["name"] == "web_search"),
-        "enabled packs should become visible over HTTP without restarting the session"
+        Some("notifications/prompts/list_changed")
     );
 }
 
@@ -32907,8 +32882,7 @@ fn mcp_http_transport_initializes_with_the_custom_pack() {
     copy_fixture_vault("basic", &vault_root);
     run_scan(&vault_root);
 
-    let session =
-        McpHttpSession::start(&vault_root, "/custom-mcp", None, &["--tool-pack", "custom"]);
+    let session = McpHttpSession::start(&vault_root, "/custom-mcp", None, &[]);
     let initialized = session.post(
         &serde_json::json!({
             "jsonrpc": "2.0",
@@ -33068,40 +33042,13 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
-            "default pack selection should expose `{expected}`"
+            "the default profile should expose `{expected}`"
         );
     }
-    for hidden in [
-        "note_create",
-        "note_append",
-        "note_patch",
-        "note_info",
-        "note_set",
-        "note_delete",
-        "daily_show",
-        "daily_list",
-        "graph_communities",
-        "suggest_links",
-        "task_list",
-        "task_query",
-        "task_create",
-        "task_complete",
-        "task_reschedule",
-        "task_reminder_add",
-        "task_reminder_remove",
-        "web_search",
-        "web_fetch",
-        "config_show",
-        "index_scan",
-        "browse",
-        "edit",
-        "open",
-        "bases_tui",
-        "mcp",
-    ] {
+    for hidden in ["browse", "edit", "open", "bases_tui", "mcp"] {
         assert!(
             !tools.iter().any(|tool| tool["name"] == hidden),
-            "default pack selection should not expose `{hidden}`"
+            "interactive commands are never exposed, such as `{hidden}`"
         );
     }
 
@@ -33110,7 +33057,7 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         .find(|tool| tool["name"] == "note_get")
         .expect("note_get tool should exist");
     assert_eq!(note_get["title"].as_str(), Some("Read Note Content"));
-    assert_eq!(note_get["toolPacks"], serde_json::json!(["notes-read"]));
+    assert!(note_get.get("toolPacks").is_none());
     assert_eq!(
         note_get["annotations"]["readOnlyHint"].as_bool(),
         Some(true)
@@ -33204,7 +33151,7 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
 
 #[cfg(feature = "js_runtime")]
 #[test]
-fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected() {
+fn mcp_server_exposes_custom_tools_and_tool_resources_of_trusted_vaults() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
@@ -33224,8 +33171,7 @@ fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected(
     let config_home_str = config_home.to_str().expect("utf-8").to_string();
     trust_and_scan_vault(&config_home_str, &vault_root_str);
 
-    let mut session =
-        start_mcp_session_with_xdg(&vault_root, &config_home_str, &["--tool-pack", "custom"]);
+    let mut session = start_mcp_session_with_xdg(&vault_root, &config_home_str, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -33323,9 +33269,10 @@ fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected(
         "method": "resources/read",
         "params": { "uri": format!("vulcan://assistant/tools/{summarize_tool}") }
     }));
-    assert_eq!(
-        guessed.last().expect("guessed resource response")["error"]["code"],
-        -32002
+    // No pack has to be selected: the trusted vault's tools are visible.
+    assert!(
+        guessed.last().expect("guessed resource response")["result"]["contents"].is_array(),
+        "{guessed:?}"
     );
     assert!(default_session.finish().is_empty());
 }
@@ -33382,8 +33329,7 @@ Skill command documentation.
     let config_home_str = config_home.to_str().expect("utf-8").to_string();
     trust_and_scan_vault(&config_home_str, &vault_root_str);
 
-    let mut session =
-        start_mcp_session_with_xdg(&vault_root, &config_home_str, &["--tool-pack", "custom"]);
+    let mut session = start_mcp_session_with_xdg(&vault_root, &config_home_str, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -33515,7 +33461,7 @@ shell = "allow"
     let mut session = start_mcp_session_with_xdg(
         &vault_root,
         &config_home_str,
-        &["--permissions", "readonly", "--tool-pack", "custom"],
+        &["--permissions", "readonly"],
     );
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
@@ -33580,23 +33526,13 @@ shell = "allow"
 }
 
 #[test]
-fn mcp_server_composes_requested_canonical_tool_packs() {
+fn mcp_server_lists_every_tool_the_profile_allows() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
     run_scan(&vault_root);
 
-    let mut session = McpSession::start(
-        &vault_root,
-        &[
-            "--tool-pack",
-            "notes-read,notes-manage",
-            "--tool-pack",
-            "web",
-            "--tool-pack",
-            "graph",
-        ],
-    );
+    let mut session = McpSession::start(&vault_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -33627,19 +33563,7 @@ fn mcp_server_composes_requested_canonical_tool_packs() {
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
-            "composed tool packs should expose `{expected}`"
-        );
-    }
-    for hidden in [
-        "search",
-        "status",
-        "note_create",
-        "config_show",
-        "index_scan",
-    ] {
-        assert!(
-            !tools.iter().any(|tool| tool["name"] == hidden),
-            "unselected packs should keep `{hidden}` hidden"
+            "the profile allows `{expected}`"
         );
     }
 
@@ -33710,10 +33634,7 @@ fn mcp_note_info_excludes_unreadable_backlinks_and_confidence() {
     fs::write(vault_root.join("Private.md"), "[[Target]]\n").expect("private note");
     run_scan(&vault_root);
 
-    let mut session = McpSession::start(
-        &vault_root,
-        &["--permissions", "public", "--tool-pack", "notes-manage"],
-    );
+    let mut session = McpSession::start(&vault_root, &["--permissions", "public"]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
@@ -33775,10 +33696,7 @@ fn mcp_note_delete_preview_hides_unreadable_backlinks() {
     let cli_preview = parse_stdout_json(&cli_preview);
     assert_eq!(cli_preview["backlink_count"], 2);
 
-    let mut session = McpSession::start(
-        &vault_root,
-        &["--permissions", "public", "--tool-pack", "notes-manage"],
-    );
+    let mut session = McpSession::start(&vault_root, &["--permissions", "public"]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
@@ -33815,7 +33733,7 @@ fn mcp_note_set_matches_cli_report_and_checks_replacement() {
     write_note_crud_sample(&vault_root);
     run_scan(&vault_root);
 
-    let mut session = McpSession::start(&vault_root, &["--tool-pack", "notes-manage"]);
+    let mut session = McpSession::start(&vault_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
@@ -33871,7 +33789,7 @@ fn mcp_note_create_and_append_match_cli_reports() {
         run_scan(root);
     }
 
-    let mut session = McpSession::start(&mcp_root, &["--tool-pack", "notes-write"]);
+    let mut session = McpSession::start(&mcp_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
@@ -33981,7 +33899,7 @@ fn mcp_note_create_stages_template_companion_until_final_note_publishes() {
     fs::write(vault_root.join("Existing.md"), "Existing\n").expect("existing note");
     run_scan(&vault_root);
 
-    let mut session = McpSession::start(&vault_root, &["--tool-pack", "notes-write"]);
+    let mut session = McpSession::start(&vault_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
@@ -34030,7 +33948,7 @@ fn mcp_note_patch_matches_cli_scoped_dry_run_and_apply_reports() {
         run_scan(root);
     }
 
-    let mut session = McpSession::start(&mcp_root, &["--tool-pack", "notes-write"]);
+    let mut session = McpSession::start(&mcp_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
@@ -34448,7 +34366,7 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
     .expect("daily note");
     run_scan(&vault_root);
 
-    let mut session = McpSession::start(&vault_root, &["--tool-pack", "search,daily,tasks"]);
+    let mut session = McpSession::start(&vault_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -34480,7 +34398,7 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
-            "wiki packs should expose `{expected}`"
+            "the profile should expose `{expected}`"
         );
     }
 
@@ -34614,7 +34532,7 @@ fn mcp_task_mutations_refresh_the_cache_for_following_reads() {
     initialize_vulcan_dir(&vault_root);
     run_scan(&vault_root);
 
-    let mut session = McpSession::start(&vault_root, &["--tool-pack", "tasks"]);
+    let mut session = McpSession::start(&vault_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
@@ -34694,10 +34612,7 @@ fn mcp_web_tools_use_the_shared_permission_checked_workflows() {
     .expect("web config");
     pin_profiles(&vault_root);
 
-    let mut session = McpSession::start(
-        &vault_root,
-        &["--permissions", "network_only", "--tool-pack", "web"],
-    );
+    let mut session = McpSession::start(&vault_root, &["--permissions", "network_only"]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
@@ -34730,240 +34645,26 @@ fn mcp_web_tools_use_the_shared_permission_checked_workflows() {
 }
 
 #[test]
-fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
+fn mcp_rejects_the_removed_tool_pack_flags_with_an_explanation() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
-    run_scan(&vault_root);
-
-    let mut session = McpSession::start(&vault_root, &["--tool-pack-mode", "adaptive"]);
-    let _ = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
-    }));
-
-    let tools = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list"
-    }));
-    let tools = tools
-        .last()
-        .and_then(|response| response["result"]["tools"].as_array())
-        .expect("tools/list should return a tool array");
-    for expected in ["note_get", "note_outline", "search", "status", "tool_packs"] {
-        assert!(
-            tools.iter().any(|tool| tool["name"] == expected),
-            "adaptive mode should expose `{expected}`"
-        );
-    }
-    for hidden in ["web_search", "note_create", "config_show", "index_scan"] {
-        assert!(
-            !tools.iter().any(|tool| tool["name"] == hidden),
-            "adaptive mode should not expose `{hidden}` before enabling its pack"
-        );
-    }
-
-    let state = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "tool_packs",
-            "arguments": { "operation": "list" }
-        }
-    }));
-    let state = &state.last().expect("tool_packs response")["result"]["structuredContent"];
-    assert_eq!(state["mode"].as_str(), Some("adaptive"));
-    assert_eq!(
-        state["selectedToolPacks"],
-        serde_json::json!(["notes-read", "search", "status", "tool-packs"])
-    );
-    assert_eq!(
-        state["pinnedToolPacks"],
-        serde_json::json!(["notes-read", "search", "status"])
-    );
-    assert!(state["availableToolPacks"]
-        .as_array()
-        .is_some_and(|packs| packs.iter().all(|pack| pack.get("visibleTools").is_none())));
-
-    let enable = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 4,
-        "method": "tools/call",
-        "params": {
-            "name": "tool_packs",
-            "arguments": { "operation": "enable", "packs": ["web", "notes-write"] }
-        }
-    }));
-    assert!(
-        enable
-            .iter()
-            .any(|message| message["method"] == "notifications/tools/list_changed"),
-        "enabling new tool packs should emit tools/list_changed"
-    );
-    let state = &enable.last().expect("tool_packs response")["result"]["structuredContent"];
-    assert_eq!(
-        state["selectedToolPacks"],
-        serde_json::json!([
-            "notes-read",
-            "search",
-            "status",
-            "notes-write",
-            "web",
-            "tool-packs",
-        ])
-    );
-
-    let tools = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 5,
-        "method": "tools/list"
-    }));
-    let tools = tools
-        .last()
-        .and_then(|response| response["result"]["tools"].as_array())
-        .expect("tools/list should return a tool array");
-    for expected in [
-        "tool_packs",
-        "note_create",
-        "note_append",
-        "note_patch",
-        "web_search",
-        "web_fetch",
+    for args in [
+        &["mcp", "--tool-pack", "notes-read,search"][..],
+        &["mcp", "--tool-pack-mode", "adaptive"][..],
+        &["describe", "--format", "mcp", "--tool-pack", "web"][..],
     ] {
-        assert!(
-            tools.iter().any(|tool| tool["name"] == expected),
-            "enabled packs should expose `{expected}`"
-        );
+        Command::cargo_bin("vulcan")
+            .unwrap()
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "the permission profile alone decides",
+            ));
     }
-
-    let created = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 6,
-        "method": "tools/call",
-        "params": {
-            "name": "note_create",
-            "arguments": {
-                "path": "Adaptive refresh.md",
-                "body": "Callable after tools/list refresh.\n",
-                "no_commit": true
-            }
-        }
-    }));
-    assert_eq!(
-        created.last().expect("note_create response")["result"]["isError"],
-        false,
-        "a newly discovered adaptive tool should be callable in the same MCP session"
-    );
-    assert!(vault_root.join("Adaptive refresh.md").is_file());
-
-    let pinned = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 7,
-        "method": "tools/call",
-        "params": {
-            "name": "tool_packs",
-            "arguments": { "operation": "set", "packs": ["web"] }
-        }
-    }));
-    let pinned = &pinned.last().expect("tool_packs set response")["result"]["structuredContent"];
-    assert_eq!(
-        pinned["pinnedToolPacks"],
-        serde_json::json!(["notes-read", "search", "status"])
-    );
-    assert!(pinned["activeTools"]
-        .as_array()
-        .is_some_and(|tools| tools.iter().any(|tool| tool == "note_get")));
-
-    let legacy = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 8,
-        "method": "tools/call",
-        "params": {
-            "name": "tool_pack_enable",
-            "arguments": { "packs": ["notes-write"] }
-        }
-    }));
-    assert_eq!(
-        legacy.last().expect("legacy alias response")["result"]["isError"],
-        false,
-        "cached legacy pack calls should remain callable as hidden aliases"
-    );
-
-    assert!(session.finish().is_empty());
-}
-
-#[test]
-fn mcp_adaptive_pack_schema_includes_custom_selector() {
-    let temp_dir = TempDir::new().expect("temp dir should be created");
-    let vault_root = temp_dir.path().join("vault");
-    copy_fixture_vault("basic", &vault_root);
-    run_scan(&vault_root);
-
-    let describe_assert = cargo_vulcan_fixed_now()
-        .args([
-            "--vault",
-            vault_root.to_str().expect("utf-8"),
-            "--output",
-            "json",
-            "describe",
-            "--format",
-            "mcp",
-            "--tool-pack-mode",
-            "adaptive",
-        ])
-        .assert()
-        .success();
-    let describe_tool = parse_stdout_json(&describe_assert)["tools"]
-        .as_array()
-        .expect("describe should return tool definitions")
-        .iter()
-        .find(|tool| tool["name"] == "tool_packs")
-        .cloned()
-        .expect("tool_packs should be exported");
-    let describe_enum = describe_tool["inputSchema"]["properties"]["packs"]["items"]["enum"]
-        .as_array()
-        .expect("describe input schema should expose an enum");
-    assert!(
-        describe_enum
-            .iter()
-            .any(|value| value.as_str() == Some("custom")),
-        "describe --format mcp should advertise the custom pack as a valid selector"
-    );
-
-    let mut session = McpSession::start(&vault_root, &["--tool-pack-mode", "adaptive"]);
-    let _ = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
-    }));
-    let tools = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list"
-    }));
-    let live_tool = tools
-        .last()
-        .and_then(|response| response["result"]["tools"].as_array())
-        .expect("tools/list should return a tool array")
-        .iter()
-        .find(|tool| tool["name"] == "tool_packs")
-        .cloned()
-        .expect("tool_packs should be visible in adaptive mode");
-    let live_enum = live_tool["inputSchema"]["properties"]["packs"]["items"]["enum"]
-        .as_array()
-        .expect("live input schema should expose an enum");
-    assert!(
-        live_enum
-            .iter()
-            .any(|value| value.as_str() == Some("custom")),
-        "live MCP tool definitions should advertise the custom pack selector too"
-    );
-    assert!(session.finish().is_empty());
 }
 
 #[test]
@@ -35230,15 +34931,7 @@ Summarize {{note}}.
     )
     .expect("skill file should write");
 
-    let mut session = McpSession::start(
-        &vault_root,
-        &[
-            "--permissions",
-            "blind",
-            "--tool-pack",
-            "notes-read,notes-write,web,config",
-        ],
-    );
+    let mut session = McpSession::start(&vault_root, &["--permissions", "blind"]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -35488,8 +35181,7 @@ fn mcp_server_emits_tool_and_resource_list_changed_notifications_for_custom_tool
     let config_home_str = config_home.to_str().expect("utf-8").to_string();
     trust_and_scan_vault(&config_home_str, &vault_root_str);
 
-    let mut session =
-        start_mcp_session_with_xdg(&vault_root, &config_home_str, &["--tool-pack", "custom"]);
+    let mut session = start_mcp_session_with_xdg(&vault_root, &config_home_str, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -35655,7 +35347,7 @@ fn mcp_config_tools_share_app_reports_with_cli() {
     let temp_dir = TempDir::new().expect("temporary vault");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
-    let mut session = McpSession::start(&vault_root, &["--tool-pack", "config"]);
+    let mut session = McpSession::start(&vault_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {},
@@ -35706,7 +35398,7 @@ fn mcp_index_scan_matches_cli_scan_summary() {
     let vault_root = temporary.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
     run_scan(&vault_root);
-    let mut session = McpSession::start(&vault_root, &["--tool-pack", "index"]);
+    let mut session = McpSession::start(&vault_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {},
@@ -36096,7 +35788,7 @@ fn site_serve_json_reports_a_ready_bound_url() {
 }
 
 #[test]
-fn describe_mcp_matches_live_registry_for_same_pack_selection() {
+fn describe_mcp_matches_live_registry_for_the_same_profile() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
@@ -36111,8 +35803,6 @@ fn describe_mcp_matches_live_registry_for_same_pack_selection() {
             "describe",
             "--format",
             "mcp",
-            "--tool-pack",
-            "notes-read,search,web",
         ])
         .assert()
         .success();
@@ -36128,13 +35818,12 @@ fn describe_mcp_matches_live_registry_for_same_pack_selection() {
                 "inputSchema": tool["inputSchema"],
                 "outputSchema": tool["outputSchema"],
                 "annotations": tool["annotations"],
-                "toolPacks": tool["toolPacks"],
             })
         })
         .collect::<Vec<_>>();
     describe_tools.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
 
-    let mut session = McpSession::start(&vault_root, &["--tool-pack", "notes-read,search,web"]);
+    let mut session = McpSession::start(&vault_root, &[]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -36155,7 +35844,7 @@ fn describe_mcp_matches_live_registry_for_same_pack_selection() {
 
     assert_eq!(
         describe_tools, live_tools,
-        "describe --format mcp and live MCP exposure should stay in sync for the same tool-pack selection"
+        "describe --format mcp and live MCP exposure should stay in sync for the same profile"
     );
     assert!(session.finish().is_empty());
 }
@@ -36167,15 +35856,7 @@ fn mcp_server_filters_and_rejects_tools_under_readonly_permissions() {
     copy_fixture_vault("basic", &vault_root);
     run_scan(&vault_root);
 
-    let mut session = McpSession::start(
-        &vault_root,
-        &[
-            "--permissions",
-            "readonly",
-            "--tool-pack",
-            "notes-read,notes-manage,web,index",
-        ],
-    );
+    let mut session = McpSession::start(&vault_root, &["--permissions", "readonly"]);
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -36637,14 +36318,7 @@ fn task_read_policy_precedes_limits_and_backlink_expressions_in_cli_and_mcp() {
     let mut session = start_mcp_session_with_xdg(
         &root,
         xdg,
-        &[
-            "--permissions",
-            "guarded",
-            "--refresh",
-            "off",
-            "--tool-pack",
-            "tasks",
-        ],
+        &["--permissions", "guarded", "--refresh", "off"],
     );
     session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",

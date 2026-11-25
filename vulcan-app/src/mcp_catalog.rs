@@ -3,12 +3,10 @@
 #![allow(clippy::must_use_candidate)]
 
 use serde::Serialize;
-use serde_json::{Map, Value};
-use std::borrow::Cow;
-use std::collections::BTreeSet;
+use serde_json::Value;
 use vulcan_core::{ConfigPermissionMode, PermissionMode, PermissionProfile};
 
-use crate::mcp_protocol::{McpMethodError, McpToolPackMutationArgs};
+use crate::mcp_protocol::McpMethodError;
 use crate::mcp_schemas::{
     changeset_begin_input_schema, changeset_id_input_schema, changeset_land_input_schema,
     changeset_list_input_schema, changeset_switch_input_schema, config_set_input_schema,
@@ -27,9 +25,8 @@ use crate::mcp_schemas::{
     sync_doctor_input_schema, sync_plan_input_schema, sync_status_input_schema,
     task_complete_input_schema, task_create_input_schema, task_list_input_schema,
     task_query_input_schema, task_reminder_add_input_schema, task_reminder_remove_input_schema,
-    task_reschedule_input_schema, tool_pack_mutation_input_schema, tool_pack_state_output_schema,
-    web_fetch_input_schema, web_fetch_output_schema, web_search_input_schema,
-    web_search_output_schema,
+    task_reschedule_input_schema, web_fetch_input_schema, web_fetch_output_schema,
+    web_search_input_schema, web_search_output_schema,
 };
 use crate::mcp_schemas::{empty_input_schema, file_get_input_schema, file_put_input_schema};
 
@@ -44,90 +41,6 @@ pub struct McpToolAnnotations {
     pub idempotent_hint: bool,
     #[serde(rename = "openWorldHint")]
     pub open_world_hint: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum McpToolPackMode {
-    Static,
-    Adaptive,
-}
-
-impl McpToolPackMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Static => "static",
-            Self::Adaptive => "adaptive",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum McpToolPack {
-    NotesRead,
-    Search,
-    Status,
-    Graph,
-    Custom,
-    Daily,
-    Tasks,
-    NotesWrite,
-    NotesManage,
-    Web,
-    Config,
-    Index,
-    ToolPacks,
-    Sync,
-    Git,
-}
-
-impl McpToolPack {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NotesRead => "notes-read",
-            Self::Search => "search",
-            Self::Status => "status",
-            Self::Graph => "graph",
-            Self::Custom => "custom",
-            Self::Daily => "daily",
-            Self::Tasks => "tasks",
-            Self::NotesWrite => "notes-write",
-            Self::NotesManage => "notes-manage",
-            Self::Web => "web",
-            Self::Config => "config",
-            Self::Index => "index",
-            Self::ToolPacks => "tool-packs",
-            Self::Sync => "sync",
-            Self::Git => "git",
-        }
-    }
-
-    pub const fn description(self) -> &'static str {
-        match self {
-            Self::NotesRead => "Read note content and outlines for scoped follow-up work.",
-            Self::Search => "Search the vault with structured hits and snippets.",
-            Self::Status => "Inspect vault status, cache metadata, and git summary.",
-            Self::Graph => "Inspect graph communities and link suggestions.",
-            Self::Custom => "Expose callable vault-defined skill command tools.",
-            Self::Daily => {
-                "Read daily notes and daily-note ranges with structured periodic metadata."
-            }
-            Self::Tasks => {
-                "Query and mutate Tasks plugin and TaskNotes task workflows with typed operations."
-            }
-            Self::NotesWrite => "Create notes and apply targeted append/patch mutations.",
-            Self::NotesManage => {
-                "Read advanced note metadata and perform replace/delete mutations."
-            }
-            Self::Web => "Use the configured web search and fetch backends.",
-            Self::Config => "Read and write effective Vulcan configuration.",
-            Self::Index => "Run explicit vault index scans and maintenance refreshes.",
-            Self::ToolPacks => {
-                "Inspect and mutate the MCP tool-pack selection for the current session."
-            }
-            Self::Sync => "Inspect Git-backed vault synchronization and start or resume it.",
-            Self::Git => "Inspect vault history and changes and commit them.",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +74,6 @@ pub enum McpToolId {
     IndexScan,
     GraphCommunities,
     SuggestLinks,
-    ToolPacks,
     SyncStatus,
     SyncPlan,
     SyncDoctor,
@@ -204,7 +116,6 @@ pub struct McpToolCatalogEntry {
     pub name: &'static str,
     pub title: &'static str,
     pub description: &'static str,
-    pub packs: &'static [McpToolPack],
     pub visibility: McpVisibilityRequirement,
     /// Also needs the profile's `destructive` permission (overwrite or delete).
     pub destructive: bool,
@@ -229,30 +140,12 @@ const fn mcp_annotations(
     }
 }
 
-pub const PACK_NOTES_READ: &[McpToolPack] = &[McpToolPack::NotesRead];
-pub const PACK_SEARCH: &[McpToolPack] = &[McpToolPack::Search];
-pub const PACK_STATUS: &[McpToolPack] = &[McpToolPack::Status];
-pub const PACK_GRAPH: &[McpToolPack] = &[McpToolPack::Graph];
-pub const PACK_CUSTOM: &[McpToolPack] = &[McpToolPack::Custom];
-pub const PACK_DAILY: &[McpToolPack] = &[McpToolPack::Daily];
-const PACK_DAILY_READ: &[McpToolPack] = &[McpToolPack::NotesRead, McpToolPack::Daily];
-pub const PACK_TASKS: &[McpToolPack] = &[McpToolPack::Tasks];
-pub const PACK_NOTES_WRITE: &[McpToolPack] = &[McpToolPack::NotesWrite];
-pub const PACK_NOTES_MANAGE: &[McpToolPack] = &[McpToolPack::NotesManage];
-pub const PACK_WEB: &[McpToolPack] = &[McpToolPack::Web];
-pub const PACK_CONFIG: &[McpToolPack] = &[McpToolPack::Config];
-pub const PACK_INDEX: &[McpToolPack] = &[McpToolPack::Index];
-const PACK_TOOL_PACKS: &[McpToolPack] = &[McpToolPack::ToolPacks];
-pub const PACK_SYNC: &[McpToolPack] = &[McpToolPack::Sync];
-pub const PACK_GIT: &[McpToolPack] = &[McpToolPack::Git];
-
 pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
     McpToolCatalogEntry {
         id: McpToolId::NoteGet,
         name: "note_get",
         title: "Read Note Content",
         description: "Read one note or markdown file, optionally selecting a section, heading, block, or line range.",
-        packs: PACK_NOTES_READ,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -268,7 +161,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_outline",
         title: "Inspect Note Outline",
         description: "Inspect a note's semantic sections and block references for scoped follow-up reads and patches.",
-        packs: PACK_NOTES_READ,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -284,7 +176,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "search",
         title: "Search Vault",
         description: "Run full-text or hybrid search across the vault and return structured hits with snippets and section metadata.",
-        packs: PACK_SEARCH,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -300,7 +191,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "query",
         title: "Query Vault",
         description: "Run the structured Vulcan query surface. Use this for property, tag, path, and DQL-style note queries instead of raw full-text search.",
-        packs: PACK_SEARCH,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -316,7 +206,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "status",
         title: "Read Vault Status",
         description: "Return a vault overview with note counts, cache size, last scan time, and git status.",
-        packs: PACK_STATUS,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -329,7 +218,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "capabilities",
         title: "Inspect MCP Capabilities",
         description: "Return compact routing guidance, active tools, startup-pinned and optional packs, and result-size limits for this MCP session.",
-        packs: PACK_STATUS,
         visibility: McpVisibilityRequirement::None,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -342,7 +230,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "daily",
         title: "Read Daily Notes",
         description: "Read structurally known daily notes. Use operation=latest for the newest existing daily note, operation=today only for today's date, show for a known date, and list/range for windows. Prefer this over search or generic query for journal requests.",
-        packs: PACK_DAILY_READ,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -355,7 +242,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "daily_show",
         title: "Show Daily Note",
         description: "Read one daily note with its resolved periodic metadata and structured schedule events. Use this before generic note reads for daily-routine questions.",
-        packs: PACK_DAILY,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -368,7 +254,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "daily_list",
         title: "List Daily Notes",
         description: "List daily notes in a date window with event counts and extracted schedule events.",
-        packs: PACK_DAILY,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -381,7 +266,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "graph_communities",
         title: "Inspect Graph Communities",
         description: "Compute note-graph communities, orphan placement hints, and bridge notes.",
-        packs: PACK_GRAPH,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
@@ -394,7 +278,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "suggest_links",
         title: "Suggest Links",
         description: "Read ranked link suggestions, or accept/reject one suggestion when write permissions are available.",
-        packs: PACK_GRAPH,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
@@ -407,7 +290,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "task_list",
         title: "List Tasks",
         description: "List open or filtered tasks through Vulcan's task model. Use this for task summaries instead of raw note search.",
-        packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, false, false),
@@ -420,7 +302,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "task_query",
         title: "Query Tasks",
         description: "Run a Tasks plugin query source and return shaped task results. Use this when the user gives task-query semantics directly.",
-        packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, false, false),
@@ -433,7 +314,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "task_create",
         title: "Create Task",
         description: "Create a task using the configured task system. Prefer this over raw note edits for new tasks.",
-        packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
@@ -446,7 +326,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "task_complete",
         title: "Complete Task",
         description: "Mark one resolved task complete using task-aware mutation rules. Prefer this over raw note patching for task completion.",
-        packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
@@ -459,7 +338,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "task_reschedule",
         title: "Reschedule Task",
         description: "Update a task due date using task-aware mutation rules. Prefer this over raw note patching for due-date changes.",
-        packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
@@ -472,7 +350,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "task_reminder_add",
         title: "Add Task Reminder",
         description: "Add one reminder to a TaskNotes task. Relative reminders follow the task's due (else scheduled) date, so they move with a recurring task.",
-        packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
@@ -485,7 +362,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "task_reminder_remove",
         title: "Remove Task Reminder",
         description: "Remove one reminder from a TaskNotes task by its id.",
-        packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
         destructive: true,
         annotations: mcp_annotations(false, true, true, false),
@@ -498,7 +374,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_create",
         title: "Create Note",
         description: "Create a new note from explicit body text, optional template, and optional frontmatter properties.",
-        packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
@@ -513,7 +388,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_append",
         title: "Append To Note",
         description: "Append text to a note, prepend it, or insert it below a heading; periodic targets are also supported.",
-        packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
@@ -529,7 +403,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_patch",
         title: "Patch Note Text",
         description: "Perform a guarded find-and-replace inside one note or one selected note scope.",
-        packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
@@ -542,7 +415,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_info",
         title: "Read Note Metadata",
         description: "Return summary metadata and graph counts for one resolved note.",
-        packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -555,7 +427,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_set",
         title: "Replace Note Content",
         description: "Replace one note's body content with supplied text, optionally preserving the existing frontmatter block.",
-        packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Write,
         destructive: true,
         annotations: mcp_annotations(false, true, false, false),
@@ -568,7 +439,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_delete",
         title: "Delete Note",
         description: "Delete one note and report the backlinks that would become unresolved.",
-        packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Write,
         destructive: true,
         annotations: mcp_annotations(false, true, false, false),
@@ -581,7 +451,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "web_search",
         title: "Search The Web",
         description: "Query the configured web search backend and return structured result rows.",
-        packs: PACK_WEB,
         visibility: McpVisibilityRequirement::Network,
         destructive: false,
         annotations: mcp_annotations(true, false, false, true),
@@ -594,7 +463,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "web_fetch",
         title: "Fetch URL",
         description: "Fetch one URL as markdown, html, or raw content.",
-        packs: PACK_WEB,
         visibility: McpVisibilityRequirement::Network,
         destructive: false,
         annotations: mcp_annotations(true, false, false, true),
@@ -607,7 +475,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "config_show",
         title: "Read Effective Config",
         description: "Read the effective Vulcan config, optionally narrowed to one section.",
-        packs: PACK_CONFIG,
         visibility: McpVisibilityRequirement::ConfigRead,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -620,7 +487,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "config_set",
         title: "Set Config Value",
         description: "Write one shared config value to `.vulcan/config.toml` using the same parser and auto-commit behavior as the CLI.",
-        packs: PACK_CONFIG,
         visibility: McpVisibilityRequirement::ConfigWrite,
         destructive: true,
         annotations: mcp_annotations(false, true, false, false),
@@ -633,7 +499,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "index_scan",
         title: "Scan Vault Index",
         description: "Run an incremental or full vault scan and return the resulting scan summary.",
-        packs: PACK_INDEX,
         visibility: McpVisibilityRequirement::Index,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
@@ -646,7 +511,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "sync_status",
         title: "Inspect Sync Status",
         description: "Inspect the selected vault's Git sync state and exact remote live ref without capturing, publishing, or applying files.",
-        packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, true),
@@ -659,7 +523,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "sync_plan",
         title: "Plan One Sync Cycle",
         description: "Build the same mutation-free finite-cycle preview as `vulcan sync run --dry-run` for the selected vault.",
-        packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, true),
@@ -672,7 +535,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "sync_doctor",
         title: "Diagnose Git Sync",
         description: "Run read-only Git layout, ref, journal, filter, cache, and target-platform synchronization diagnostics.",
-        packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, true),
@@ -685,7 +547,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "sync_conflicts",
         title: "Inspect Preserved Sync Conflicts",
         description: "List unresolved preserved conflicts or inspect one immutable conflict record; this tool never resolves a conflict.",
-        packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -698,7 +559,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "file_get",
         title: "Read Vault File",
         description: "Read a bounded slice of any vault file, such as an attachment, as UTF-8 text or base64, with the whole file's content hash.",
-        packs: PACK_NOTES_READ,
         visibility: McpVisibilityRequirement::Read,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -711,7 +571,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "file_put",
         title: "Write Vault File",
         description: "Create or replace a non-Markdown vault file, such as an attachment, from text or base64 (at most 10 MiB).",
-        packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
@@ -724,7 +583,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "sync_refresh",
         title: "Synchronize Now",
         description: "Start a synchronization of this registered vault now: through the daemon when it runs, otherwise directly. Returns the queued job or the cycle's report.",
-        packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: false,
         annotations: mcp_annotations(false, false, false, true),
@@ -737,7 +595,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "sync_resume",
         title: "Resume Synchronization",
         description: "Clear a paused registration so automatic synchronization runs again, and start a synchronization.",
-        packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: false,
         annotations: mcp_annotations(false, false, true, true),
@@ -750,7 +607,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_move",
         title: "Move Or Rename Note",
         description: "Move or rename one note and rewrite every link and embed that points at it.",
-        packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Refactor,
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
@@ -763,7 +619,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "git_status",
         title: "Show Uncommitted Changes",
         description: "List staged, unstaged, and untracked vault paths.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -776,7 +631,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "git_diff",
         title: "Show Uncommitted Diff",
         description: "Return the unified diff of uncommitted vault changes, optionally for one path.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -789,7 +643,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "git_log",
         title: "List Recent Commits",
         description: "List the most recent commits that touched the vault.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -802,7 +655,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "git_blame",
         title: "Blame File Lines",
         description: "Show which commit last changed each line of one vault file.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -815,7 +667,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "git_commit",
         title: "Commit Vault Changes",
         description: "Commit the files this session changed (or every change with scope `all`), running pre-commit hooks; the commit names the client in Vulcan-MCP-* trailers.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
@@ -828,7 +679,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "changeset_begin",
         title: "Begin A Changeset",
         description: "Start a changeset: a branch and worktree outside the vault, indexed, that this session's tools then read and write until it lands or is abandoned. Other writers, sync, and auto-commit do not see it meanwhile.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
@@ -841,7 +691,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "changeset_switch",
         title: "Switch Changeset",
         description: "Attach this session to an existing changeset, or with no `id` return it to the vault itself.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: false,
         annotations: mcp_annotations(false, false, true, false),
@@ -854,7 +703,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "changeset_list",
         title: "List Changesets",
         description: "List the vault's changesets with their commits ahead, uncommitted paths, and which one this session is attached to.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -867,7 +715,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "changeset_land",
         title: "Land A Changeset",
         description: "Land a changeset on the vault's branch: commit leftovers with `message`, rebase if the branch moved, fast-forward, re-index, and remove the changeset. A rebase conflict keeps the changeset unchanged and names the paths.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
@@ -880,7 +727,6 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "changeset_abandon",
         title: "Abandon A Changeset",
         description: "Delete a changeset, its branch, and its worktree without landing anything.",
-        packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: true,
         annotations: mcp_annotations(false, true, false, false),
@@ -888,80 +734,25 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         output_schema: Some(generic_report_output_schema),
         examples: &["changeset_abandon {}"],
     },
-    McpToolCatalogEntry {
-        id: McpToolId::ToolPacks,
-        name: "tool_packs",
-        title: "Manage MCP Tool Packs",
-        description: "List or change optional packs for this session. Startup-selected packs are pinned; registry changes require the client to refresh tools/list.",
-        packs: PACK_TOOL_PACKS,
-        visibility: McpVisibilityRequirement::None,
-        destructive: false,
-        annotations: mcp_annotations(false, false, true, false),
-        input_schema: tool_pack_mutation_input_schema,
-        output_schema: Some(tool_pack_state_output_schema),
-        examples: &["tool_packs {\"operation\":\"enable\",\"packs\":[\"web\"]}"],
-    },
-];
-
-pub const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
-    McpToolPack::NotesRead,
-    McpToolPack::Search,
-    McpToolPack::Status,
-    McpToolPack::Graph,
-    McpToolPack::Custom,
-    McpToolPack::Daily,
-    McpToolPack::Tasks,
-    McpToolPack::NotesWrite,
-    McpToolPack::NotesManage,
-    McpToolPack::Web,
-    McpToolPack::Config,
-    McpToolPack::Index,
-    McpToolPack::ToolPacks,
-    McpToolPack::Sync,
-    McpToolPack::Git,
 ];
 
 pub fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {
     MCP_TOOL_CATALOG.iter().find(|tool| tool.name == name)
 }
 
-pub struct AuthorizedBuiltinToolCall<'a> {
-    pub tool: &'static McpToolCatalogEntry,
-    pub arguments: Cow<'a, Map<String, Value>>,
-}
-
-/// Resolve aliases and apply the same pack/profile gate used for discovery.
-/// `None` means a custom tool name; a built-in hidden by a pack is not custom.
-pub fn authorize_builtin_tool_call<'a>(
+/// Find a built-in tool and apply the profile gate used for discovery.
+/// `None` means the name is not a built-in (it may be a custom tool).
+pub fn authorize_builtin_tool_call(
     name: &str,
-    arguments: &'a Map<String, Value>,
-    selected_packs: &BTreeSet<McpToolPack>,
     profile: &PermissionProfile,
     profile_name: &str,
-) -> Result<Option<AuthorizedBuiltinToolCall<'a>>, McpMethodError> {
-    let legacy_operation = match name {
-        "tool_pack_list" => Some("list"),
-        "tool_pack_enable" => Some("enable"),
-        "tool_pack_disable" => Some("disable"),
-        "tool_pack_set" => Some("set"),
-        _ => None,
-    };
-    let canonical_name = if legacy_operation.is_some() {
-        "tool_packs"
-    } else {
-        name
-    };
-    let Some(tool) = tool_by_name(canonical_name) else {
+) -> Result<Option<&'static McpToolCatalogEntry>, McpMethodError> {
+    let Some(tool) = tool_by_name(name) else {
         return Ok(None);
     };
-    if !tool.packs.iter().any(|pack| selected_packs.contains(pack)) {
-        return Err(McpMethodError::invalid_params(format!(
-            "Unknown tool: {canonical_name}"
-        )));
-    }
-    if !tool_visible(tool, profile, selected_packs) {
+    if !tool_visible(tool, profile) {
         let requirement = if tool.destructive
-            && tool_allowed_by_profile(
+            && tool_visible(
                 &McpToolCatalogEntry {
                     destructive: false,
                     ..*tool
@@ -977,22 +768,12 @@ pub fn authorize_builtin_tool_call<'a>(
             tool.name,
         )));
     }
-    let arguments = if let Some(operation) = legacy_operation {
-        let mut normalized = arguments.clone();
-        normalized.insert(
-            "operation".to_string(),
-            Value::String(operation.to_string()),
-        );
-        Cow::Owned(normalized)
-    } else {
-        Cow::Borrowed(arguments)
-    };
-    Ok(Some(AuthorizedBuiltinToolCall { tool, arguments }))
+    Ok(Some(tool))
 }
 
 fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'static str {
     match requirement {
-        McpVisibilityRequirement::None => "session access",
+        McpVisibilityRequirement::None => "no access",
         McpVisibilityRequirement::Read => "read access",
         McpVisibilityRequirement::Write => "write access",
         McpVisibilityRequirement::Network => "network access",
@@ -1005,184 +786,37 @@ fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'stati
     }
 }
 
-pub fn resolve_selected_tool_packs(
-    requested: &[McpToolPack],
-    mode: McpToolPackMode,
-) -> BTreeSet<McpToolPack> {
-    let defaults = [
-        McpToolPack::NotesRead,
-        McpToolPack::Search,
-        McpToolPack::Status,
-    ];
-    let source = if requested.is_empty() {
-        defaults.as_slice()
-    } else {
-        requested
-    };
-    let mut selected: BTreeSet<McpToolPack> = source.iter().copied().collect();
-    if matches!(mode, McpToolPackMode::Adaptive) {
-        selected.insert(McpToolPack::ToolPacks);
-    }
-    selected
-}
-
-pub fn default_openai_tool_packs() -> BTreeSet<McpToolPack> {
-    ALL_MCP_TOOL_PACKS
-        .iter()
-        .copied()
-        .filter(|pack| !matches!(pack, McpToolPack::ToolPacks))
-        .collect()
-}
-
-pub fn pack_name_list(selected_tool_packs: &BTreeSet<McpToolPack>) -> Vec<String> {
-    ALL_MCP_TOOL_PACKS
-        .iter()
-        .copied()
-        .filter(|pack| selected_tool_packs.contains(pack))
-        .map(|pack| pack.as_str().to_string())
-        .collect()
-}
-
-pub fn visible_tool_catalog(
-    selected_tool_packs: &BTreeSet<McpToolPack>,
-    profile: &PermissionProfile,
-) -> Vec<&'static McpToolCatalogEntry> {
+/// The built-in tools a profile may see and call, in catalog order.
+pub fn visible_tool_catalog(profile: &PermissionProfile) -> Vec<&'static McpToolCatalogEntry> {
     MCP_TOOL_CATALOG
         .iter()
-        .filter(|tool| tool_visible(tool, profile, selected_tool_packs))
+        .filter(|tool| tool_visible(tool, profile))
         .collect()
 }
 
-pub fn active_tool_names(
-    selected_tool_packs: &BTreeSet<McpToolPack>,
-    profile: &PermissionProfile,
-) -> Vec<String> {
-    visible_tool_catalog(selected_tool_packs, profile)
+pub fn active_tool_names(profile: &PermissionProfile) -> Vec<String> {
+    visible_tool_catalog(profile)
         .into_iter()
         .map(|tool| tool.name.to_string())
         .collect()
 }
 
-pub fn tool_pack_state(
-    selected_tool_packs: &BTreeSet<McpToolPack>,
-    pinned_tool_packs: &BTreeSet<McpToolPack>,
-    mode: McpToolPackMode,
-    profile: &PermissionProfile,
-) -> Value {
-    let available = ALL_MCP_TOOL_PACKS
-        .iter()
-        .copied()
-        .map(|pack| {
-            let tools = tool_names_for_pack(pack, profile);
-            let active_tools = if selected_tool_packs.contains(&pack) {
-                tools.clone()
-            } else {
-                Vec::new()
-            };
-            serde_json::json!({
-                "name": pack.as_str(),
-                "description": pack.description(),
-                "selected": selected_tool_packs.contains(&pack),
-                "pinned": pinned_tool_packs.contains(&pack),
-                "adaptiveOnly": pack == McpToolPack::ToolPacks,
-                "toolsIfEnabled": tools,
-                "activeTools": active_tools,
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({
-        "mode": mode.as_str(),
-        "selectedToolPacks": pack_name_list(selected_tool_packs),
-        "pinnedToolPacks": pack_name_list(pinned_tool_packs),
-        "activeTools": active_tool_names(selected_tool_packs, profile),
-        "clientRefreshRequired": matches!(mode, McpToolPackMode::Adaptive),
-        "availableToolPacks": available,
-    })
+/// Whether `profile` grants what `tool` needs; the only gate on listing and
+/// calling a built-in tool.
+pub fn tool_visible(tool: &McpToolCatalogEntry, profile: &PermissionProfile) -> bool {
+    requirement_met(tool.visibility, tool.destructive, profile)
 }
 
-pub fn require_adaptive_pack_mode(mode: McpToolPackMode) -> Result<(), McpMethodError> {
-    if matches!(mode, McpToolPackMode::Adaptive) {
-        Ok(())
-    } else {
-        Err(McpMethodError::tool(
-            "tool-pack mutation requires `--tool-pack-mode adaptive` for this MCP session",
-        ))
-    }
-}
-
-pub fn mutate_tool_packs(
-    selected: &mut BTreeSet<McpToolPack>,
-    pinned: &BTreeSet<McpToolPack>,
-    mode: McpToolPackMode,
+/// Whether `profile` grants `requirement` (and `destructive`, when set).
+pub fn requirement_met(
+    requirement: McpVisibilityRequirement,
+    destructive: bool,
     profile: &PermissionProfile,
-    args: &McpToolPackMutationArgs,
-) -> Result<Value, McpMethodError> {
-    require_adaptive_pack_mode(mode)?;
-    let requested = if args.operation == "list" && args.packs.is_empty() {
-        BTreeSet::new()
-    } else {
-        if args.packs.is_empty() {
-            return Err(McpMethodError::invalid_params(
-                "`packs` must include at least one tool-pack name",
-            ));
-        }
-        args.packs
-            .iter()
-            .map(|name| {
-                ALL_MCP_TOOL_PACKS
-                    .iter()
-                    .copied()
-                    .find(|pack| *pack != McpToolPack::ToolPacks && pack.as_str() == name)
-                    .ok_or_else(|| {
-                        McpMethodError::invalid_params(format!("unknown tool pack `{name}`"))
-                    })
-            })
-            .collect::<Result<BTreeSet<_>, _>>()?
-    };
-    match args.operation.as_str() {
-        "list" => {}
-        "enable" => selected.extend(requested),
-        "disable" => {
-            for pack in requested {
-                if !pinned.contains(&pack) {
-                    selected.remove(&pack);
-                }
-            }
-        }
-        "set" => {
-            selected.clone_from(pinned);
-            selected.extend(requested);
-            selected.insert(McpToolPack::ToolPacks);
-        }
-        other => {
-            return Err(McpMethodError::invalid_params(format!(
-                "unsupported `tool_packs.operation`: {other}"
-            )));
-        }
-    }
-    Ok(tool_pack_state(selected, pinned, mode, profile))
-}
-
-pub fn tool_visible(
-    tool: &McpToolCatalogEntry,
-    profile: &PermissionProfile,
-    selected_tool_packs: &BTreeSet<McpToolPack>,
 ) -> bool {
-    if !tool
-        .packs
-        .iter()
-        .any(|pack| selected_tool_packs.contains(pack))
-    {
+    if destructive && !matches!(profile.destructive, PermissionMode::Allow) {
         return false;
     }
-    tool_allowed_by_profile(tool, profile)
-}
-
-pub fn tool_allowed_by_profile(tool: &McpToolCatalogEntry, profile: &PermissionProfile) -> bool {
-    if tool.destructive && !matches!(profile.destructive, PermissionMode::Allow) {
-        return false;
-    }
-    match tool.visibility {
+    match requirement {
         McpVisibilityRequirement::None => true,
         McpVisibilityRequirement::Read => !profile.read.is_none(),
         McpVisibilityRequirement::Write => !profile.write.is_none(),
@@ -1206,15 +840,6 @@ pub fn tool_allowed_by_profile(tool: &McpToolCatalogEntry, profile: &PermissionP
     }
 }
 
-pub fn tool_names_for_pack(pack: McpToolPack, profile: &PermissionProfile) -> Vec<String> {
-    MCP_TOOL_CATALOG
-        .iter()
-        .filter(|tool| tool.packs.contains(&pack))
-        .filter(|tool| tool_allowed_by_profile(tool, profile))
-        .map(|tool| tool.name.to_string())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1223,186 +848,44 @@ mod tests {
     fn destructive_tools_need_the_destructive_permission() {
         let daily = PermissionProfile::daily_wiki_agent();
         let writer = PermissionProfile::writer();
-        let packs = BTreeSet::from([McpToolPack::NotesWrite, McpToolPack::NotesManage]);
         for name in ["note_set", "note_delete"] {
             let tool = tool_by_name(name).unwrap();
             assert!(tool.destructive, "{name}");
-            assert!(!tool_visible(tool, &daily, &packs), "{name}");
-            assert!(tool_visible(tool, &writer, &packs), "{name}");
+            assert!(!tool_visible(tool, &daily), "{name}");
+            assert!(tool_visible(tool, &writer), "{name}");
         }
-        assert!(tool_visible(
-            tool_by_name("note_append").unwrap(),
-            &daily,
-            &packs
-        ));
-        let no_arguments = Map::new();
-        let denied = authorize_builtin_tool_call(
-            "note_delete",
-            &no_arguments,
-            &packs,
-            &daily,
-            "daily-wiki-agent",
-        );
+        assert!(tool_visible(tool_by_name("note_append").unwrap(), &daily));
         assert!(matches!(
-            denied,
+            authorize_builtin_tool_call("note_delete", &daily, "daily-wiki-agent"),
             Err(McpMethodError::Tool { ref message, .. })
                 if message.contains("destructive access")
         ));
     }
 
     #[test]
-    fn builtin_call_authorization_preserves_alias_and_visibility_boundaries() {
+    fn the_profile_alone_decides_which_builtins_are_listed_and_callable() {
         let readonly = PermissionProfile::readonly();
-        let arguments = Map::from_iter([(
-            "operation".to_string(),
-            Value::String("disable".to_string()),
-        )]);
-        let packs = BTreeSet::from([McpToolPack::NotesRead, McpToolPack::ToolPacks]);
-        let alias = authorize_builtin_tool_call(
-            "tool_pack_list",
-            &arguments,
-            &packs,
-            &readonly,
-            "readonly",
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(alias.tool.name, "tool_packs");
-        assert_eq!(alias.arguments["operation"], "list");
-        assert_eq!(arguments["operation"], "disable");
+        let names = active_tool_names(&readonly);
+        assert!(names.iter().any(|name| name == "note_get"));
+        assert!(names.iter().any(|name| name == "task_list"));
+        assert!(!names.iter().any(|name| name == "note_create"));
+        assert!(!names.iter().any(|name| name.starts_with("tool_pack")));
         assert!(matches!(
-            authorize_builtin_tool_call("custom_name", &arguments, &packs, &readonly, "readonly"),
+            authorize_builtin_tool_call("custom_name", &readonly, "readonly"),
             Ok(None)
         ));
         assert!(matches!(
-            authorize_builtin_tool_call("note_create", &arguments, &packs, &readonly, "readonly"),
-            Err(McpMethodError::JsonRpc { code: -32602, .. })
+            authorize_builtin_tool_call("tool_pack_list", &readonly, "readonly"),
+            Ok(None)
         ));
-        let write_packs = BTreeSet::from([McpToolPack::NotesWrite]);
         assert!(matches!(
-            authorize_builtin_tool_call(
-                "note_create",
-                &arguments,
-                &write_packs,
-                &readonly,
-                "readonly"
-            ),
+            authorize_builtin_tool_call("note_create", &readonly, "readonly"),
             Err(McpMethodError::Tool { .. })
         ));
-    }
-
-    #[test]
-    fn selected_packs_and_permissions_are_shared_host_contracts() {
-        let defaults = resolve_selected_tool_packs(&[], McpToolPackMode::Static);
+        let unrestricted = PermissionProfile::unrestricted();
         assert_eq!(
-            pack_name_list(&defaults),
-            ["notes-read", "search", "status"]
-        );
-        let adaptive = resolve_selected_tool_packs(&[McpToolPack::Web], McpToolPackMode::Adaptive);
-        assert!(adaptive.contains(&McpToolPack::ToolPacks));
-        let readonly = PermissionProfile::readonly();
-        assert!(
-            tool_by_name("note_get").is_some_and(|tool| tool_visible(tool, &readonly, &defaults))
-        );
-        assert!(!tool_by_name("note_create")
-            .is_some_and(|tool| tool_allowed_by_profile(tool, &readonly)));
-    }
-
-    #[test]
-    fn pack_state_filters_tools_by_profile_and_keeps_pins() {
-        let readonly = PermissionProfile::readonly();
-        let selected = BTreeSet::from([McpToolPack::NotesRead, McpToolPack::NotesWrite]);
-        let pinned = BTreeSet::from([McpToolPack::NotesRead]);
-        let state = tool_pack_state(&selected, &pinned, McpToolPackMode::Adaptive, &readonly);
-        assert_eq!(state["mode"], "adaptive");
-        assert_eq!(state["clientRefreshRequired"], true);
-        assert_eq!(state["pinnedToolPacks"], serde_json::json!(["notes-read"]));
-        let active = state["activeTools"].as_array().unwrap();
-        assert!(active.iter().any(|name| name == "note_get"));
-        assert!(!active.iter().any(|name| name == "note_create"));
-        let notes_write = state["availableToolPacks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|pack| pack["name"] == "notes-write")
-            .unwrap();
-        assert_eq!(notes_write["selected"], true);
-        assert_eq!(notes_write["pinned"], false);
-        assert_eq!(notes_write["activeTools"], serde_json::json!([]));
-    }
-
-    #[test]
-    fn adaptive_pack_mutations_cannot_remove_pins_or_enable_unknown_packs() {
-        let readonly = PermissionProfile::readonly();
-        let pinned = BTreeSet::from([McpToolPack::NotesRead]);
-        let mut selected = BTreeSet::from([McpToolPack::NotesRead, McpToolPack::ToolPacks]);
-        let args = |operation: &str, packs: Vec<&str>| McpToolPackMutationArgs {
-            operation: operation.to_string(),
-            packs: packs.into_iter().map(ToOwned::to_owned).collect(),
-        };
-        let state = mutate_tool_packs(
-            &mut selected,
-            &pinned,
-            McpToolPackMode::Adaptive,
-            &readonly,
-            &args("disable", vec!["notes-read"]),
-        )
-        .unwrap();
-        assert!(selected.contains(&McpToolPack::NotesRead));
-        assert_eq!(state["pinnedToolPacks"], serde_json::json!(["notes-read"]));
-        assert!(matches!(
-            mutate_tool_packs(
-                &mut selected,
-                &pinned,
-                McpToolPackMode::Adaptive,
-                &readonly,
-                &args("enable", vec!["not-a-pack"]),
-            ),
-            Err(McpMethodError::JsonRpc { code: -32602, .. })
-        ));
-        assert!(matches!(
-            mutate_tool_packs(
-                &mut selected,
-                &pinned,
-                McpToolPackMode::Static,
-                &readonly,
-                &args("list", vec![]),
-            ),
-            Err(McpMethodError::Tool { .. })
-        ));
-        mutate_tool_packs(
-            &mut selected,
-            &pinned,
-            McpToolPackMode::Adaptive,
-            &readonly,
-            &args("set", vec!["search"]),
-        )
-        .unwrap();
-        assert!(selected.contains(&McpToolPack::NotesRead));
-        assert!(selected.contains(&McpToolPack::ToolPacks));
-        assert!(selected.contains(&McpToolPack::Search));
-    }
-
-    #[test]
-    fn every_catalog_tool_has_a_unique_name_and_valid_schema_pair() {
-        let mut names = BTreeSet::new();
-        for tool in MCP_TOOL_CATALOG {
-            assert!(names.insert(tool.name), "duplicate MCP tool {}", tool.name);
-            let input = (tool.input_schema)();
-            assert_eq!(input["type"], "object", "tool {}", tool.name);
-            assert!(tool.output_schema.is_some(), "tool {}", tool.name);
-        }
-    }
-
-    #[test]
-    fn persisting_graph_communities_is_not_advertised_as_read_only() {
-        let graph = tool_by_name("graph_communities").expect("graph tool");
-        assert!(!graph.annotations.read_only_hint);
-        assert!(
-            tool_by_name("note_get")
-                .expect("note read tool")
-                .annotations
-                .read_only_hint
+            visible_tool_catalog(&unrestricted).len(),
+            MCP_TOOL_CATALOG.len()
         );
     }
 }

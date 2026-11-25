@@ -1,10 +1,8 @@
 //! Transport-neutral MCP protocol methods over one vault session.
 
 use serde_json::{Map, Value};
-use std::collections::BTreeSet;
 use vulcan_core::{PermissionError, VaultPaths};
 
-use crate::mcp_catalog::{McpToolPack, McpToolPackMode};
 use crate::mcp_dispatch::{
     acquire_request_ordinary_write_gate, dispatch_protocol_method, jsonrpc_error,
     process_http_request, process_stdio_request, request_id, McpHttpProcessResult,
@@ -13,11 +11,9 @@ use crate::mcp_dispatch::{
 use crate::mcp_help::HelpTopicReport;
 use crate::mcp_protocol::{self, McpCompletionParams, McpMethodError, McpMethodOutcome};
 use crate::mcp_session::McpSessionState;
-use crate::tools::CustomToolRegistryOptions;
 
 #[derive(Debug, Clone, Copy)]
 pub struct McpProtocolHost {
-    pub registry_options: fn() -> CustomToolRegistryOptions,
     pub command_help: fn(&[String]) -> Result<HelpTopicReport, String>,
     pub help_candidates: fn(&str) -> Vec<String>,
     pub server_version: &'static str,
@@ -34,18 +30,10 @@ impl McpProtocolCore {
     pub fn new(
         paths: &VaultPaths,
         requested_profile: Option<&str>,
-        selected_packs: BTreeSet<McpToolPack>,
-        pack_mode: McpToolPackMode,
         host: McpProtocolHost,
     ) -> Result<Self, PermissionError> {
         Ok(Self {
-            session: McpSessionState::new(
-                paths,
-                requested_profile,
-                selected_packs,
-                pack_mode,
-                host.registry_options,
-            )?,
+            session: McpSessionState::new(paths, requested_profile)?,
             host,
         })
     }
@@ -54,7 +42,6 @@ impl McpProtocolCore {
     pub fn protocol(&mut self) -> McpSessionProtocol<'_> {
         McpSessionProtocol::new(
             &mut self.session,
-            self.host.registry_options,
             self.host.command_help,
             self.host.help_candidates,
             self.host.server_version,
@@ -114,7 +101,6 @@ impl McpMethodHandler for McpProtocolCore {
 /// Discovery, tool execution, and method routing remain in the app layer.
 pub struct McpSessionProtocol<'a> {
     session: &'a mut McpSessionState,
-    registry_options: fn() -> CustomToolRegistryOptions,
     command_help: fn(&[String]) -> Result<HelpTopicReport, String>,
     help_candidates: fn(&str) -> Vec<String>,
     server_version: &'static str,
@@ -123,14 +109,12 @@ pub struct McpSessionProtocol<'a> {
 impl<'a> McpSessionProtocol<'a> {
     pub fn new(
         session: &'a mut McpSessionState,
-        registry_options: fn() -> CustomToolRegistryOptions,
         command_help: fn(&[String]) -> Result<HelpTopicReport, String>,
         help_candidates: fn(&str) -> Vec<String>,
         server_version: &'static str,
     ) -> Self {
         Self {
             session,
-            registry_options,
             command_help,
             help_candidates,
             server_version,
@@ -148,8 +132,7 @@ impl McpProtocolMethods for McpSessionProtocol<'_> {
     }
 
     fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        let registry = (self.registry_options)();
-        self.session.discovery(&registry).visible_tool_items()
+        self.session.discovery().visible_tool_items()
     }
 
     fn call_tool(
@@ -157,13 +140,11 @@ impl McpProtocolMethods for McpSessionProtocol<'_> {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        let registry = (self.registry_options)();
-        self.session.call_tool(&registry, name, arguments)
+        self.session.call_tool(name, arguments)
     }
 
     fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        let registry = (self.registry_options)();
-        self.session.discovery(&registry).visible_prompt_items()
+        self.session.discovery().visible_prompt_items()
     }
 
     fn get_prompt(
@@ -171,35 +152,26 @@ impl McpProtocolMethods for McpSessionProtocol<'_> {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        let registry = (self.registry_options)();
-        self.session
-            .discovery(&registry)
-            .get_prompt(name, arguments)
+        self.session.discovery().get_prompt(name, arguments)
     }
 
     fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
-        let registry = (self.registry_options)();
-        self.session.discovery(&registry).visible_resources()
+        self.session.discovery().visible_resources()
     }
 
     fn visible_resource_templates(&self) -> Vec<Value> {
-        let registry = (self.registry_options)();
-        self.session
-            .discovery(&registry)
-            .visible_resource_templates()
+        self.session.discovery().visible_resource_templates()
     }
 
     fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
-        let registry = (self.registry_options)();
         self.session
-            .discovery(&registry)
+            .discovery()
             .read_resource(uri, self.command_help)
     }
 
     fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError> {
-        let registry = (self.registry_options)();
         self.session
-            .discovery(&registry)
+            .discovery()
             .complete(params, &(self.help_candidates)(""))
     }
 }
@@ -214,20 +186,16 @@ impl McpMethodHandler for McpSessionProtocol<'_> {
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
-        self.session
-            .list_changed_notifications(self.registry_options)
+        self.session.list_changed_notifications()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{McpProtocolCore, McpProtocolHost, McpSessionProtocol};
-    use crate::mcp_catalog::{McpToolPack, McpToolPackMode};
     use crate::mcp_dispatch::McpMethodHandler;
     use crate::mcp_help::HelpTopicReport;
     use crate::mcp_session::McpSessionState;
-    use crate::tools::CustomToolRegistryOptions;
-    use std::collections::BTreeSet;
     use vulcan_core::VaultPaths;
 
     fn no_command_help(_: &[String]) -> Result<HelpTopicReport, String> {
@@ -242,17 +210,9 @@ mod tests {
     fn shared_session_adapter_routes_initialize_and_tool_discovery() {
         let vault = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(vault.path());
-        let mut session = McpSessionState::new(
-            &paths,
-            Some("readonly"),
-            BTreeSet::from([McpToolPack::NotesRead]),
-            McpToolPackMode::Static,
-            CustomToolRegistryOptions::default,
-        )
-        .unwrap();
+        let mut session = McpSessionState::new(&paths, Some("readonly")).unwrap();
         let mut protocol = McpSessionProtocol::new(
             &mut session,
-            CustomToolRegistryOptions::default,
             no_command_help,
             no_help_candidates,
             "test-version",
@@ -273,10 +233,7 @@ mod tests {
         let mut core = McpProtocolCore::new(
             &paths,
             Some("readonly"),
-            BTreeSet::from([McpToolPack::NotesRead]),
-            McpToolPackMode::Static,
             McpProtocolHost {
-                registry_options: CustomToolRegistryOptions::default,
                 command_help: no_command_help,
                 help_candidates: no_help_candidates,
                 server_version: "app-core-test",
@@ -304,10 +261,7 @@ mod tests {
         let mut core = McpProtocolCore::new(
             &paths,
             Some("readonly"),
-            BTreeSet::from([McpToolPack::NotesRead]),
-            McpToolPackMode::Static,
             McpProtocolHost {
-                registry_options: CustomToolRegistryOptions::default,
                 command_help: no_command_help,
                 help_candidates: no_help_candidates,
                 server_version: "app-core-test",
