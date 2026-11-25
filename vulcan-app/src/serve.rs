@@ -574,7 +574,7 @@ pub fn route_request_with_sessions(
             let Some(file) = first_param(&request.query, "file") else {
                 return ServeResponse::error(400, "missing required query parameter: file");
             };
-            match build_dataview_inline_report(paths, file, Some(&permissions)) {
+            match build_dataview_inline_report(paths, file, None, Some(&permissions)) {
                 Ok(report) => ServeResponse::ok(json!({ "ok": true, "result": report })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }

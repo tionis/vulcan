@@ -26,7 +26,8 @@ pub(crate) fn handle_dataview_command(
     match command {
         DataviewCommand::Inline { file } => {
             let guard = selected_permission_guard(cli, paths)?;
-            let report = run_dataview_inline_command(paths, file, Some(&guard))?;
+            let report =
+                run_dataview_inline_command(paths, file, cli.permissions.as_deref(), Some(&guard))?;
             print_dataview_inline_report(cli.output, &report)
         }
         DataviewCommand::Query { dql } => {
@@ -78,9 +79,11 @@ pub(crate) fn handle_dataview_command(
 fn run_dataview_inline_command(
     paths: &VaultPaths,
     file: &str,
+    permission_profile: Option<&str>,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<DataviewInlineReport, CliError> {
-    build_dataview_inline_report(paths, file, permissions).map_err(CliError::operation)
+    build_dataview_inline_report(paths, file, permission_profile, permissions)
+        .map_err(CliError::operation)
 }
 
 fn run_dataview_query_command(
@@ -117,7 +120,7 @@ fn print_dataview_inline_report(
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
-            if report.results.is_empty() {
+            if report.results.is_empty() && report.js_results.is_empty() {
                 println!("No inline expressions in {}", report.file);
                 return Ok(());
             }
@@ -128,6 +131,17 @@ fn print_dataview_inline_report(
                 } else {
                     println!(
                         "- {} => {}",
+                        result.expression,
+                        render_dataview_inline_value(&result.value)
+                    );
+                }
+            }
+            for result in &report.js_results {
+                if let Some(error) = &result.error {
+                    println!("- $= {} => error: {}", result.expression, error);
+                } else {
+                    println!(
+                        "- $= {} => {}",
                         result.expression,
                         render_dataview_inline_value(&result.value)
                     );

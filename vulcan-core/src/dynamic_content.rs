@@ -22,8 +22,8 @@ use crate::properties::{
 use crate::resolver::{resolve_link, ResolverDocument, ResolverLink};
 use crate::tasks::{evaluate_tasks_query_with_note_index, TasksQueryResult};
 use crate::{
-    evaluate_base_file, evaluate_base_file_with_guard, evaluate_dataview_js_with_options,
-    evaluate_dql_with_filter, evaluate_tasks_query, parse_document,
+    evaluate_base_file, evaluate_base_file_with_guard, evaluate_dql_with_filter,
+    evaluate_tasks_query, parse_document,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -194,21 +194,7 @@ pub(crate) fn evaluate_dynamic_regions(
         });
     }
 
-    push_inline_js_regions(ctx, source_path, parsed, diagnostics, &mut regions);
-
-    for block in &parsed.dataview_blocks {
-        regions.push(DynamicRegion {
-            start: block.byte_range.start,
-            end: block.byte_range.end,
-            outcome: evaluate_dataview_block(
-                ctx,
-                source_path,
-                &block.language,
-                &block.text,
-                diagnostics,
-            ),
-        });
-    }
+    push_script_regions(ctx, source_path, parsed, diagnostics, &mut regions);
 
     for block in &parsed.tasks_blocks {
         regions.push(DynamicRegion {
@@ -334,43 +320,135 @@ fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
         })
 }
 
-/// Evaluate inline `DataviewJS` expressions. Like Dataview, they run only
-/// where the vault enables them.
-fn push_inline_js_regions(
+/// Evaluate inline `DataviewJS` expressions and `dataview`/`dataviewjs`
+/// blocks in document order.
+///
+/// All `DataviewJS` in one note shares a single scope, run top to bottom: a
+/// value assigned in one inline expression (`$= test = 3`) or block
+/// (`fmt = (x) => …`) is visible to every later one (`$= test + 3`). Blocks
+/// run inside their own braces, so their `const`, `let`, and `class`
+/// declarations stay local, as in Dataview, where each block is a separate
+/// function. Inline expressions run like Dataview's: only where the vault
+/// enables them.
+fn push_script_regions(
     ctx: &DynamicContentContext<'_>,
     source_path: Option<&str>,
     parsed: &ParsedDocument,
     diagnostics: &mut Vec<RenderDiagnostic>,
     regions: &mut Vec<DynamicRegion>,
 ) {
-    if !ctx.config.dataview.enable_inline_dataview_js {
-        return;
+    enum Script<'p> {
+        Inline(&'p crate::RawInlineExpression),
+        Block(&'p crate::parser::RawDataviewBlock),
     }
-    for expression in &parsed.inline_js_expressions {
-        let outcome = match dataview_js_options(ctx) {
-            None => {
-                diagnostics.push(RenderDiagnostic {
-                    kind: "dataviewjs_disabled".to_string(),
-                    message: "DataviewJS rendering is disabled for this render".to_string(),
+    let mut scripts = parsed
+        .dataview_blocks
+        .iter()
+        .map(|block| (block.byte_range.start, Script::Block(block)))
+        .collect::<Vec<_>>();
+    if ctx.config.dataview.enable_inline_dataview_js {
+        scripts.extend(
+            parsed
+                .inline_js_expressions
+                .iter()
+                .map(|expression| (expression.byte_range.start, Script::Inline(expression))),
+        );
+    }
+    scripts.sort_by_key(|(start, _)| *start);
+
+    let mut scope = NoteJsScope::new(*ctx, source_path);
+    for (_, script) in scripts {
+        match script {
+            Script::Inline(expression) => {
+                let outcome = match scope.evaluate(&expression.expression) {
+                    None => {
+                        push_js_disabled_diagnostic(diagnostics);
+                        DynamicOutcome::InlineJsDisabled
+                    }
+                    Some(result) => result.map_or_else(
+                        |error| DynamicOutcome::InlineError(error.to_string()),
+                        DynamicOutcome::InlineJs,
+                    ),
+                };
+                regions.push(DynamicRegion {
+                    start: expression.byte_range.start,
+                    end: expression.byte_range.end,
+                    outcome,
                 });
-                DynamicOutcome::InlineJsDisabled
             }
-            Some(options) => evaluate_dataview_js_with_options(
-                ctx.paths,
-                &expression.expression,
-                source_path,
+            Script::Block(block) => regions.push(DynamicRegion {
+                start: block.byte_range.start,
+                end: block.byte_range.end,
+                outcome: evaluate_dataview_block(
+                    ctx,
+                    &mut scope,
+                    source_path,
+                    &block.language,
+                    &block.text,
+                    diagnostics,
+                ),
+            }),
+        }
+    }
+}
+
+fn push_js_disabled_diagnostic(diagnostics: &mut Vec<RenderDiagnostic>) {
+    diagnostics.push(RenderDiagnostic {
+        kind: "dataviewjs_disabled".to_string(),
+        message: "DataviewJS rendering is disabled for this render".to_string(),
+    });
+}
+
+/// The one `DataviewJS` session a note's scripts share, started on first use.
+pub(crate) struct NoteJsScope<'a> {
+    ctx: DynamicContentContext<'a>,
+    source_path: Option<&'a str>,
+    session: Option<Result<crate::DataviewJsSession, crate::DataviewJsError>>,
+}
+
+impl<'a> NoteJsScope<'a> {
+    pub(crate) fn new(ctx: DynamicContentContext<'a>, source_path: Option<&'a str>) -> Self {
+        Self {
+            ctx,
+            source_path,
+            session: None,
+        }
+    }
+
+    /// Run an inline expression in the note's scope; `None` when the
+    /// render's policy turns `DataviewJS` off.
+    pub(crate) fn evaluate(
+        &mut self,
+        source: &str,
+    ) -> Option<Result<DataviewJsResult, crate::DataviewJsError>> {
+        self.with_session(|session| session.evaluate_sloppy(source))
+    }
+
+    /// Run a `dataviewjs` block in the note's scope (see
+    /// [`crate::DataviewJsSession::evaluate_block`]).
+    pub(crate) fn evaluate_block(
+        &mut self,
+        source: &str,
+    ) -> Option<Result<DataviewJsResult, crate::DataviewJsError>> {
+        self.with_session(|session| session.evaluate_block(source))
+    }
+
+    fn with_session(
+        &mut self,
+        run: impl FnOnce(&crate::DataviewJsSession) -> Result<DataviewJsResult, crate::DataviewJsError>,
+    ) -> Option<Result<DataviewJsResult, crate::DataviewJsError>> {
+        if self.session.is_none() {
+            let options = dataview_js_options(&self.ctx)?;
+            self.session = Some(crate::DataviewJsSession::new(
+                self.ctx.paths,
+                self.source_path,
                 options,
-            )
-            .map_or_else(
-                |error| DynamicOutcome::InlineError(error.to_string()),
-                DynamicOutcome::InlineJs,
-            ),
-        };
-        regions.push(DynamicRegion {
-            start: expression.byte_range.start,
-            end: expression.byte_range.end,
-            outcome,
-        });
+            ));
+        }
+        Some(match self.session.as_ref()? {
+            Ok(session) => run(session),
+            Err(error) => Err(error.clone()),
+        })
     }
 }
 
@@ -541,6 +619,7 @@ pub(crate) fn is_base_path(candidate: &str) -> bool {
 
 fn evaluate_dataview_block(
     ctx: &DynamicContentContext<'_>,
+    scope: &mut NoteJsScope<'_>,
     source_path: Option<&str>,
     language: &str,
     source: &str,
@@ -568,7 +647,7 @@ fn evaluate_dataview_block(
                 DynamicOutcome::Dql,
             )
         }
-        "dataviewjs" => evaluate_dataview_js_block(ctx, source_path, source, diagnostics),
+        "dataviewjs" => evaluate_dataview_js_block(scope, source, diagnostics),
         other => DynamicOutcome::Error {
             title: "Dataview error:".to_string(),
             message: format!("unsupported block language `{other}`"),
@@ -577,22 +656,18 @@ fn evaluate_dataview_block(
 }
 
 fn evaluate_dataview_js_block(
-    ctx: &DynamicContentContext<'_>,
-    source_path: Option<&str>,
+    scope: &mut NoteJsScope<'_>,
     source: &str,
     diagnostics: &mut Vec<RenderDiagnostic>,
 ) -> DynamicOutcome {
-    let Some(options) = dataview_js_options(ctx) else {
-        diagnostics.push(RenderDiagnostic {
-            kind: "dataviewjs_disabled".to_string(),
-            message: "DataviewJS rendering is disabled for this render".to_string(),
-        });
+    let Some(result) = scope.evaluate_block(source) else {
+        push_js_disabled_diagnostic(diagnostics);
         return DynamicOutcome::Disabled {
             title: "DataviewJS disabled:".to_string(),
             message: "DataviewJS evaluation is turned off for this render".to_string(),
         };
     };
-    evaluate_dataview_js_with_options(ctx.paths, source, source_path, options).map_or_else(
+    result.map_or_else(
         |error| DynamicOutcome::Error {
             title: "DataviewJS error:".to_string(),
             message: error.to_string(),
@@ -694,6 +769,39 @@ pub struct EvaluatedMarkdownOptions<'a> {
     /// Publication output that must be reproducible: `static` `DataviewJS`
     /// may not read wall-clock time. Interactive views leave this unset.
     pub deterministic: bool,
+}
+
+/// The value of one inline `DataviewJS` expression (`` `$= …` ``).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EvaluatedInlineJsExpression {
+    pub expression: String,
+    /// One-based line of the expression in the note.
+    pub line: usize,
+    pub value: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// An inline expression's value: what it returned, else the text it wrote
+/// with `dv.*` output calls, as the renderer shows it.
+fn inline_js_value(result: &DataviewJsResult) -> Value {
+    if let Some(value) = &result.value {
+        return value.clone();
+    }
+    if result.outputs.is_empty() {
+        return Value::Null;
+    }
+    Value::String(
+        dataview_js_markdown(
+            result,
+            DataviewMarkdownOptions {
+                show_result_count: false,
+                empty_placeholder: false,
+            },
+        )
+        .trim()
+        .to_string(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -854,6 +962,91 @@ impl EvaluatedMarkdownRenderer {
             regions,
             diagnostics,
         }
+    }
+
+    /// Evaluate `source`'s inline `DataviewJS` expressions in the note's
+    /// shared scope, which runs every earlier `dataviewjs` block too, and
+    /// return their values in document order. Expressions stay unevaluated,
+    /// with an error, when the vault turns inline `DataviewJS` off.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `options.guard` disagrees with the guard the renderer was
+    /// loaded with.
+    #[must_use]
+    pub fn evaluate_inline_js(
+        &self,
+        source: &str,
+        options: &EvaluatedMarkdownOptions<'_>,
+    ) -> Vec<EvaluatedInlineJsExpression> {
+        assert!(
+            options.guard.is_some() == self.guarded,
+            "a render must use the guard the renderer was loaded with"
+        );
+        let parsed = parse_document(source, &self.config);
+        if parsed.inline_js_expressions.is_empty() {
+            return Vec::new();
+        }
+        if !self.config.dataview.enable_inline_dataview_js {
+            return parsed
+                .inline_js_expressions
+                .iter()
+                .map(|expression| EvaluatedInlineJsExpression {
+                    expression: expression.expression.clone(),
+                    line: expression.line_number,
+                    value: Value::Null,
+                    error: Some(
+                        "inline DataviewJS is off; set dataview.enable_inline_dataview_js"
+                            .to_string(),
+                    ),
+                })
+                .collect();
+        }
+        let note_index = self.note_index.get_or_init(|| match options.guard {
+            Some(guard) => load_note_index_with_guard(&self.paths, guard).ok(),
+            None => load_note_index(&self.paths).ok(),
+        });
+        let ctx = DynamicContentContext {
+            paths: &self.paths,
+            config: &self.config,
+            note_index: note_index.as_ref(),
+            guard: options.guard,
+            permission_profile: options.permission_profile,
+            dataview_js: options.dataview_js,
+            deterministic: options.deterministic,
+        };
+        let mut regions = Vec::new();
+        push_script_regions(
+            &ctx,
+            options.source_path,
+            &parsed,
+            &mut Vec::new(),
+            &mut regions,
+        );
+        let mut outcomes = regions
+            .into_iter()
+            .map(|region| (region.start, region.outcome))
+            .collect::<HashMap<_, _>>();
+        parsed
+            .inline_js_expressions
+            .iter()
+            .map(|expression| {
+                let (value, error) = match outcomes.remove(&expression.byte_range.start) {
+                    Some(DynamicOutcome::InlineJs(result)) => (inline_js_value(&result), None),
+                    Some(DynamicOutcome::InlineError(error)) => (Value::Null, Some(error)),
+                    _ => (
+                        Value::Null,
+                        Some("DataviewJS evaluation is turned off".to_string()),
+                    ),
+                };
+                EvaluatedInlineJsExpression {
+                    expression: expression.expression.clone(),
+                    line: expression.line_number,
+                    value,
+                    error,
+                }
+            })
+            .collect()
     }
 
     fn render_nested(
@@ -2145,6 +2338,42 @@ mod tests {
         .expect("config should write");
         assert!(render(DataviewJsRenderPolicy::On).contains("JS: draft"));
         assert!(render(DataviewJsRenderPolicy::Off).contains("JS: *(DataviewJS disabled)*"));
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn a_notes_dataviewjs_shares_one_scope_in_document_order() {
+        let (_temp_dir, paths, _) = build_vault();
+        std::fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            "[dataview]\nenable_inline_dataview_js = true\n",
+        )
+        .expect("config should write");
+        let source = concat!(
+            "Set `$= test = 3` and use `$= test + 3`.\n\n",
+            "```dataviewjs\nconst local = 1;\ntwice = (x) => x * 2;\ndv.paragraph(test + local)\n```\n\n",
+            "```dataviewjs\nconst local = 2;\ndv.paragraph(local)\n```\n\n",
+            "Twice: `$= twice(test)`. Local: `$= typeof local`.\n",
+        );
+        let markdown = render_evaluated_markdown(
+            &paths,
+            source,
+            &EvaluatedMarkdownOptions {
+                source_path: Some("Home.md"),
+                dataview_js: DataviewJsRenderPolicy::On,
+                ..EvaluatedMarkdownOptions::default()
+            },
+        )
+        .markdown;
+        assert!(markdown.contains("Set 3 and use 6."), "{markdown}");
+        // Block-level `const` stays in its block, so a second block can
+        // declare the same name, while plain assignments are shared.
+        assert!(markdown.contains("\n4\n"), "{markdown}");
+        assert!(markdown.contains("\n2\n"), "{markdown}");
+        assert!(
+            markdown.contains("Twice: 6. Local: undefined."),
+            "{markdown}"
+        );
     }
 
     #[test]

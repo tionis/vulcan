@@ -10630,6 +10630,51 @@ fn dataview_inline_json_output_evaluates_expressions() {
     assert_eq!(json["results"][0]["error"], Value::Null);
 }
 
+#[cfg(feature = "js_runtime")]
+#[test]
+fn dataview_inline_json_output_lists_inline_js_in_one_scope() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[dataview]\nenable_inline_dataview_js = true\n",
+    )
+    .expect("config should write");
+    fs::write(
+        vault_root.join("Calc.md"),
+        "Vars `$= test = 3` and [f:: 2], so `$= test + 3` and `= this.f + 1`\n",
+    )
+    .expect("note should write");
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "dataview",
+            "inline",
+            "Calc",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["results"][0]["value"], serde_json::json!(3));
+    assert_eq!(
+        json["js_results"],
+        serde_json::json!([
+            { "expression": "test = 3", "line": 1, "value": 3 },
+            { "expression": "test + 3", "line": 1, "value": 6 },
+        ])
+    );
+}
+
 #[test]
 fn dataview_inline_json_output_reports_expression_errors() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

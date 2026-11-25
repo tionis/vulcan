@@ -1,6 +1,7 @@
 # Live documents: shared scope, vault functions, bound inputs, and calculator blocks
 
-**Status:** Design contract for Roadmap Phase 9.42 (planned).
+**Status:** Design contract for Roadmap Phase 9.42. 9.42.1 (shared scope) is implemented; the rest
+is planned.
 
 SilverBullet's Space Lua and Ink & Switch's Potluck make a note a small live program: values
 defined in one place, computed inline elsewhere, edited in place, with helpers defined in the
@@ -32,7 +33,7 @@ Numerals 1.10.2 with mathjs 15.2.0. Clone them into `references/` (gitignored) t
 5. **`js_runtime` gating.** Features that need JavaScript (CustomJS, mathjs) are behind the
    `js_runtime` feature. Without it, their regions render a "requires `js_runtime`" notice.
 
-## 9.42.1 One scope per note
+## 9.42.1 One scope per note (implemented)
 
 A note's inline DataviewJS (`` `$= …` ``) and `dataviewjs` blocks run in one `DataviewJsSession`,
 top to bottom, as non-strict global code:

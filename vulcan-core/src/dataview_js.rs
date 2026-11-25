@@ -212,6 +212,14 @@ impl DataviewJsSession {
     pub fn evaluate(&self, _source: &str) -> Result<DataviewJsResult, DataviewJsError> {
         Err(DataviewJsError::Disabled)
     }
+
+    pub fn evaluate_sloppy(&self, _source: &str) -> Result<DataviewJsResult, DataviewJsError> {
+        Err(DataviewJsError::Disabled)
+    }
+
+    pub fn evaluate_block(&self, _source: &str) -> Result<DataviewJsResult, DataviewJsError> {
+        Err(DataviewJsError::Disabled)
+    }
 }
 
 #[cfg(all(test, not(feature = "js_runtime")))]
@@ -282,6 +290,7 @@ mod runtime {
 
     use csv::ReaderBuilder;
     use regex::Regex;
+    use rquickjs::context::EvalOptions;
     use rquickjs::function::Func;
     use rquickjs::{
         CatchResultExt, CaughtError, Context, Ctx, Exception, Runtime, Value as JsValue,
@@ -3868,6 +3877,30 @@ globalThis.this = dv.current();
         }
 
         pub fn evaluate(&self, source: &str) -> Result<DataviewJsResult, DataviewJsError> {
+            self.evaluate_with_mode(source, true)
+        }
+
+        /// Evaluate `source` as non-strict global code, as Dataview runs a
+        /// note's scripts: assigning an undeclared name (`test = 3`) creates
+        /// a global that later evaluations in this session can read.
+        pub fn evaluate_sloppy(&self, source: &str) -> Result<DataviewJsResult, DataviewJsError> {
+            self.evaluate_with_mode(source, false)
+        }
+
+        /// Evaluate a `dataviewjs` block non-strictly inside its own braces:
+        /// its `const`, `let`, and `class` declarations stay local, as in
+        /// Dataview, where each block is a separate function, while plain
+        /// assignments (`fmt = (x) => …`) reach the session's shared scope.
+        pub fn evaluate_block(&self, source: &str) -> Result<DataviewJsResult, DataviewJsError> {
+            // `{` shares the first line so error line numbers still match.
+            self.evaluate_with_mode(&format!("{{{source}\n}}"), false)
+        }
+
+        fn evaluate_with_mode(
+            &self,
+            source: &str,
+            strict: bool,
+        ) -> Result<DataviewJsResult, DataviewJsError> {
             {
                 let mut outputs = self.outputs.lock().map_err(|_| {
                     DataviewJsError::Message("DataviewJS output lock poisoned".to_string())
@@ -3888,7 +3921,7 @@ globalThis.this = dv.current();
 
             let eval_result = self
                 .context
-                .with(|ctx| evaluate_value(&ctx, source, &timeout_description));
+                .with(|ctx| evaluate_value(&ctx, source, strict, &timeout_description));
             let drain_result = drain_pending_jobs(&self.runtime, &timeout_description);
             self.runtime.set_interrupt_handler(None);
             drain_result?;
@@ -6845,10 +6878,19 @@ globalThis.this = dv.current();
     fn evaluate_value<'js>(
         ctx: &Ctx<'js>,
         source: &str,
+        strict: bool,
         timeout_description: &str,
     ) -> Result<Option<Value>, DataviewJsError> {
+        // `EvalOptions` is non-exhaustive, so it can only be built by
+        // changing a default.
+        #[allow(clippy::field_reassign_with_default)]
+        let options = {
+            let mut options = EvalOptions::default();
+            options.strict = strict;
+            options
+        };
         let value: JsValue<'js> = ctx
-            .eval(source)
+            .eval_with_options(source, options)
             .catch(ctx)
             .map_err(|error| map_caught_runtime_error(&error, timeout_description))?;
         if value.is_undefined() {

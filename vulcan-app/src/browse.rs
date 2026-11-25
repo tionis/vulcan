@@ -71,6 +71,10 @@ pub struct PeriodicListItem {
 pub struct DataviewInlineReport {
     pub file: String,
     pub results: Vec<EvaluatedInlineExpression>,
+    /// Inline `DataviewJS` expressions (`` `$= …` ``) in document order,
+    /// evaluated in the note's shared scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub js_results: Vec<vulcan_core::EvaluatedInlineJsExpression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -250,6 +254,7 @@ pub fn evaluate_note_inline_expressions(
 pub fn build_dataview_inline_report(
     paths: &VaultPaths,
     file: &str,
+    permission_profile: Option<&str>,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<DataviewInlineReport, AppError> {
     // Resolve and evaluate inside the caller's universe so inline expressions
@@ -271,11 +276,60 @@ pub fn build_dataview_inline_report(
         .find(|note| note.document_path == resolved.path)
         .ok_or_else(|| AppError::operation(format!("note is not indexed: {}", resolved.path)))?;
     let results = core_evaluate_note_inline_expressions(note, &note_index);
+    let js_results =
+        evaluate_inline_js_report(paths, &resolved.path, permission_profile, permissions)?;
 
     Ok(DataviewInlineReport {
         file: resolved.path,
         results,
+        js_results,
     })
+}
+
+/// The note's inline `DataviewJS` expressions with their lines, in order;
+/// none when the vault turns them off or the note cannot be read.
+fn inline_js_expressions(paths: &VaultPaths, path: &str) -> Vec<(i64, String)> {
+    let config = load_vault_config(paths).config;
+    if !config.dataview.enable_inline_dataview_js {
+        return Vec::new();
+    }
+    let Ok(source) = std::fs::read_to_string(paths.vault_root().join(path)) else {
+        return Vec::new();
+    };
+    vulcan_core::parse_document(&source, &config)
+        .inline_js_expressions
+        .into_iter()
+        .map(|expression| {
+            (
+                i64::try_from(expression.line_number).unwrap_or(i64::MAX),
+                expression.expression,
+            )
+        })
+        .collect()
+}
+
+/// Evaluate a note's inline `DataviewJS` the way a render does, read-only and
+/// with the vault's sandbox tier, so earlier blocks feed the shared scope.
+fn evaluate_inline_js_report(
+    paths: &VaultPaths,
+    path: &str,
+    permission_profile: Option<&str>,
+    permissions: Option<&ProfilePermissionGuard>,
+) -> Result<Vec<vulcan_core::EvaluatedInlineJsExpression>, AppError> {
+    let source = std::fs::read_to_string(paths.vault_root().join(path))
+        .map_err(|error| AppError::operation(format!("failed to read {path}: {error}")))?;
+    let guard = permissions.map(|guard| guard as &dyn vulcan_core::PermissionGuard);
+    let renderer = vulcan_core::EvaluatedMarkdownRenderer::load(paths, guard);
+    Ok(renderer.evaluate_inline_js(
+        &source,
+        &vulcan_core::EvaluatedMarkdownOptions {
+            source_path: Some(path),
+            dataview_js: vulcan_core::DataviewJsRenderPolicy::On,
+            guard,
+            permission_profile,
+            deterministic: false,
+        },
+    ))
 }
 
 pub fn build_dataview_query_report(
@@ -351,25 +405,31 @@ pub fn build_dataview_query_js_report(
         paths,
         source,
         source_path,
-        DataviewJsEvalOptions {
-            timeout: None,
-            sandbox: None,
-            permission_profile: permission_profile.map(ToOwned::to_owned),
-            mutation_committer: Some(mdbase_js_mutation_committer(
-                paths,
-                permission_profile,
-                Verbosity::Quiet,
-            )),
-            tool_registry: Some(build_custom_tool_js_registry(
-                paths,
-                permission_profile,
-                "dataview.query_js",
-                &CustomToolRegistryOptions::default(),
-            )),
-            ..DataviewJsEvalOptions::default()
-        },
+        query_js_options(paths, permission_profile),
     )
     .map_err(AppError::operation)
+}
+
+/// Options for explicit `DataviewJS` evaluation: the vault's sandbox tier,
+/// the caller's profile, mdbase-aware writes, and custom tools.
+fn query_js_options(paths: &VaultPaths, permission_profile: Option<&str>) -> DataviewJsEvalOptions {
+    DataviewJsEvalOptions {
+        timeout: None,
+        sandbox: None,
+        permission_profile: permission_profile.map(ToOwned::to_owned),
+        mutation_committer: Some(mdbase_js_mutation_committer(
+            paths,
+            permission_profile,
+            Verbosity::Quiet,
+        )),
+        tool_registry: Some(build_custom_tool_js_registry(
+            paths,
+            permission_profile,
+            "dataview.query_js",
+            &CustomToolRegistryOptions::default(),
+        )),
+        ..DataviewJsEvalOptions::default()
+    }
 }
 
 pub fn build_dataview_eval_report(
@@ -385,13 +445,59 @@ pub fn build_dataview_eval_report(
             .check_read_path(&resolved.path)
             .map_err(AppError::operation)?;
     }
-    let blocks = core_load_dataview_blocks(paths, file, block).map_err(AppError::operation)?;
+    // Load every block: the note's `dataviewjs` blocks share one scope, so
+    // a selected block still sees what the blocks before it assigned.
+    let selected = block;
+    let blocks = core_load_dataview_blocks(paths, file, None).map_err(AppError::operation)?;
+    if let Some(index) = selected {
+        if !blocks.iter().any(|block| block.block_index == index) {
+            // Report the missing block the way loading it directly does.
+            core_load_dataview_blocks(paths, file, Some(index)).map_err(AppError::operation)?;
+        }
+    }
     let file = blocks
         .first()
         .map_or_else(|| file.to_string(), |block| block.file.clone());
     let mut reports = Vec::with_capacity(blocks.len());
+    // Inline expressions (`` `$= …` ``) share the scope too, so each block
+    // first runs the ones written above it, as a render does.
+    let mut inline_js = inline_js_expressions(paths, &file);
+    let mut session: Option<Result<vulcan_core::DataviewJsSession, String>> = None;
+    let mut run_js =
+        |source: &str, block_file: &str, line: i64| -> Result<DataviewJsResult, String> {
+            let session = session.get_or_insert_with(|| {
+                vulcan_core::DataviewJsSession::new(
+                    paths,
+                    Some(block_file),
+                    query_js_options(paths, permission_profile),
+                )
+                .map_err(|error| error.to_string())
+            });
+            let session = session.as_ref().map_err(Clone::clone)?;
+            while inline_js
+                .first()
+                .is_some_and(|(expression_line, _)| *expression_line < line)
+            {
+                let (_, expression) = inline_js.remove(0);
+                let _ = session.evaluate_sloppy(&expression);
+            }
+            session
+                .evaluate_block(source)
+                .map_err(|error| error.to_string())
+        };
 
     for block in blocks {
+        if let Some(index) = selected {
+            if block.block_index > index {
+                break;
+            }
+            if block.block_index < index {
+                if block.language == "dataviewjs" {
+                    let _ = run_js(&block.source, &block.file, block.line_number);
+                }
+                continue;
+            }
+        }
         let (result, error) = if block.language == "dataview" {
             let evaluated = match permissions {
                 Some(guard) => {
@@ -406,14 +512,9 @@ pub fn build_dataview_eval_report(
                 Err(error) => (None, Some(error.to_string())),
             }
         } else if block.language == "dataviewjs" {
-            match build_dataview_query_js_report(
-                paths,
-                &block.source,
-                Some(&block.file),
-                permission_profile,
-            ) {
+            match run_js(&block.source, &block.file, block.line_number) {
                 Ok(result) => (Some(DataviewBlockResult::Js(result)), None),
-                Err(error) => (None, Some(error.to_string())),
+                Err(error) => (None, Some(error)),
             }
         } else {
             (
@@ -1346,13 +1447,68 @@ enabled = true
         scan_vault(&VaultPaths::new(&vault_root), ScanMode::Full).expect("scan should succeed");
         let paths = VaultPaths::new(&vault_root);
 
-        let inline = build_dataview_inline_report(&paths, "Dashboard", None).expect("inline");
+        let inline = build_dataview_inline_report(&paths, "Dashboard", None, None).expect("inline");
         assert_eq!(inline.file, "Dashboard.md");
         assert_eq!(inline.results[0].value, serde_json::json!("draft"));
 
         let eval = build_dataview_eval_report(&paths, "Dashboard", None, None, None).expect("eval");
         assert_eq!(eval.file, "Dashboard.md");
         assert_eq!(eval.blocks.len(), 2);
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn inline_and_eval_reports_share_the_notes_js_scope() {
+        let (_dir, paths) = test_paths();
+        fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            "[dataview]\nenable_dataview_js = true\nenable_inline_dataview_js = true\n",
+        )
+        .expect("config should write");
+        fs::write(
+            paths.vault_root().join("Calc.md"),
+            concat!(
+                "Set `$= test = 3`.\n\n",
+                "```dataviewjs\ntwice = (x) => x * 2;\n```\n\n",
+                "```dataviewjs\ndv.paragraph(twice(test))\n```\n\n",
+                "Result: `$= twice(test) + 1`\n",
+            ),
+        )
+        .expect("note should write");
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let inline = build_dataview_inline_report(&paths, "Calc", None, None).expect("inline");
+        let values = inline
+            .js_results
+            .iter()
+            .map(|result| (result.line, result.value.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            vec![(1, serde_json::json!(3)), (11, serde_json::json!(7))],
+            "{inline:?}"
+        );
+
+        // A selected block still sees what the inline expression and the
+        // block above it assigned.
+        let eval = build_dataview_eval_report(&paths, "Calc", Some(1), None, None).expect("eval");
+        assert_eq!(eval.blocks.len(), 1);
+        assert_eq!(eval.blocks[0].error, None, "{eval:?}");
+    }
+
+    #[test]
+    fn inline_js_reports_say_when_the_vault_turns_it_off() {
+        let (_dir, paths) = test_paths();
+        fs::write(paths.vault_root().join("Calc.md"), "JS: `$= 1 + 1`\n")
+            .expect("note should write");
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let inline = build_dataview_inline_report(&paths, "Calc", None, None).expect("inline");
+        assert_eq!(inline.js_results.len(), 1);
+        assert!(inline.js_results[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("enable_inline_dataview_js")));
     }
 
     fn copy_fixture_vault(name: &str, destination: &std::path::Path) {

@@ -6662,7 +6662,10 @@ pub enum PeriodicSubcommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum DataviewCommand {
-    #[command(about = "Evaluate Dataview inline expressions from one note")]
+    #[command(
+        about = "Evaluate Dataview inline expressions from one note",
+        long_about = "Evaluate one note's inline DQL expressions (`= …`) and, when the vault enables them, its inline DataviewJS expressions (`$= …`). A note's DataviewJS shares one scope run top to bottom, so `$= test = 3` makes `test` available to later expressions and blocks; JSON output lists those values under `js_results`."
+    )]
     Inline {
         #[arg(help = "Note path, filename, or alias containing inline expressions")]
         file: String,

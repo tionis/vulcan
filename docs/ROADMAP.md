@@ -8733,9 +8733,9 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.42.1 One scope per note
 
-- [ ] Run a note's inline DataviewJS and `dataviewjs` blocks in one session, top to bottom, as non-strict global code; blocks keep `const`/`let`/`class` local.
-- [ ] `dataview inline` reports inline DataviewJS values (`js_results`); `dataview eval --block N` runs the scripts above block N first.
-- [ ] Design document, `dataview-and-bases` skill, tests.
+- [x] Run a note's inline DataviewJS and `dataviewjs` blocks in one session, top to bottom, as non-strict global code; blocks keep `const`/`let`/`class` local.
+- [x] `dataview inline` reports inline DataviewJS values (`js_results`); `dataview eval --block N` runs the scripts above block N first.
+- [x] Design document, `dataview-and-bases` skill, tests.
 
 ### 9.42.2 CustomJS classes and the DQL bridge
 

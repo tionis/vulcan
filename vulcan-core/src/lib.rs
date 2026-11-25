@@ -196,9 +196,9 @@ pub use dql::{
 };
 pub use dynamic_content::{
     dataview_js_result_markdown, dql_result_markdown, render_evaluated_markdown,
-    vault_dataview_js_policy, DataviewJsRenderPolicy, DataviewMarkdownOptions, EvaluatedMarkdown,
-    EvaluatedMarkdownOptions, EvaluatedMarkdownRenderer, EvaluatedRegion, EvaluatedRegions,
-    RenderDiagnostic,
+    vault_dataview_js_policy, DataviewJsRenderPolicy, DataviewMarkdownOptions,
+    EvaluatedInlineJsExpression, EvaluatedMarkdown, EvaluatedMarkdownOptions,
+    EvaluatedMarkdownRenderer, EvaluatedRegion, EvaluatedRegions, RenderDiagnostic,
 };
 pub use folder_notes::{FolderNotePlacement, FolderNotesConfig};
 pub use git::{
