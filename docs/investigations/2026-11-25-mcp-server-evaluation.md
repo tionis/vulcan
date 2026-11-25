@@ -195,10 +195,10 @@ Packs were built to keep context small on clients that load every tool up front.
 - Legacy clients that load everything up front still exist, and 49 tools is above the 30 to 50
   where selection accuracy degrades, so the catalog should also shrink (below).
 
-Recommendation: **remove adaptive mode, the `tool_packs` tool and its hidden `tool_pack_*`
-aliases**, and expose the whole consolidated catalog by default. §5a sets out how other servers
-and clients handle this and why. Move the non-standard top-level `toolPacks` field on each tool
-into `_meta`.
+Recommendation: **remove tool packs altogether**, including adaptive mode, the `tool_packs` tool,
+its hidden `tool_pack_*` aliases and the non-standard top-level `toolPacks` field, and let the
+permission profile alone decide which tools are listed. §5a sets out how other servers and
+clients handle this and why.
 
 ### Consolidation
 
@@ -281,12 +281,30 @@ compares a server-side gateway against client-side tool search.
    Code, claude.ai, Codex, Copilot CLI, Cursor) defer and search, so the count costs little
    there; it is under every hard cap; and one tool per action keeps the annotations that drive
    ChatGPT confirmations and Claude permissions. Return tools in a deterministic order.
-2. **Packs stay, as authorization and configuration, never as runtime state.** A named remote's
-   consent already picks packs into the durable grant, which is exactly the "vary by
-   authorization" the spec allows. For stdio and direct HTTP, `--tool-pack` stays as a static
-   selection, with its default changed to everything the profile allows. A small set for small
-   local models or a read-only connector is a second named remote with fewer packs or a
-   narrower profile, which works already and needs no new mechanism.
+2. **Remove tool packs; the permission profile alone decides the list.** Once the list no
+   longer changes at runtime and clients do the context work, packs have nothing left that
+   profiles do not already express. Every tool already carries a visibility requirement
+   (`mcp_catalog.rs`), and each non-read pack maps onto one profile dimension: `web` onto
+   `network`, `config` onto `config`, `index` onto `index`, `git` and `sync` onto `git`,
+   `note_move` onto `refactor`, the write tools onto path-scoped `write`. The read packs
+   (`notes-read`, `search`, `graph`, `daily`, read-only `tasks`) only ever saved context.
+   Skill-command tools are already gated by vault trust and the profile; the `custom` pack is a
+   second opt-in on top. A small or read-only connector is a narrower profile, and every major
+   client lets the user switch individual tools off.
+
+   The one distinction a profile cannot express today is write-without-delete-or-overwrite
+   (`notes-write` without `notes-manage`: `note_set` and `note_delete` share `write` with
+   `note_append`). If it matters, it is an authority concept and belongs in the profile (for
+   example a `delete`/`overwrite` mode or an append-only write keyword), not in a visibility
+   group. Otherwise destructive annotations, client approval prompts, path-scoped write, Git
+   history and, on modern clients, elicitation cover it.
+
+   Removal touches about 550 references across 15 files (catalog, CLI flags `--tool-pack` and
+   `--tool-pack-mode`, `describe` exports, named-remote definitions, consent page, grant
+   storage, docs and the `mcp-setup` skill). Grants carry their chosen packs and the call-time
+   check enforces them, so migration must not silently widen: grants that selected every
+   eligible pack migrate as is; grants that excluded some need fresh consent (a handful on a
+   single-owner deployment).
 3. **Help deferral do its job.** Mark three to five core tools with
    `_meta["anthropic/alwaysLoad"]` (candidates: `search`, `query`, `note_get`, `note_outline`,
    `note_append`). Put search terms at the start of each description. Rewrite the server
@@ -472,7 +490,7 @@ protection; monotonic grant attenuation; no token passthrough anywhere.
 | Changesets | Keep; become the explicit state handle |
 | Hand-written HTTP/1.1 codec, transport, SSE poller | Replace with axum |
 | `initialize`-only lifecycle, single protocol version | Dual-era with `server/discover` |
-| Adaptive packs, `tool_packs`, `tool_pack_*` aliases | Remove |
+| Tool packs (adaptive and static), `tool_packs`, `tool_pack_*` aliases, `--tool-pack` | Remove; the profile decides |
 | Session result store, pretty-text duplicate, 4 KiB/64 KiB spill | Remove; bounded results plus stable resources |
 | `sync_plan`, `daily_show`, `daily_list`, `capabilities` | Remove or fold |
 | `git_commit scope=session`, `changeset_switch` | Replace with explicit `changeset`/`paths` arguments |
@@ -490,7 +508,7 @@ protection; monotonic grant attenuation; no token passthrough anywhere.
    `Host` validation and the public URL's origin in the `Origin` check; `structuredContent` always present; compact text
    instead of pretty; `outputSchema: null`; annotation corrections; input validation as `isError`
    with parameter names; error messages that name MCP tools.
-2. **Catalog cleanup and disclosure** (§5a): remove adaptive packs and aliases, default to the
+2. **Catalog cleanup and disclosure** (§5a): remove tool packs (with grant migration), list the
    whole profile-filtered catalog, fold the duplicate tools, `alwaysLoad` on the core tools,
    instructions as a tool-family map, make paging and parameter names consistent, add
    `response_format` and slimmer rows, expose notes and files as resource templates. Update
@@ -519,8 +537,9 @@ Answered by Eric (2026-11-25):
   auth-method negotiation stay; CIMD becomes the documented path alongside them.
 - **Deployment:** most use OAuth through IndieAuth behind an HTTPS proxy, that is, named
   remotes. That path is the one to optimize; the proxy shapes the `Host`/`Origin` fix (§4).
-- **Default exposure:** settled by §5a: the whole profile- and grant-filtered catalog, packs as
-  authorization and configuration only.
+- **Default exposure:** settled by §5a: the whole profile-filtered catalog. Eric asked whether
+  packs are worth keeping at all; they are not, beyond one possible profile addition
+  (write without delete or overwrite).
 - **Skills over MCP:** whenever it fits best. It needs the 2026-07-28 protocol in Claude Code, so
   it lands in step 6, after the transport-aware skill rewrite (step 3) has proved the content
   through the existing resources and `vulcan agent install`.
