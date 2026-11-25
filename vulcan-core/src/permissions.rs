@@ -203,6 +203,10 @@ pub struct PermissionSql {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PermissionFilter {
     path_permission: PathPermission,
+    /// Set on the filter a writing profile loads mdbase controls with:
+    /// the root control files and every control folder are readable for
+    /// that purpose even outside the profile's read rules.
+    implicit_control_reads: bool,
 }
 
 pub trait PermissionGuard {
@@ -376,6 +380,19 @@ pub trait PermissionGuard {
 
     fn write_filter(&self) -> PermissionFilter {
         PermissionFilter::new(self.grant().write.clone())
+    }
+
+    /// The read filter for loading mdbase controls (`mdbase.yaml`, its lock
+    /// file, types and contracts). A profile that may write anywhere must
+    /// know which schema governs its writes, so it reads the controls even
+    /// where its read rules stop; a read-only profile keeps its read rules.
+    fn control_filter(&self) -> PermissionFilter {
+        let filter = self.read_filter();
+        if self.grant().write.allow.is_empty() {
+            filter
+        } else {
+            filter.with_implicit_control_reads()
+        }
     }
 
     fn refactor_filter(&self) -> PermissionFilter {
@@ -753,6 +770,27 @@ impl PathPermission {
                 .any(|denied| namespace_deny_may_overlap(denied, pattern))
     }
 
+    /// Whether a `folder:` or `note:` deny entry matches `path`. Tag denies
+    /// are not consulted.
+    #[must_use]
+    pub fn path_deny_matches(&self, path: &str) -> bool {
+        let normalized = normalize_permission_path(path);
+        self.deny
+            .iter()
+            .filter(|denied| !matches!(denied, ResourceSpecifier::Tag(_)))
+            .any(|denied| specifier_matches_path(denied, &normalized, &[]))
+    }
+
+    /// Whether a `folder:` or `note:` deny entry may reach anything under
+    /// `namespace` (a glob such as `_types/**`). Tag denies are not consulted.
+    #[must_use]
+    pub fn path_deny_may_overlap(&self, namespace: &str) -> bool {
+        self.deny
+            .iter()
+            .filter(|denied| !matches!(denied, ResourceSpecifier::Tag(_)))
+            .any(|denied| namespace_deny_may_overlap(denied, namespace))
+    }
+
     #[must_use]
     pub fn is_subset_of(&self, active: &Self) -> bool {
         if self.allow.is_empty() {
@@ -791,12 +829,50 @@ impl PathPermission {
 impl PermissionFilter {
     #[must_use]
     pub fn new(path_permission: PathPermission) -> Self {
-        Self { path_permission }
+        Self {
+            path_permission,
+            implicit_control_reads: false,
+        }
+    }
+
+    /// Admits the mdbase control files whatever the read rules say; see
+    /// [`PermissionGuard::control_filter`].
+    #[must_use]
+    pub fn with_implicit_control_reads(mut self) -> Self {
+        self.implicit_control_reads = true;
+        self
+    }
+
+    /// Whether mdbase control reads are admitted regardless of path rules.
+    #[must_use]
+    pub fn implicit_control_reads(&self) -> bool {
+        self.implicit_control_reads
     }
 
     #[must_use]
     pub fn is_allowed(&self, path: &str) -> bool {
         self.path_permission.is_allowed(path)
+            || (matches!(path, "mdbase.yaml" | crate::mdbase::MDBASE_LOCK_FILE_NAME)
+                && self.admits_control_path(path))
+    }
+
+    /// Whether the mdbase control file at `path` may be read. Implicit
+    /// control reads fill gaps in the allow rules, but an explicit `folder:`
+    /// or `note:` deny still wins; tag denies do not apply to controls.
+    #[must_use]
+    pub fn admits_control_path(&self, path: &str) -> bool {
+        self.path_permission.is_allowed(path)
+            || (self.implicit_control_reads && !self.path_permission.path_deny_matches(path))
+    }
+
+    /// Whether every control file under `folder` may be read; see
+    /// [`Self::admits_control_path`].
+    #[must_use]
+    pub fn admits_control_folder(&self, folder: &str) -> bool {
+        let namespace = format!("{folder}/**");
+        self.path_permission.covers_path_namespace(&namespace)
+            || (self.implicit_control_reads
+                && !self.path_permission.path_deny_may_overlap(&namespace))
     }
 
     #[must_use]
@@ -1418,6 +1494,51 @@ fn extract_network_host(target: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A profile that may write reads the mdbase controls it must validate
+    /// against, even outside its read rules; a read-only profile does not,
+    /// and the widening covers nothing but the control files.
+    #[test]
+    fn writing_profiles_read_mdbase_controls_implicitly() {
+        use super::PermissionGuard as _;
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join(".vulcan")).unwrap();
+        std::fs::write(
+            root.join(".vulcan/config.toml"),
+            concat!(
+                "[permissions.profiles.writer-scoped]\n",
+                "read = { allow = [\"folder:Worlds/**\"] }\n",
+                "write = { allow = [\"folder:Worlds/**\"] }\n",
+                "[permissions.profiles.reader-scoped]\n",
+                "read = { allow = [\"folder:Worlds/**\"] }\n",
+                "write = \"none\"\n",
+            ),
+        )
+        .unwrap();
+        let paths = crate::VaultPaths::new(root);
+        let guard = |name: &str| {
+            super::ProfilePermissionGuard::new(
+                &paths,
+                super::resolve_permission_profile(&paths, Some(name)).unwrap(),
+            )
+        };
+
+        let writer = guard("writer-scoped").control_filter();
+        assert!(writer.implicit_control_reads());
+        assert!(writer.is_allowed("mdbase.yaml"));
+        assert!(writer.is_allowed(crate::mdbase::MDBASE_LOCK_FILE_NAME));
+        assert!(writer.is_allowed("Worlds/a.md"));
+        assert!(!writer.is_allowed("Private/a.md"));
+        assert!(!writer.is_allowed("Private/mdbase.yaml"));
+        assert!(!guard("writer-scoped")
+            .read_filter()
+            .is_allowed("mdbase.yaml"));
+
+        let reader = guard("reader-scoped").control_filter();
+        assert!(!reader.implicit_control_reads());
+        assert!(!reader.is_allowed("mdbase.yaml"));
+    }
 
     /// A tag deny applies to direct path reads, writes and refactors, not
     /// only to listings, whatever kind of allow grants the folder. The tags

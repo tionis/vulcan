@@ -318,7 +318,7 @@ mod tests {
     fn property_routing_requires_config_read_even_for_ordinary_notes() {
         let (directory, paths) = fixture();
         fs::create_dir(directory.path().join(".vulcan")).unwrap();
-        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Archive/**\"] }\nwrite = { allow = [\"folder:Archive/**\"] }\n").unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Archive/**\"], deny = [\"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Archive/**\"] }\n").unwrap();
         let note_path = directory.path().join("Archive/ordinary.md");
         let before = fs::read_to_string(&note_path).unwrap();
         for config in [Some("secret: [invalid"), None] {

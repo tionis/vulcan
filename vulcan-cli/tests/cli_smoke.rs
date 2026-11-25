@@ -289,7 +289,7 @@ fn task_cli_mutations_preserve_selected_routing_authority() {
     let root = dir.path();
     fs::create_dir_all(root.join(".vulcan")).unwrap();
     fs::write(root.join("Inbox.md"), "- [ ] Existing\n").unwrap();
-    fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"note:Inbox.md\"] }\nwrite = { allow = [\"note:Inbox.md\"] }\n").unwrap();
+    fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"note:Inbox.md\"], deny = [\"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:Inbox.md\"] }\n").unwrap();
     pin_profiles(root);
     run_scan(root);
     let commands = [
@@ -37846,7 +37846,7 @@ fn installed_note_skills_route_writes_only_with_config_read_authority() {
         assert!(skill.contains("`mdbase.yaml`"));
         assert!(skill.contains("absent"));
     }
-    let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:a.md\"] }\nwrite = { allow = [\"note:a.md\"] }\n";
+    let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:a.md\"], deny = [\"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:a.md\"] }\n";
     fs::create_dir_all(root.join(".vulcan")).unwrap();
     fs::write(root.join(".vulcan/config.toml"), config).unwrap();
     pin_profiles(root);
@@ -37886,7 +37886,7 @@ fn installed_note_skills_route_writes_only_with_config_read_authority() {
     fs::write(
         root.join(".vulcan/config.toml"),
         config.replace(
-            "read = { allow = [\"note:a.md\"] }",
+            "read = { allow = [\"note:a.md\"], deny = [\"note:mdbase.yaml\"] }",
             "read = { allow = [\"note:a.md\", \"note:mdbase.yaml\"] }",
         ),
     )
@@ -37919,7 +37919,7 @@ fn managed_mdbase_cli_write_requires_lockfile_read_authority_even_when_absent() 
     fs::create_dir(root.join(".vulcan")).unwrap();
     fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
     fs::write(root.join("a.md"), "Original\n").unwrap();
-    let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"folder:_types/**\", \"folder:_contracts/**\", \"note:a.md\"] }\nwrite = { allow = [\"note:a.md\"] }\n";
+    let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"folder:_types/**\", \"folder:_contracts/**\", \"note:a.md\"], deny = [\"note:mdbase.lock.yaml\"] }\nwrite = { allow = [\"note:a.md\"] }\n";
     fs::write(root.join(".vulcan/config.toml"), config).unwrap();
     pin_profiles(root);
     run_scan(root);
@@ -37960,10 +37960,7 @@ fn managed_mdbase_cli_write_requires_lockfile_read_authority_even_when_absent() 
     fs::remove_file(root.join("mdbase.lock.yaml")).unwrap();
     fs::write(
         root.join(".vulcan/config.toml"),
-        config.replace(
-            "\"note:mdbase.yaml\"",
-            "\"note:mdbase.yaml\", \"note:mdbase.lock.yaml\"",
-        ),
+        config.replace(", deny = [\"note:mdbase.lock.yaml\"]", ""),
     )
     .unwrap();
     pin_profiles(root);

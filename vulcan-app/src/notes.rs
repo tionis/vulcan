@@ -4075,7 +4075,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
         let directory = tempdir().unwrap();
         let paths = VaultPaths::new(directory.path());
         initialize_vulcan_dir(&paths).unwrap();
-        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:note.md\"] }\nwrite = { allow = [\"note:note.md\"] }\n").unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"note:note.md\"], deny = [\"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:note.md\"] }\n").unwrap();
         let note = directory.path().join("note.md");
         fs::write(&note, "original\n").unwrap();
         for config in [None, Some("hidden: [malformed")] {

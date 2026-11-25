@@ -2227,7 +2227,7 @@ fn guarded_task_routing_never_borrows_default_control_authority() {
     let directory = tempdir().unwrap();
     let paths = VaultPaths::new(directory.path());
     initialize_vulcan_dir(&paths).unwrap();
-    let config = "[permissions.profiles.scoped]\nread = { allow = [\"folder:Allowed/**\"] }\nwrite = { allow = [\"folder:Allowed/**\"] }\n";
+    let config = "[permissions.profiles.scoped]\nread = { allow = [\"folder:Allowed/**\"], deny = [\"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Allowed/**\"] }\n";
     fs::write(paths.config_file(), config).unwrap();
     let guard = ProfilePermissionGuard::new(
         &paths,
@@ -2263,7 +2263,7 @@ fn guarded_task_routing_never_borrows_default_control_authority() {
     fs::write(
         paths.config_file(),
         config.replace(
-            "read = { allow = [\"folder:Allowed/**\"] }",
+            "read = { allow = [\"folder:Allowed/**\"], deny = [\"note:mdbase.yaml\"] }",
             "read = \"all\"",
         ),
     )

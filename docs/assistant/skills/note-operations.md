@@ -1,7 +1,7 @@
 ---
 name: note-operations
 description: Read, create, append, and patch notes safely through Vulcan instead of raw filesystem edits.
-version: 10
+version: 11
 tools:
   - note_outline
   - note_get
@@ -44,7 +44,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 - Prefer section, heading, block-ref, or `--match`-based targeting over whole-note rewrites.
 - Keep frontmatter changes structured. If the task is really metadata work, use `update` or `unset` instead of editing YAML by hand.
 - Note creates, replacements, appends, patches, and deletes targeting an mdbase record path use the collection's validated, journaled write boundary. Treat validation errors as blockers and do not bypass them with raw filesystem edits; explicit repair is a separate workflow that must be intentionally requested.
-- Routing vault note writes requires read authority for `mdbase.yaml`, even when that file is absent or the target is an ordinary note. A denied routing control is not evidence that a collection exists. Request an authorized profile change if needed; do not substitute the default profile or use a raw write to bypass the check.
+- Routing vault note writes reads `mdbase.yaml` even when that file is absent or the target is an ordinary note. A profile that may write reads it implicitly, so this fails only when the profile explicitly denies a control or uses a policy hook. A denied routing control is not evidence that a collection exists. Request an authorized profile change if needed; do not substitute the default profile or use a raw write to bypass the check.
 - Managed mdbase batches validate the proposed final state: duplicate values and broken declared incoming links can reject the entire edit before any file changes. A valid unique-value swap must be submitted together in one supported batch, not as sequential writes. `stale_state` means a validation dependency changed; reread and rebuild the preview instead of reusing it.
 - Managed mdbase create/update policies may generate IDs, timestamps, or other fields before validation. Read the resulting note rather than assuming the submitted frontmatter was persisted unchanged. Previews retain the generated values for apply/replay; a new preview may generate new values. A no-op policy preserves exact source; changed fields may reserialize frontmatter while preserving the body. `lifecycle_event_unsupported` blocks an optional rename/delete hook; it is not permission to bypass the managed write boundary.
 - To move many notes, pipe `source<TAB>destination` lines into `vulcan refactor move --stdin` instead of looping over `vulcan move`: the whole batch is checked first (malformed lines, repeated sources or destinations), moves run in order with one auto-commit, and the run stops at the first failed move, reporting which pair failed and that the earlier moves stayed applied. A `--dry-run` batch previews each pair against the current vault, so it cannot preview a pair that depends on an earlier one.

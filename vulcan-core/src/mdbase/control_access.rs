@@ -20,16 +20,16 @@ impl<'a> ControlAccess<'a> {
         }
     }
 
+    // Both checks only ever see control paths: control folders, type,
+    // contract and schema files, and the root control files.
     pub(super) fn folder_allowed(&self, folder: &str) -> bool {
-        self.filter.is_none_or(|filter| {
-            filter
-                .path_permission()
-                .covers_path_namespace(&format!("{folder}/**"))
-        })
+        self.filter
+            .is_none_or(|filter| filter.admits_control_folder(folder))
     }
 
     pub(super) fn path_allowed(&self, path: &str) -> bool {
-        self.filter.is_none_or(|filter| filter.is_allowed(path))
+        self.filter
+            .is_none_or(|filter| filter.admits_control_path(path))
     }
 
     pub(super) fn schema(&self, path: &Path) -> Result<(), MdbaseSchemaCompileError> {
@@ -108,5 +108,41 @@ mod tests {
         assert!(unrestricted.folder_allowed("_types"));
         unrestricted.schema(Path::new("hidden.yaml")).unwrap();
         assert!(!unrestricted.denied());
+    }
+
+    #[test]
+    fn implicit_control_reads_admit_every_control_path() {
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Worlds/**".into())],
+            deny: Vec::new(),
+        });
+        let scoped = ControlAccess::new(Some(&filter));
+        assert!(!scoped.folder_allowed("_types"));
+        assert!(!scoped.path_allowed("mdbase.yaml"));
+
+        let filter = filter.with_implicit_control_reads();
+        let writer = ControlAccess::new(Some(&filter));
+        assert!(writer.folder_allowed("_types"));
+        assert!(writer.folder_allowed("_contracts"));
+        assert!(writer.path_allowed("mdbase.yaml"));
+        assert!(writer.path_allowed("_types/task.md"));
+        writer.schema(Path::new("schemas/task.json")).unwrap();
+        assert!(!writer.denied());
+
+        // An explicit path deny still wins; a tag deny does not reach controls.
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Worlds/**".into())],
+            deny: vec![
+                ResourceSpecifier::Note("_types/hidden.md".into()),
+                ResourceSpecifier::Tag("rating/explicit".into()),
+            ],
+        })
+        .with_implicit_control_reads();
+        let denied = ControlAccess::new(Some(&filter));
+        assert!(!denied.folder_allowed("_types"));
+        assert!(!denied.path_allowed("_types/hidden.md"));
+        assert!(denied.path_allowed("_types/task.md"));
+        assert!(denied.folder_allowed("_contracts"));
+        assert!(denied.path_allowed("mdbase.yaml"));
     }
 }

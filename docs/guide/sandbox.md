@@ -92,11 +92,11 @@ writes and refactors of a path. Direct checks read the note's tags from the file
 from the index, so an unscanned or stale index never lifts a tag deny. A new note has no tags until
 it is written, so a tag deny does not stop creating one in an allowed folder.
 
-A profile whose reads are limited to some folders must also be able to read the mdbase control
-files before it can write, even in a vault without an mdbase collection: Vulcan has to see
-`mdbase.yaml` and every type under `_types/` to know which schema a write must satisfy. Without
-them writes fail with "permission denied for required mdbase controls". Add
-`"note:mdbase.yaml"` and `"folder:_types/**"` to the profile's read `allow` list.
+A profile that may write anywhere also reads the mdbase control files (`mdbase.yaml`, its lock
+file, and the types, contracts and schemas they name) whatever its read rules say, because Vulcan
+must know which schema a write has to satisfy. That reading serves validation only: the profile
+still cannot `note get` or list those files unless its read rules allow them, though a validation
+error can quote a schema rule. A read-only profile gets no such exception.
 
 ### Whose profile it is
 

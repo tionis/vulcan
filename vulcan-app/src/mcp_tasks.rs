@@ -220,7 +220,7 @@ mod tests {
             let temporary = tempfile::tempdir().unwrap();
             let paths = VaultPaths::new(temporary.path());
             initialize_vulcan_dir(&paths).unwrap();
-            fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+            fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"], deny = [\"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
             fs::create_dir_all(temporary.path().join("Public")).unwrap();
             let source = "- [ ] Visible synthetic task\n";
             fs::write(temporary.path().join("Public/Tasks.md"), source).unwrap();

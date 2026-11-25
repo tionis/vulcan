@@ -1189,7 +1189,7 @@ fn authorize_affected_paths(
 fn write_control_filter(guard: &ProfilePermissionGuard) -> Result<PermissionFilter, AppError> {
     // Dynamic hooks cannot currently prove complete control-namespace coverage.
     // Do not fall back to a static ceiling that would bypass those decisions.
-    let filter = guard.read_filter();
+    let filter = guard.control_filter();
     if guard.has_policy_hook()
         || !filter.is_allowed("mdbase.yaml")
         || !filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME)
@@ -1914,7 +1914,7 @@ pub(crate) fn load_mdbase_routing_collection(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
 ) -> Result<Option<MdbaseCollection>, AppError> {
-    if guard.has_policy_hook() || !guard.read_filter().is_allowed("mdbase.yaml") {
+    if guard.has_policy_hook() || !guard.control_filter().is_allowed("mdbase.yaml") {
         return Err(control_permission_denied());
     }
     load_mdbase_collection(paths.vault_root()).map_err(AppError::operation)
@@ -3090,7 +3090,7 @@ mod tests {
             let directory = tempdir().unwrap();
             let paths = VaultPaths::new(directory.path());
             fs::create_dir(directory.path().join(".vulcan")).unwrap();
-            fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:tasks/**\", \"folder:Archive/**\"] }\nwrite = { allow = [\"folder:tasks/**\", \"folder:Archive/**\"] }\n").unwrap();
+            fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:tasks/**\", \"folder:Archive/**\"], deny = [\"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:tasks/**\", \"folder:Archive/**\"] }\n").unwrap();
             if let Some(config) = config {
                 fs::write(directory.path().join("mdbase.yaml"), config).unwrap();
             }
@@ -3182,6 +3182,16 @@ mod tests {
         );
     }
 
+    /// `config` with `entry` moved from the read allow list to an explicit
+    /// deny. Merely leaving a control out of the allow list no longer hides it
+    /// from a writing profile, which reads controls implicitly.
+    fn denying(config: &str, entry: &str) -> String {
+        config.replace(&format!("\"{entry}\", "), "").replace(
+            "\"folder:tasks/**\"] }",
+            &format!("\"folder:tasks/**\"], deny = [\"{entry}\"] }}"),
+        )
+    }
+
     #[test]
     fn write_planning_and_apply_require_control_authority_before_config_reads() {
         let (directory, paths) = fixture();
@@ -3210,11 +3220,7 @@ mod tests {
             "folder:_types/**",
             "folder:_contracts/**",
         ] {
-            fs::write(
-                paths.config_file(),
-                config.replace(&format!("\"{denied}\", "), ""),
-            )
-            .unwrap();
+            fs::write(paths.config_file(), denying(config, denied)).unwrap();
             assert_eq!(
                 plan_mdbase_write(&paths, &request, now).unwrap_err().code(),
                 Some("permission_denied")
@@ -3226,11 +3232,7 @@ mod tests {
                 Some("permission_denied")
             );
         }
-        fs::write(
-            paths.config_file(),
-            config.replace("\"note:mdbase.yaml\", ", ""),
-        )
-        .unwrap();
+        fs::write(paths.config_file(), denying(config, "note:mdbase.yaml")).unwrap();
         for contents in [
             None,
             Some("invalid: [SECRET"),
@@ -3263,7 +3265,7 @@ mod tests {
         let (directory, paths) = fixture();
         fs::create_dir(directory.path().join(".vulcan")).unwrap();
         let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"note:mdbase.lock.yaml\", \"folder:_types/**\", \"folder:_contracts/**\", \"folder:tasks/**\"] }\nwrite = { allow = [\"folder:tasks/**\"] }\n";
-        fs::write(paths.config_file(), config).unwrap();
+        fs::write(paths.config_file(), denying(config, "note:hidden.txt")).unwrap();
         let mut request = write_plan_request(
             MdbaseWriteOperation::Update,
             vec![MdbaseWriteChangeRequest {
@@ -3689,7 +3691,7 @@ mod tests {
         let (directory, paths) = fixture();
         initialize_vulcan_dir(&paths).unwrap();
         scan_vault(&paths, ScanMode::Full).unwrap();
-        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:tasks/**\"] }\nwrite = { allow = [\"folder:tasks/**\"] }\nexecute = 'allow'\n").unwrap();
+        fs::write(paths.config_file(), "[permissions.profiles.scoped]\nread = { allow = [\"folder:tasks/**\"], deny = [\"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:tasks/**\"] }\nexecute = 'allow'\n").unwrap();
         let original = fs::read_to_string(directory.path().join("tasks/public.md")).unwrap();
         for config in [Some("hidden: [invalid"), None] {
             match config {

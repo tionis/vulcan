@@ -172,7 +172,7 @@ fn read_authorized_source(
             .map_err(AppError::operation)?,
     );
     let root = {
-        let loaded = load_collection_authorized(paths, Some(&guard.read_filter()))?;
+        let loaded = load_collection_authorized(paths, Some(&guard.control_filter()))?;
         let governed = is_mdbase_record_path(&loaded.collection, &request.path)
             .map_err(AppError::operation)?;
         if !governed || guard.check_read_path(&request.path).is_err() {
