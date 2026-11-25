@@ -29,7 +29,9 @@ before stopping its workers. This covers `vulcan daemon stop`, foreground Ctrl-C
 service-manager termination, including the termination signal normally sent during an orderly OS
 shutdown. Final jobs have a 30-second drain window and use the ordinary recoverable transaction,
 permissions, leases, and safety checks; Vulcan never force-pushes or discards a conflict merely to
-finish shutdown. Paused and non-Git registrations are not overridden. If the platform suspends
+finish shutdown. A job still running when the window closes is cancelled, and the Git command it is
+waiting on, such as a fetch from an unreachable remote, is stopped so the daemon exits promptly.
+Paused and non-Git registrations are not overridden. If the platform suspends
 without a reliable pre-sleep notification, clock-gap detection queues a resume sync immediately
 after wake. Abrupt power loss, hard process kills, and offline shutdown cannot guarantee that bytes
 reach the remote, so the normal watcher remains the primary path and final sync is a last-chance

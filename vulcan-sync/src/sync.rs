@@ -934,7 +934,9 @@ pub fn classify_git_sync_error(error: &GitSyncError) -> SyncError {
         | GitSyncError::Git(
             GitEngineError::WorktreeChanged | GitEngineError::CommandTimedOut { .. },
         ) => (SyncErrorCategory::Busy, true),
-        GitSyncError::Cancelled => (SyncErrorCategory::Cancelled, false),
+        GitSyncError::Cancelled | GitSyncError::Git(GitEngineError::CommandCancelled { .. }) => {
+            (SyncErrorCategory::Cancelled, false)
+        }
         GitSyncError::Observer(_) => (SyncErrorCategory::Observer, false),
         GitSyncError::PlatformIncompatible(_) => (SyncErrorCategory::Unsupported, false),
         GitSyncError::RetryLimit { .. } => (SyncErrorCategory::Network, true),

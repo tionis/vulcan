@@ -1415,7 +1415,8 @@ pub fn sync_git_vault_with_observer(
         paths,
         state_store,
     )
-    .with_command_timeout(options.command_timeout);
+    .with_command_timeout(options.command_timeout)
+    .with_cancellation(cancellation.clone());
     sync_git_vault_with_observer_and_engine(
         &engine,
         paths,

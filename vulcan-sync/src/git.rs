@@ -32,6 +32,13 @@ const MAX_CONFLICT_BLOB_BATCH_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(unix)]
 const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
+const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+enum CommandWait {
+    Exited(std::process::ExitStatus),
+    TimedOut(std::process::ExitStatus),
+    Cancelled(std::process::ExitStatus),
+}
 #[cfg(windows)]
 const WINDOWS_GIT_CREATION_FLAGS: u32 = 0x0800_0000; // CREATE_NO_WINDOW
 const REQUIREMENTS_CACHE_VERSION: u32 = 1;
@@ -1437,6 +1444,11 @@ pub enum GitEngineError {
         /// the overall ceiling while still active.
         stalled: bool,
     },
+    /// The sync was cancelled while this Git command ran, so the command's
+    /// process group was terminated.
+    CommandCancelled {
+        operation: &'static str,
+    },
     RemoteRefMissing {
         remote: GitRemote,
         reference: GitRefName,
@@ -1498,6 +1510,10 @@ impl Display for GitEngineError {
                 "Git timed out while trying to {operation} after {:.3} seconds",
                 timeout.as_secs_f64()
             ),
+            Self::CommandCancelled { operation } => write!(
+                formatter,
+                "Git was stopped while trying to {operation} because the synchronization was cancelled"
+            ),
             Self::RemoteRefMissing { remote, reference } => write!(
                 formatter,
                 "Git remote `{remote}` does not contain `{reference}`"
@@ -1536,6 +1552,7 @@ impl Error for GitEngineError {
             Self::ExecutableUnavailable { source, .. } | Self::Io(source) => Some(source),
             Self::CommandFailed { .. }
             | Self::CommandTimedOut { .. }
+            | Self::CommandCancelled { .. }
             | Self::RemoteRefMissing { .. }
             | Self::InvalidOutput { .. }
             | Self::InvalidObjectId(_)
@@ -1569,6 +1586,14 @@ enum Stall {
     Silent,
     /// Still active at [`MAX_COMMAND_DURATION`].
     Ceiling,
+}
+
+/// Why [`GitCliEngine::wait_while_active`] stopped a Git command.
+#[derive(Debug, Clone, Copy)]
+enum Stopped {
+    Stalled(Stall),
+    /// The sync was cancelled.
+    Cancelled,
 }
 
 impl Stall {
@@ -1656,6 +1681,9 @@ pub struct GitCliEngine {
     /// error, report, or journal, in order: for example the device key file
     /// that ssh may name.
     stderr_redactions: Arc<[StderrRedaction]>,
+    /// When set and cancelled, a running Git command is terminated instead
+    /// of being waited on until its timeout.
+    cancellation: Option<crate::SyncCancellationToken>,
 }
 
 impl PartialEq for GitCliEngine {
@@ -1685,6 +1713,44 @@ impl GitCliEngine {
             subprocess_count: Arc::new(AtomicU64::new(0)),
             ssh_command: None,
             stderr_redactions: Arc::from(Vec::new()),
+            cancellation: None,
+        }
+    }
+
+    /// Terminates any running Git command once `cancellation` is cancelled.
+    /// Without this a cancelled sync blocked on the network (for example an
+    /// SSH connection to an unreachable host) keeps its Git process, and the
+    /// caller waiting for it, alive until the command timeout.
+    #[must_use]
+    pub fn with_cancellation(mut self, cancellation: crate::SyncCancellationToken) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    fn wait_for_command(&self, child: &mut Child) -> std::io::Result<CommandWait> {
+        let deadline = Instant::now() + self.command_timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                terminate_process_group(child);
+                return Ok(CommandWait::TimedOut(child.wait()?));
+            }
+            let slice = if self.cancellation.is_some() {
+                remaining.min(CANCELLATION_POLL_INTERVAL)
+            } else {
+                remaining
+            };
+            if let Some(status) = child.wait_timeout(slice)? {
+                return Ok(CommandWait::Exited(status));
+            }
+            if self
+                .cancellation
+                .as_ref()
+                .is_some_and(crate::SyncCancellationToken::is_cancelled)
+            {
+                terminate_process_group(child);
+                return Ok(CommandWait::Cancelled(child.wait()?));
+            }
         }
     }
 
@@ -1996,12 +2062,18 @@ impl GitCliEngine {
                     write_result?;
                 }
             }
-            if let Some(stall) = timed_out {
-                return Err(GitEngineError::CommandTimedOut {
-                    operation,
-                    timeout: stall.limit(self.command_timeout),
-                    stalled: matches!(stall, Stall::Silent),
-                });
+            match timed_out {
+                Some(Stopped::Stalled(stall)) => {
+                    return Err(GitEngineError::CommandTimedOut {
+                        operation,
+                        timeout: stall.limit(self.command_timeout),
+                        stalled: matches!(stall, Stall::Silent),
+                    });
+                }
+                Some(Stopped::Cancelled) => {
+                    return Err(GitEngineError::CommandCancelled { operation });
+                }
+                None => {}
             }
             Ok(Output {
                 status,
@@ -2021,9 +2093,12 @@ impl GitCliEngine {
         started: Instant,
         activity: &AtomicU64,
         progress: Option<&Path>,
-    ) -> Result<(ExitStatus, Option<Stall>), GitEngineError> {
+    ) -> Result<(ExitStatus, Option<Stopped>), GitEngineError> {
         let idle_limit = self.command_timeout;
-        let poll = (idle_limit / 4).clamp(Duration::from_millis(1), Duration::from_secs(1));
+        let mut poll = (idle_limit / 4).clamp(Duration::from_millis(1), Duration::from_secs(1));
+        if self.cancellation.is_some() {
+            poll = poll.min(CANCELLATION_POLL_INTERVAL);
+        }
         let mut progress_len = 0;
         loop {
             if let Some(status) = child.wait_timeout(poll)? {
@@ -2049,7 +2124,15 @@ impl GitCliEngine {
             };
             if let Some(stall) = stall {
                 terminate_process_group(child);
-                return Ok((child.wait()?, Some(stall)));
+                return Ok((child.wait()?, Some(Stopped::Stalled(stall))));
+            }
+            if self
+                .cancellation
+                .as_ref()
+                .is_some_and(crate::SyncCancellationToken::is_cancelled)
+            {
+                terminate_process_group(child);
+                return Ok((child.wait()?, Some(Stopped::Cancelled)));
             }
         }
     }
@@ -2146,13 +2229,12 @@ impl GitCliEngine {
                 Ok(bytes)
             });
             let stdin_writer = scope.spawn(move || stdin.write_all(input));
-            let (status, timed_out) =
-                if let Some(status) = child.wait_timeout(self.command_timeout)? {
-                    (status, false)
-                } else {
-                    terminate_process_group(&mut child);
-                    (child.wait()?, true)
-                };
+            let wait = self.wait_for_command(&mut child)?;
+            let status = match wait {
+                CommandWait::Exited(status)
+                | CommandWait::TimedOut(status)
+                | CommandWait::Cancelled(status) => status,
+            };
             let blobs = stdout_reader
                 .join()
                 .map_err(|_| GitEngineError::InvalidOutput {
@@ -2166,12 +2248,20 @@ impl GitCliEngine {
                     operation: OPERATION,
                     detail: "Git stdin writer panicked".to_string(),
                 })?;
-            if timed_out {
-                return Err(GitEngineError::CommandTimedOut {
-                    operation: OPERATION,
-                    timeout: self.command_timeout,
-                    stalled: false,
-                });
+            match wait {
+                CommandWait::TimedOut(_) => {
+                    return Err(GitEngineError::CommandTimedOut {
+                        operation: OPERATION,
+                        timeout: self.command_timeout,
+                        stalled: false,
+                    });
+                }
+                CommandWait::Cancelled(_) => {
+                    return Err(GitEngineError::CommandCancelled {
+                        operation: OPERATION,
+                    });
+                }
+                CommandWait::Exited(_) => {}
             }
             blobs?;
             if status.success() {
@@ -7599,6 +7689,38 @@ mod tests {
             } if observed == timeout
         ));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_terminates_a_running_command_before_its_timeout() {
+        let cancellation = crate::SyncCancellationToken::default();
+        let engine = GitCliEngine::default().with_cancellation(cancellation.clone());
+        let mut command = Command::new("sh");
+        // The grandchild stands in for the ssh process a hung fetch spawns.
+        command.args(["-c", "sleep 30 & wait"]);
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            cancellation.cancel();
+        });
+        let started = Instant::now();
+
+        let error = engine
+            .execute(command)
+            .expect_err("the command should be cancelled");
+
+        canceller.join().expect("canceller");
+        assert!(matches!(
+            error,
+            GitEngineError::CommandCancelled {
+                operation: "run a Git command"
+            }
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            crate::classify_git_sync_error(&crate::GitSyncError::Git(error)).category,
+            crate::SyncErrorCategory::Cancelled
+        );
     }
 
     #[test]

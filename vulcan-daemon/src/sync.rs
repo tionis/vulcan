@@ -336,6 +336,7 @@ fn execute_claimed_job(
         engine
             .clone()
             .with_command_timeout(options.command_timeout)
+            .with_cancellation(claimed.cancellation.clone())
             .with_fresh_metrics(),
         &paths,
         state_store,
