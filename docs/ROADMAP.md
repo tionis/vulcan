@@ -23,6 +23,7 @@ The numbered phases describe dependency order, not a requirement to implement ev
 - **Committed application-platform direction:** Phase 19 owns immutable `.vapp` packages, installation/instance lifecycle, sandboxed browser applications, typed app CLI commands, QuickJS host functions, server/browser WebAssembly components, and explicit canonical app data. It builds on the daemon, WebUI, and capability model without extending the Phase 10 gate.
 - **Candidate capability tracks:** mdbase expansion, shared query planning and execution (QRY), and additional native vault workflows with compatibility adapters are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
 - **Promotion gate:** move a candidate into the committed path only when there is a concrete use case, a capability-oriented domain and public surface, an identified dependency/ownership boundary, a sustainable adapter compatibility and testing strategy, and enough maintenance budget to support the advertised surface. Promote only the smallest independently useful native slice; importing one plugin's settings is not by itself a product boundary.
+- **Optional addition:** 9.42 brings live-document features (a shared DataviewJS scope per note, CustomJS vault functions with a DQL bridge, Meta Bind inputs and views, Numerals calculator blocks) through Obsidian plugin syntax. It builds on 9.8, 9.29, and 9.40, needs no daemon, and blocks nothing.
 - **Optional addition:** 9.40 gives terminal editors (Neovim, Vim, Helix, and other LSP clients) live vault semantics through an editor-neutral `vulcan lsp` stdio server and a thin `vulcan.nvim` plugin. It depends only on completed core/app foundations (9.29, the QRY.6 retained note-store session), does not depend on 10.5 or 10.7, and does not block MDB work.
 - **Placement rule:** durable Markdown semantics, parsing, diagnostics, and mutation-free exports may live in core/app tracks; daemon transports belong to Phase 10+, sync protocols to Phase 12, browser editing behavior to Phase 14, and supervised runtimes or first-party external integrations to Phase 15. Editor-neutral language-server adapters over `vulcan-core`/`vulcan-app` (Phase 9.40) are client-owned stdio transports like MCP stdio: they may land as optional additions, must work without a daemon, and must not depend on 10.7.
 
@@ -8719,6 +8720,47 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 - [ ] Add a publication gate that runs before planning any remote or file mutation, over the selected set as the bound profile, and fails closed: declarative rules in the profile (required tags, forbidden tags such as `rating/explicit`, no included note embedding a note outside the selection) plus an optional blocking `on_pre_publish` plugin hook under the same sandbox as `on_pre_commit`. The gate reads what is on disk at publish time. Dry runs and plans report every violation; live runs refuse.
 - [ ] Share the gate's rules with `doctor` as a vault-wide audience diagnostic (for example explicit notes carrying an audience tag, or audience notes embedding notes of a narrower audience), so problems show up before a publish attempt. The rules are declared once and used by both.
 - [ ] End-to-end test with a mixed-audience fixture vault publishing through the mock Outline transport, ZIP export, and a route; CLI reference, guide, and `publishing-and-export` and `configuration-and-permissions` skill updates.
+
+---
+
+## Phase 9.42: Live documents — shared scope, vault functions, bound inputs, calculator blocks
+
+**Goal:** Give Obsidian-style notes the live-document capabilities of SilverBullet's Space Lua and Ink & Switch's Potluck — values defined once and computed inline, helpers defined in the vault, values edited in place, calculator blocks — through the syntax of the Obsidian plugins that already provide them (Dataview, CustomJS, Meta Bind, Numerals), so the same notes work in Obsidian and in Vulcan.
+
+**Contract:** `docs/specs/live-documents.md` (syntax, semantics, Obsidian differences, settings). Decided with Eric 2026-11-25: ordered `$=` scope rather than a new `${…}` syntax; Meta Bind-compatible inputs; CustomJS plus a Vulcan-only DQL bridge; bundled mathjs for Numerals fidelity.
+
+**Depends on:** DataviewJS sessions and the render policy (9.8.8, 9.29), the evaluated renderer and editor regions (9.40), frontmatter mutation and settings import (9.13). No daemon dependency.
+
+### 9.42.1 One scope per note
+
+- [ ] Run a note's inline DataviewJS and `dataviewjs` blocks in one session, top to bottom, as non-strict global code; blocks keep `const`/`let`/`class` local.
+- [ ] `dataview inline` reports inline DataviewJS values (`js_results`); `dataview eval --block N` runs the scripts above block N first.
+- [ ] Design document, `dataview-and-bases` skill, tests.
+
+### 9.42.2 CustomJS classes and the DQL bridge
+
+- [ ] `[customjs]` config (`js_files`, `js_folder`, `startup_scripts`, `invocable_scripts`) and settings import from `.obsidian/plugins/customjs/data.json`.
+- [ ] Load classes exactly as CustomJS does (basename order, `(class …)` evaluation, `customJS`, `cJS()`, `create<Name>Instance`) into note sessions, `dataview query-js`, `dataview eval`, and `vulcan run`; load failures are diagnostics.
+- [ ] `vulcan customjs list|invoke|startup` for `invoke()` scripts, with `--dry-run`.
+- [ ] `[customjs.dql_functions]` DQL bridge in a strict, read-only session; names may not shadow built-ins.
+- [ ] Scripting guide, `dataview-and-bases` skill, tests (fixture vault with CustomJS classes).
+
+### 9.42.3 Meta Bind inputs and views
+
+- [ ] Parser for `INPUT`/`VIEW`/`BUTTON` inline fields and `meta-bind*` blocks, with Meta Bind's diagnostics; `[metabind]` config and settings import.
+- [ ] Bind-target resolution (frontmatter, `File#prop`, nested paths; `memory^`/`globalMemory^` render-local) and typed reads with defaults.
+- [ ] Rendering: INPUT current values, VIEW `math` (mathjs from 9.42.4), `text`, `link`, `image`; Markdown, HTML, and editor regions.
+- [ ] `vulcan metabind list|set|apply` with validation against the bound inputs and `--dry-run`.
+- [ ] LSP code actions and `vulcan.metabind.set` prompts in `vulcan.nvim` and `vulcan.vim`.
+- [ ] `vulcan metabind press` for vault-only button actions; other actions report "runs in Obsidian".
+- [ ] Guide, skills (`dataview-and-bases` or a new `live-documents` skill), tests.
+
+### 9.42.4 Numerals calculator blocks
+
+- [ ] Vendor mathjs 15.2.0 (Apache-2.0) and run it in a vault-isolated QuickJS context behind `js_runtime`.
+- [ ] `math*` blocks and `#:`/`#=:` inline triggers with Numerals' rewrites, `@prev`/`@total`, emitters, directives, currency units, metadata scope, and `$` note globals.
+- [ ] Rendering in Markdown, HTML, and editor regions; `vulcan numerals apply` for `@[name]` insertion lines with `--dry-run`.
+- [ ] `[numerals]` config and settings import; guide, skills, tests against Numerals' own examples.
 
 ---
 
