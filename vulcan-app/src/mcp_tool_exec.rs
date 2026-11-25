@@ -27,6 +27,8 @@ pub struct McpToolExecution<'a> {
     pub profile_name: &'a str,
     pub profile: &'a PermissionProfile,
     pub client: &'a crate::mcp_authority::McpClientAttribution,
+    /// Operation records, where the transport keeps them.
+    pub operations: Option<&'a dyn crate::mcp_operations::McpOperationLookup>,
 }
 
 impl McpToolExecution<'_> {
@@ -348,6 +350,15 @@ impl McpToolExecution<'_> {
                 )?;
                 self.value(tool.name, report)
             }
+            McpToolId::OperationGet => {
+                let args: mcp_protocol::McpOperationGetArgs = parse(arguments)?;
+                let Some(lookup) = self.operations else {
+                    return Err(McpMethodError::invalid_params(format!(
+                        "Unknown tool: {name}"
+                    )));
+                };
+                crate::mcp_operations::operation_get(lookup, &args.id)
+            }
             McpToolId::ChangesetAbandon => {
                 let args: mcp_protocol::McpChangesetIdArgs = parse(arguments)?;
                 let report = mcp_changesets::changeset_abandon(self.paths, self.guard, &args)?;
@@ -554,6 +565,7 @@ mod tests {
             profile_name: &selection.name,
             profile: &selection.profile,
             client: &crate::mcp_authority::McpClientAttribution::default(),
+            operations: None,
         };
         let status = executor.call_tool("status", &Map::new()).unwrap();
         assert_eq!(
@@ -621,6 +633,7 @@ mod tests {
                 profile_name: &selection.name,
                 profile: &selection.profile,
                 client: &crate::mcp_authority::McpClientAttribution::default(),
+                operations: None,
             };
             let result = executor
                 .call_tool(name, arguments.as_object().unwrap())
@@ -677,6 +690,7 @@ mod tests {
             profile_name: &selection.name,
             profile: &selection.profile,
             client: &crate::mcp_authority::McpClientAttribution::default(),
+            operations: None,
         };
         let arguments = Map::from_iter([
             ("note".to_string(), json!("Home.md")),
@@ -700,6 +714,7 @@ mod tests {
             profile_name: &selection.name,
             profile: &selection.profile,
             client: &crate::mcp_authority::McpClientAttribution::default(),
+            operations: None,
         };
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         executor

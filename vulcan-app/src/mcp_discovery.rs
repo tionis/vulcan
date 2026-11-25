@@ -6,7 +6,9 @@ use vulcan_core::{
 };
 
 use crate::mcp_assistant;
-use crate::mcp_catalog::{tool_input_schema, visible_tool_catalog, ALWAYS_LOADED_TOOLS};
+use crate::mcp_catalog::{
+    tool_input_schema, transport_tools, visible_tool_catalog, ALWAYS_LOADED_TOOLS,
+};
 use crate::mcp_completion;
 use crate::mcp_help::{self, HelpTopicReport};
 use crate::mcp_protocol::{McpCompletionParams, McpMethodError, MCP_RESOURCE_NOT_FOUND};
@@ -17,6 +19,8 @@ pub struct McpDiscovery<'a> {
     pub guard: &'a ProfilePermissionGuard,
     pub profile_name: &'a str,
     pub profile: &'a PermissionProfile,
+    /// Whether the transport keeps operation records (`operation_get`).
+    pub operations: bool,
 }
 
 impl McpDiscovery<'_> {
@@ -27,6 +31,7 @@ impl McpDiscovery<'_> {
     pub fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
         let mut tools = visible_tool_catalog(self.profile)
             .into_iter()
+            .chain(transport_tools(self.operations))
             .map(|tool| {
                 let mut item = json!({
                     "name": tool.name,
@@ -231,6 +236,7 @@ mod tests {
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
+            operations: false,
         };
         let tools = discovery.visible_tool_items().unwrap();
         let note_get = tools

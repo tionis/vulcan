@@ -14,7 +14,9 @@ use crate::mcp_assistant::{
     prompt_files_fingerprint, resource_files_fingerprint, tool_catalog_fingerprint,
 };
 use crate::mcp_authority::{McpAuthority, McpClientAttribution};
+use crate::mcp_discovery::McpDiscovery;
 use crate::mcp_help::HelpTopicReport;
+use crate::mcp_operations::McpOperationLookup;
 use crate::mcp_protocol::{
     server_instructions, tool_error_structured, McpCompletionParams, McpListParams,
     McpListSnapshot, McpMethodError, McpPromptGetParams, McpResourceReadParams, McpToolCallParams,
@@ -61,6 +63,8 @@ pub struct McpRequestContext<'a> {
     pub client: &'a McpClientAttribution,
     pub era: McpEra,
     pub host: &'a McpProtocolHost,
+    /// Operation records, where the transport keeps them.
+    pub operations: Option<&'a dyn McpOperationLookup>,
 }
 
 /// The `_meta` of a modern request, once validated.
@@ -187,21 +191,25 @@ fn dispatch(
     params: Option<&Value>,
 ) -> Result<Option<Value>, McpMethodError> {
     let authority = ctx.authority;
+    let discovery = || McpDiscovery {
+        operations: ctx.operations.is_some(),
+        ..authority.discovery()
+    };
     Ok(Some(match method {
         "server/discover" => discover_result(ctx),
         "notifications/cancelled" => return Ok(None),
         "tools/list" => paginated(
             "tools",
-            authority.discovery().visible_tool_items()?,
+            discovery().visible_tool_items()?,
             parse::<McpListParams>(params)?.cursor,
         )?,
         "tools/call" => {
             let params: McpToolCallParams = parse(params)?;
-            authority.call_tool(ctx.client, &params.name, &params.arguments)?
+            authority.call_tool_with(ctx.client, ctx.operations, &params.name, &params.arguments)?
         }
         "prompts/list" => paginated(
             "prompts",
-            authority.discovery().visible_prompt_items()?,
+            discovery().visible_prompt_items()?,
             parse::<McpListParams>(params)?.cursor,
         )?,
         "prompts/get" => {
@@ -212,12 +220,12 @@ fn dispatch(
         }
         "resources/list" => paginated(
             "resources",
-            authority.discovery().visible_resources()?,
+            discovery().visible_resources()?,
             parse::<McpListParams>(params)?.cursor,
         )?,
         "resources/templates/list" => paginated(
             "resourceTemplates",
-            authority.discovery().visible_resource_templates(),
+            discovery().visible_resource_templates(),
             parse::<McpListParams>(params)?.cursor,
         )?,
         "resources/read" => {
@@ -468,6 +476,7 @@ mod tests {
             client: &client,
             era: McpEra::Modern,
             host: &host,
+            operations: None,
         };
         let discover = handle(&ctx, "server/discover", None).unwrap().unwrap();
         assert_eq!(discover["resultType"], "complete");

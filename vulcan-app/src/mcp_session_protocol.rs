@@ -3,6 +3,7 @@
 //! JSON-RPC message at a time.
 
 use serde_json::Value;
+use std::sync::Arc;
 use vulcan_core::{PermissionError, ResolvedPermissionProfile, VaultPaths};
 
 use crate::mcp_authority::{McpAuthority, McpClientAttribution};
@@ -12,6 +13,7 @@ use crate::mcp_dispatch::{
     acquire_request_ordinary_write_gate, jsonrpc_error, process_http_request,
     process_stdio_request, request_id, McpHttpProcessResult, McpMethodHandler,
 };
+use crate::mcp_operations::McpOperationLookup;
 use crate::mcp_protocol::{McpMethodError, McpMethodOutcome};
 
 /// One client of one vault: the authority it acts under, the authenticated
@@ -28,6 +30,8 @@ pub struct McpProtocolCore {
     /// Whether legacy list changes ride along with responses. A host with
     /// its own change watcher turns this off and polls instead.
     list_changes_on_responses: bool,
+    /// Operation records, where the host keeps them.
+    operations: Option<Arc<dyn McpOperationLookup>>,
 }
 
 impl McpProtocolCore {
@@ -44,6 +48,7 @@ impl McpProtocolCore {
             subject: None,
             host,
             list_changes_on_responses: true,
+            operations: None,
         })
     }
 
@@ -71,6 +76,11 @@ impl McpProtocolCore {
     pub fn set_authenticated_client(&mut self, client_id: Option<String>, subject: Option<String>) {
         self.oauth_client_id = client_id;
         self.subject = subject;
+    }
+
+    /// Offer `operation_get` over the host's operation records.
+    pub fn keep_operations(&mut self, operations: Arc<dyn McpOperationLookup>) {
+        self.operations = Some(operations);
     }
 
     /// Deliver legacy list changes through [`Self::poll_list_changes`] from a
@@ -152,6 +162,7 @@ impl McpMethodHandler for McpProtocolCore {
                     client: &client,
                     era: McpEra::Modern,
                     host: &self.host,
+                    operations: self.operations.as_deref(),
                 },
                 method,
                 params,
@@ -175,6 +186,7 @@ impl McpMethodHandler for McpProtocolCore {
                         client: &client,
                         era: McpEra::Legacy,
                         host: &self.host,
+                        operations: self.operations.as_deref(),
                     },
                     method,
                     params,

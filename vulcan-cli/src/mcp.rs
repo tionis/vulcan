@@ -1907,8 +1907,10 @@ fn build_mcp_tool_registry_entries(
 ) -> Result<Vec<ToolRegistryEntry>, CliError> {
     let selection = vulcan_core::resolve_selected_permission_profile(paths, requested_profile)
         .map_err(permission_error_to_cli)?;
+    // As the default stdio server lists them, operation_get included.
     let mut tools = visible_tool_catalog(&selection.profile)
         .into_iter()
+        .chain(vulcan_app::mcp_catalog::transport_tools(true))
         .map(|tool| mcp_tool_registry_entry(tool, &selection.profile))
         .collect::<Vec<_>>();
     tools.extend(

@@ -26,7 +26,9 @@ use crate::mcp_schemas::{
     task_reminder_remove_input_schema, task_reschedule_input_schema, web_fetch_input_schema,
     web_fetch_output_schema, web_search_input_schema, web_search_output_schema,
 };
-use crate::mcp_schemas::{empty_input_schema, file_get_input_schema, file_put_input_schema};
+use crate::mcp_schemas::{
+    empty_input_schema, file_get_input_schema, file_put_input_schema, operation_get_input_schema,
+};
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -86,6 +88,7 @@ pub enum McpToolId {
     ChangesetList,
     ChangesetLand,
     ChangesetAbandon,
+    OperationGet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -667,6 +670,18 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         output_schema: None,
         examples: &["changeset_abandon {\"id\":\"01J…\"}"],
     },
+    McpToolCatalogEntry {
+        id: McpToolId::OperationGet,
+        name: "operation_get",
+        title: "Get An Operation",
+        description: "Report how a tool call that timed out with an `indeterminate` error ended: running, succeeded with its result, or failed. Check it before repeating the call.",
+        visibility: McpVisibilityRequirement::None,
+        destructive: false,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: operation_get_input_schema,
+        output_schema: None,
+        examples: &["operation_get {\"id\":\"01J…\"}"],
+    },
 ];
 
 /// Tools that take an optional `changeset` argument and then run in that
@@ -773,10 +788,20 @@ fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'stati
 }
 
 /// The built-in tools a profile may see and call, in catalog order.
+/// `operation_get` is not among them: a transport that keeps operation
+/// records adds it (see [`transport_tools`]).
 pub fn visible_tool_catalog(profile: &PermissionProfile) -> Vec<&'static McpToolCatalogEntry> {
     MCP_TOOL_CATALOG
         .iter()
-        .filter(|tool| tool_visible(tool, profile))
+        .filter(|tool| tool.id != McpToolId::OperationGet && tool_visible(tool, profile))
+        .collect()
+}
+
+/// Tools that exist only where the transport provides them.
+pub fn transport_tools(operations: bool) -> Vec<&'static McpToolCatalogEntry> {
+    MCP_TOOL_CATALOG
+        .iter()
+        .filter(|tool| operations && tool.id == McpToolId::OperationGet)
         .collect()
 }
 
@@ -885,9 +910,11 @@ mod tests {
             Err(McpMethodError::Tool { .. })
         ));
         let unrestricted = PermissionProfile::unrestricted();
+        // Everything but the transport's own operation_get.
         assert_eq!(
-            visible_tool_catalog(&unrestricted).len(),
+            visible_tool_catalog(&unrestricted).len() + transport_tools(true).len(),
             MCP_TOOL_CATALOG.len()
         );
+        assert!(transport_tools(false).is_empty());
     }
 }

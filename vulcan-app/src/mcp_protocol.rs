@@ -842,6 +842,12 @@ pub struct McpChangesetBeginArgs {
     pub title: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpOperationGetArgs {
+    pub id: String,
+}
+
 /// A changeset id, as `changeset_begin` returned it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -8819,7 +8819,8 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 ### 9.43.7 Operations, timeouts and stdio
 
 - [x] Concurrent stdio: a reader dispatches tool calls to four workers (queue of 64) while other requests are answered in order; one writer; `notifications/cancelled` skips a queued call and suppresses a running call's response; end of input drains for up to 5 s.
-- [ ] Operation ledger for every long or mutating call on every transport; timeouts become `indeterminate` with an operation id; `operation_get`.
+- [x] stdio records every tool call as an operation (in memory, 256 records, an hour after finishing); a call past its deadline keeps running and returns an `indeterminate` tool error with its `operation_id`; `operation_get` reports running, succeeded with the result, or failed. It is listed where the transport keeps records (stdio, and `describe`, which shows the stdio list).
+- [ ] The same on HTTP: `operation_get` over the hosted ledger for named remotes and records for foreground HTTP, with the axum transport (9.43.8).
 
 ### 9.43.8 axum HTTP transport
 

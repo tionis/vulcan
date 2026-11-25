@@ -9,6 +9,7 @@ use vulcan_core::{
 
 use crate::mcp_catalog::active_tool_names;
 use crate::mcp_discovery::McpDiscovery;
+use crate::mcp_operations::McpOperationLookup;
 use crate::mcp_protocol::McpMethodError;
 use crate::mcp_tool_exec::McpToolExecution;
 
@@ -131,6 +132,7 @@ impl McpAuthority {
             guard: &self.guard,
             profile_name: self.selection.name.as_str(),
             profile: &self.selection.profile,
+            operations: false,
         }
     }
 
@@ -140,12 +142,24 @@ impl McpAuthority {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
+        self.call_tool_with(client, None, name, arguments)
+    }
+
+    /// Call a tool where the transport keeps operation records.
+    pub fn call_tool_with(
+        &self,
+        client: &McpClientAttribution,
+        operations: Option<&dyn McpOperationLookup>,
+        name: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, McpMethodError> {
         McpToolExecution {
             paths: &self.paths,
             guard: &self.guard,
             profile_name: self.selection.name.as_str(),
             profile: &self.selection.profile,
             client,
+            operations,
         }
         .call_tool(name, arguments)
     }

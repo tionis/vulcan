@@ -17,6 +17,11 @@ use std::time::{Duration, Instant};
 
 use super::McpServerCore;
 use vulcan_app::mcp_dispatch::jsonrpc_error;
+use vulcan_app::mcp_operations::{
+    indeterminate_response, McpOperationLookup, McpOperationRegistry,
+};
+use vulcan_app::mcp_session_protocol::McpProtocolCore;
+use vulcan_daemon::mcp_worker::{run_mcp_worker, McpWorkerResult};
 
 /// Tool calls that may run at once.
 const WORKERS: usize = 4;
@@ -107,6 +112,8 @@ pub(super) fn serve(
     output: Box<dyn Write + Send>,
 ) -> std::io::Result<()> {
     core.watch_list_changes();
+    let operations = Arc::new(McpOperationRegistry::default());
+    core.keep_operations(Arc::clone(&operations) as Arc<dyn McpOperationLookup>);
     let core = Arc::new(Mutex::new(core));
     let output: Output = Arc::new(Mutex::new(output));
     let tracker = Arc::new(Tracker {
@@ -118,11 +125,12 @@ pub(super) fn serve(
     let jobs = Arc::new(Mutex::new(jobs));
     let workers = (0..WORKERS)
         .map(|index| {
-            let (core, output, tracker, jobs) = (
+            let (core, output, tracker, jobs, operations) = (
                 Arc::clone(&core),
                 Arc::clone(&output),
                 Arc::clone(&tracker),
                 Arc::clone(&jobs),
+                Arc::clone(&operations),
             );
             std::thread::Builder::new()
                 .name(format!("vulcan-mcp-stdio-{index}"))
@@ -132,10 +140,8 @@ pub(super) fn serve(
                     if !tracker.is_cancelled(&key) {
                         // The core keeps no per-call state: each call runs on
                         // a copy, and the shared core stays free for the reader.
-                        let mut worker =
-                            core.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                        let messages =
-                            worker.process_request_with_timeout(request, request_timeout);
+                        let worker = core.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                        let messages = run_call(worker, request, request_timeout, &operations);
                         // A cancelled call gets no response.
                         if !tracker.is_cancelled(&key) {
                             for message in &messages {
@@ -184,6 +190,50 @@ pub(super) fn serve(
         }
     }
     result
+}
+
+/// Run one tool call under a deadline, recorded as an operation. A call
+/// still running at its deadline keeps running, records its outcome when it
+/// ends, and its response now says so with the operation id.
+fn run_call(
+    mut worker: McpServerCore,
+    request: Value,
+    request_timeout: Duration,
+    operations: &Arc<McpOperationRegistry>,
+) -> Vec<Value> {
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let tool = request
+        .get("params")
+        .and_then(|params| params.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let operation_id = operations.begin(tool);
+    let registry = Arc::clone(operations);
+    let call_operation = operation_id.clone();
+    let response_id = id.clone();
+    let outcome = run_mcp_worker("vulcan-mcp-request", request_timeout, None, move || {
+        let messages = McpProtocolCore::process_request(&mut worker, request);
+        let response = messages
+            .iter()
+            .find(|message| message.get("id") == Some(&response_id));
+        registry.finish(&call_operation, response);
+        messages
+    });
+    match outcome {
+        McpWorkerResult::Completed(messages) => messages,
+        McpWorkerResult::TimedOut => {
+            vec![indeterminate_response(id, &operation_id, request_timeout)]
+        }
+        McpWorkerResult::Disconnected | McpWorkerResult::SpawnFailed => {
+            operations.finish(&operation_id, None);
+            vec![jsonrpc_error(
+                id,
+                -32603,
+                "the MCP request worker stopped before producing a response".to_string(),
+                None,
+            )]
+        }
+    }
 }
 
 fn read_requests(
@@ -316,6 +366,39 @@ mod tests {
             .iter()
             .filter(|message| message["result"]["structuredContent"].is_object())
             .all(|message| message["result"]["isError"] == false));
+    }
+
+    #[test]
+    fn a_call_past_its_deadline_is_indeterminate_and_operation_get_reports_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("Home.md"), "# Home\n").unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let mut core = McpServerCore::new(&paths, Some("readonly")).unwrap();
+        let operations = Arc::new(McpOperationRegistry::default());
+        core.keep_operations(Arc::clone(&operations) as Arc<dyn McpOperationLookup>);
+        let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "note_get", "arguments": {"note": "Home.md"}}});
+        let messages = run_call(core.clone(), call, Duration::ZERO, &operations);
+        let structured = &messages[0]["result"]["structuredContent"];
+        assert_eq!(structured["error"]["code"], "indeterminate", "{messages:?}");
+        let operation_id = structured["operation_id"].as_str().unwrap().to_string();
+
+        // The call was not stopped; once it ends, operation_get has it.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while operations.get(&operation_id).unwrap()["state"] == "running" {
+            assert!(Instant::now() < deadline, "the call never finished");
+            std::thread::park_timeout(Duration::from_millis(20));
+        }
+        let get = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "operation_get", "arguments": {"id": operation_id}}});
+        let reported = run_call(core, get, Duration::from_secs(30), &operations);
+        let record = &reported[0]["result"]["structuredContent"];
+        assert_eq!(record["state"], "succeeded", "{reported:?}");
+        assert_eq!(record["tool"], "note_get");
+        assert!(record["result"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("# Home"));
     }
 
     #[test]

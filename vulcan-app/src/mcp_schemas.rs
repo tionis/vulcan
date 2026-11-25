@@ -1313,6 +1313,16 @@ pub fn changeset_land_input_schema() -> Value {
     )
 }
 
+pub fn operation_get_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "id",
+            schema_string("Operation id, from the `operation_id` of an `indeterminate` error."),
+        )],
+        &["id"],
+    )
+}
+
 /// Add the optional `changeset` argument to a tool's input schema.
 pub fn with_changeset_argument(mut schema: Value) -> Value {
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
