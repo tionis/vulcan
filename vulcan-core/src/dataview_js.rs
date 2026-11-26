@@ -6492,7 +6492,7 @@ globalThis.this = dv.current();
         let outline = crate::outline_note(&source, &parsed);
         Ok(serde_json::json!({
             "page": page_object(note),
-            "file": FileMetadataResolver::object(note),
+            "file": dataview_file_object(note),
             "frontmatter": note.frontmatter.clone(),
             "content": source,
             "html": render_note_html(paths, &path, &source).html,
@@ -8120,7 +8120,99 @@ globalThis.this = dv.current();
         }
         Ok(note_index
             .note(path)
-            .map_or(Value::Null, |note| FileMetadataResolver::field(note, key)))
+            .map_or(Value::Null, |note| dataview_file_field(note, key)))
+    }
+
+    /// A `file` field as Dataview reports it: tags carry `#` and come in
+    /// Dataview's order, body tags before frontmatter tags, and `tags` adds
+    /// each tag's parents after it.
+    fn dataview_file_field(note: &NoteRecord, key: &str) -> Value {
+        match key {
+            "etags" => Value::Array(
+                dataview_explicit_tags(note)
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            ),
+            "tags" => {
+                let mut tags = Vec::<String>::new();
+                for tag in dataview_explicit_tags(note) {
+                    let mut current = tag.as_str();
+                    loop {
+                        if !tags.iter().any(|seen| seen == current) {
+                            tags.push(current.to_string());
+                        }
+                        match current.rfind('/') {
+                            Some(slash) => current = &current[..slash],
+                            None => break,
+                        }
+                    }
+                }
+                Value::Array(tags.into_iter().map(Value::String).collect())
+            }
+            _ => FileMetadataResolver::field(note, key),
+        }
+    }
+
+    fn dataview_file_object(note: &NoteRecord) -> Value {
+        let mut object = FileMetadataResolver::object(note);
+        if let Value::Object(fields) = &mut object {
+            for key in ["tags", "etags"] {
+                if fields.contains_key(key) {
+                    fields.insert(key.to_string(), dataview_file_field(note, key));
+                }
+            }
+        }
+        object
+    }
+
+    /// The note's tags with `#`, deduplicated: body tags first, then the
+    /// frontmatter `tags`/`tag` values, split on commas and spaces as
+    /// Dataview splits them.
+    fn dataview_explicit_tags(note: &NoteRecord) -> Vec<String> {
+        fn collect(value: &Value, into: &mut Vec<String>) {
+            match value {
+                Value::Array(items) => items.iter().for_each(|item| collect(item, into)),
+                Value::Null | Value::Bool(false) => {}
+                Value::String(text) => into.extend(
+                    text.split(|ch: char| ch == ',' || ch.is_whitespace())
+                        .filter(|part| !part.is_empty())
+                        .map(str::to_string),
+                ),
+                other => into.push(other.to_string()),
+            }
+        }
+        let with_hash = |tag: &str| {
+            if tag.starts_with('#') {
+                tag.to_string()
+            } else {
+                format!("#{tag}")
+            }
+        };
+        let mut frontmatter = Vec::new();
+        if let Value::Object(fields) = &note.frontmatter {
+            for (key, value) in fields {
+                if key.eq_ignore_ascii_case("tags") || key.eq_ignore_ascii_case("tag") {
+                    collect(value, &mut frontmatter);
+                }
+            }
+        }
+        let frontmatter = frontmatter
+            .iter()
+            .map(|tag| with_hash(tag))
+            .collect::<Vec<_>>();
+        let mut tags = Vec::<String>::new();
+        let body = note
+            .tags
+            .iter()
+            .map(|tag| with_hash(tag))
+            .filter(|tag| !frontmatter.contains(tag));
+        for tag in body.chain(frontmatter.iter().cloned()) {
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
+        tags
     }
 
     fn resolve_page_path(paths: &VaultPaths, file: &str) -> Result<String, DataviewJsError> {
@@ -8153,7 +8245,7 @@ globalThis.this = dv.current();
             .as_object()
             .cloned()
             .unwrap_or_else(Map::new);
-        fields.insert("file".to_string(), FileMetadataResolver::object(note));
+        fields.insert("file".to_string(), dataview_file_object(note));
         Value::Object(fields)
     }
 
@@ -9007,6 +9099,52 @@ globalThis.this = dv.current();
                     "loadIsPromise": true,
                 }))
             );
+        }
+
+        #[test]
+        fn dataviewjs_file_tags_follow_dataview() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            fs::write(
+                vault_root.join("Tagged.md"),
+                "---\ntags: \"front/one, #front/two shared\"\n---\nBody #body/deep/er and #shared.\n",
+            )
+            .expect("note should be written");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const eager = dv.page("Tagged").file;
+                const lazy = dv.pages().where((page) => page.file.name === "Tagged")[0].file;
+                ({
+                  etags: eager.etags.array(),
+                  tags: eager.tags.array(),
+                  lazyTags: lazy.tags.array(),
+                })
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            let value = result.value.expect("script value");
+            assert_eq!(
+                value["etags"],
+                serde_json::json!(["#body/deep/er", "#front/one", "#front/two", "#shared"])
+            );
+            let tags = serde_json::json!([
+                "#body/deep/er",
+                "#body/deep",
+                "#body",
+                "#front/one",
+                "#front",
+                "#front/two",
+                "#shared"
+            ]);
+            assert_eq!(value["tags"], tags);
+            assert_eq!(value["lazyTags"], tags);
         }
 
         #[test]
@@ -11212,8 +11350,6 @@ shell = "allow"
             ".behaviour.inlineDurationKind",
             ".behaviour.queryMarkdown",
             ".behaviour.whereStatus",
-            ".fileValues.etags",
-            ".fileValues.tags",
             ".lists[0].keys",
             ".lists[0].parent",
             ".lists[1].keys",
