@@ -8856,7 +8856,8 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 - [x] MCP guides, ChatGPT guide, AGENTS template, `mcp-setup` skill: new [Connecting MCP clients](guide/mcp-clients.md) guide (`vulcan help mcp-clients`); tool packs, scopes and the removed direct OAuth flags gone from the remotes guide, ChatGPT guide, `config` help and skill.
 - [x] Live acceptance with Claude Code 2.1.332 (local stdio and static-token HTTP, headless): 2026-07-28 negotiated, tools, reads, writes, search, status, ambiguous-note input request (answered `cancel` headless), progress on HTTP event streams. Fixed on the way: server version, `last_scan` format, `no_frontmatter` with `lines`. Claude Code declares tasks on `server/discover` but not on `tools/call`, so no task was created (correct per spec); skills over MCP need an interactive session (not `-p`).
-- [ ] Live acceptance with claude.ai (named remote, IndieAuth, HTTPS proxy) and ChatGPT; Claude Code skills in an interactive session.
+- [x] Live acceptance with claude.ai (2026-11-26, saga through its HTTPS proxy): connector registration, IndieAuth sign-in and consent, tool listing under a scoped profile, reads, writes with `expected_hash`, an ambiguous note answered through claude.ai's input form, `index_scan`, refresh across daemon restarts, and existing grimoire/mimir connections. It found the swallowed hosted tool error (b91234e6), the silent `mcp_remote.tool_packs` (2bebddd3) and mdbase routing that refused every write for folder-scoped profiles (3f350e32).
+- [ ] Live acceptance with ChatGPT; Claude Code skills in an interactive session.
 
 ---
 
