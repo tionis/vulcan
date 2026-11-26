@@ -711,21 +711,26 @@ pub fn resolve_existing_markdown_target(
     paths: &VaultPaths,
     note: &str,
 ) -> Result<MarkdownTarget, AppError> {
-    if let Ok(relative_path) = resolve_existing_note_path(paths, note) {
-        let absolute_path = paths.vault_root().join(&relative_path);
-        return Ok(MarkdownTarget {
-            display_path: relative_path.clone(),
-            absolute_path,
-            vault_relative_path: Some(relative_path),
-            config: load_vault_config(paths).config,
-        });
-    }
+    let ambiguity = match resolve_existing_note_path(paths, note) {
+        Ok(relative_path) => {
+            let absolute_path = paths.vault_root().join(&relative_path);
+            return Ok(MarkdownTarget {
+                display_path: relative_path.clone(),
+                absolute_path,
+                vault_relative_path: Some(relative_path),
+                config: load_vault_config(paths).config,
+            });
+        }
+        Err(error) if error.to_string().contains("' is ambiguous") => Some(error),
+        Err(_) => None,
+    };
 
     if note_argument_looks_like_path(note) {
         return resolve_existing_direct_markdown_target(paths, note);
     }
 
-    Err(AppError::operation(format!("note not found: {note}")))
+    // Say which notes a name matches rather than that it matches none.
+    Err(ambiguity.unwrap_or_else(|| AppError::operation(format!("note not found: {note}"))))
 }
 
 /// Check the authority for a Markdown source, including explicit paths outside the vault.
@@ -2126,9 +2131,6 @@ pub(crate) fn resolve_existing_note_path(
 ) -> Result<String, AppError> {
     match resolve_note_reference(paths, note) {
         Ok(resolved) => Ok(resolved.path),
-        Err(GraphQueryError::AmbiguousIdentifier { .. }) => Err(AppError::operation(format!(
-            "note identifier '{note}' is ambiguous"
-        ))),
         Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => {
             let normalized = normalize_note_path(note)?;
             if paths.vault_root().join(&normalized).is_file() {
@@ -2897,6 +2899,30 @@ fn load_note_append_target(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reading_an_ambiguous_note_name_lists_its_matches_instead_of_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = vulcan_core::VaultPaths::new(dir.path());
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        for folder in ["Archive", "Projects"] {
+            std::fs::create_dir_all(dir.path().join(folder)).unwrap();
+            std::fs::write(dir.path().join(folder).join("Topic.md"), "# Topic\n").unwrap();
+        }
+        vulcan_core::scan_vault_with_progress(&paths, vulcan_core::ScanMode::Full, |_| {}).unwrap();
+        let Err(error) = super::resolve_existing_markdown_target(&paths, "Topic") else {
+            panic!("an ambiguous name must not resolve");
+        };
+        assert_eq!(
+            error.to_string(),
+            "note identifier 'Topic' is ambiguous: Archive/Topic.md, Projects/Topic.md"
+        );
+        assert!(super::resolve_existing_markdown_target(&paths, "Projects/Topic").is_ok());
+        let Err(missing) = super::resolve_existing_markdown_target(&paths, "Nothing") else {
+            panic!("a missing note must not resolve");
+        };
+        assert_eq!(missing.to_string(), "note not found: Nothing");
+    }
 
     #[test]
     fn empty_notes_for_an_editor_are_mdbase_creates_inside_a_collection() {
