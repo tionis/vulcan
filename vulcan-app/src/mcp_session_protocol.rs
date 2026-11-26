@@ -37,6 +37,8 @@ pub struct McpProtocolCore {
     subscriptions: bool,
     /// Delivers progress on the stream of the request being served.
     notifier: Option<McpNotifier>,
+    /// Asks the request being served to stop.
+    cancellation: Option<crate::execution::ExecutionCancellationToken>,
 }
 
 impl McpProtocolCore {
@@ -56,6 +58,7 @@ impl McpProtocolCore {
             operations: None,
             subscriptions: false,
             notifier: None,
+            cancellation: None,
         })
     }
 
@@ -83,6 +86,15 @@ impl McpProtocolCore {
     /// `notifier`, which writes to the stream of the request being served.
     pub fn set_notifier(&mut self, notifier: Option<McpNotifier>) {
         self.notifier = notifier;
+    }
+
+    /// Let the next requests stop when `cancellation` is cancelled, where
+    /// their tool can stop safely.
+    pub fn set_cancellation(
+        &mut self,
+        cancellation: Option<crate::execution::ExecutionCancellationToken>,
+    ) {
+        self.cancellation = cancellation;
     }
 
     /// Attribute requests to an authenticated remote client.
@@ -191,6 +203,7 @@ impl McpMethodHandler for McpProtocolCore {
                     operations: self.operations.as_deref(),
                     subscriptions: self.subscriptions,
                     progress: progress.as_ref(),
+                    cancellation: self.cancellation.as_ref(),
                 },
                 method,
                 params,
@@ -217,6 +230,7 @@ impl McpMethodHandler for McpProtocolCore {
                         operations: self.operations.as_deref(),
                         subscriptions: self.subscriptions,
                         progress: progress.as_ref(),
+                        cancellation: self.cancellation.as_ref(),
                     },
                     method,
                     params,
@@ -302,6 +316,52 @@ mod tests {
         let legacy = core.handle_method("tools/list", None).unwrap();
         assert!(legacy.response.unwrap().get("resultType").is_none());
         assert!(core.handle_method("ping", None).unwrap().response.is_some());
+    }
+
+    #[test]
+    fn a_cancelled_request_reaches_the_tool_and_a_later_one_runs() {
+        let vault = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(vault.path());
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        std::fs::write(vault.path().join("Home.md"), "# Home\n").unwrap();
+        let mut core = McpProtocolCore::new(
+            &paths,
+            Some("daily-wiki-agent"),
+            McpProtocolHost {
+                command_help: no_command_help,
+                help_candidates: no_help_candidates,
+                server_version: "test-version",
+            },
+        )
+        .unwrap();
+        let scan = serde_json::json!({
+            "name": "index_scan", "arguments": {"no_commit": true},
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }
+        });
+        let token = crate::execution::ExecutionCancellationToken::default();
+        token.cancel();
+        core.set_cancellation(Some(token));
+        let stopped = core
+            .handle_method("tools/call", Some(&scan))
+            .unwrap()
+            .response
+            .unwrap();
+        assert_eq!(stopped["isError"], true, "{stopped}");
+        assert!(stopped["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("scan cancelled"));
+        core.set_cancellation(None);
+        let ran = core
+            .handle_method("tools/call", Some(&scan))
+            .unwrap()
+            .response
+            .unwrap();
+        assert_eq!(ran["isError"], false, "{ran}");
+        assert_eq!(ran["structuredContent"]["added"], 1);
     }
 
     #[test]

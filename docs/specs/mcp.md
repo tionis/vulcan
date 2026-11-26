@@ -330,8 +330,12 @@ task-capable tool (`index_scan`, `sync_refresh`, `changeset_land`, `web_fetch`, 
 still running after 5 seconds answers `resultType: "task"`, and keeps running uncancelled. The
 task id is the call's operation id: `tasks/get` reports `working`, then `completed` with the
 `tools/call` result (tool errors included), `failed` with the JSON-RPC error, or `cancelled`;
-`operation_get` reads the same record. `tasks/cancel` asks the call to stop; a call that has
-started stops only where its tool checks the token, so it may still complete. Vulcan's tasks do
+`operation_get` reads the same record. `tasks/cancel` asks the call to stop (as do `notifications/cancelled` and,
+on HTTP, a modern client leaving); a call that has started stops where its tool can stop safely:
+`index_scan` between files, rolling its whole index change back; `changeset_land` before its
+commit, rebase or fast-forward (after the fast-forward it only skips the index refresh);
+`sync_refresh` at the sync engine's next safe point when it runs the cycle itself. Other tools run
+to completion. Vulcan's tasks do
 not ask for input, so `tasks/update` is acknowledged and changes nothing. Records last an hour
 after the call finishes (`ttlMs`), `pollIntervalMs` is 2000; an unknown task is -32602, and a
 client that has not declared the extension gets -32021. On a named remote, a hosted mutation
@@ -363,9 +367,10 @@ cannot ask) and nothing changes. The setting is read per call.
 **Progress:** a tool call whose `_meta` carries a `progressToken` (either era) gets
 `notifications/progress` for it while it runs, at most every 250 ms, always increasing, and
 never after its response (nor once it has become a task). `index_scan` reports files scanned of
-files found, then its finishing phases, ending at the total; `sync_refresh` and
-`changeset_land` report one start notification, since sync and landing have no finer progress
-yet. On stdio the notifications are lines before the response; on HTTP the first one turns the
+files found, then its finishing phases, ending at the total; `changeset_land` reports each step
+(commit, rebase, fast-forward, index refresh) of four; `sync_refresh` reports each phase of a
+cycle it runs itself (fetching, merging, pushing and so on), while one queued on the daemon
+answers at once after a start notification. On stdio the notifications are lines before the response; on HTTP the first one turns the
 response into an event stream whose last event is the response, and a call that reports nothing
 is answered with plain JSON.
 

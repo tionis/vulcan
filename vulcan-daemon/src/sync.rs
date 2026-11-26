@@ -696,6 +696,14 @@ pub fn sync_registered_wikis(
     for wiki in wikis {
         items.push(sync_registration(&wiki, options, permission_profile));
     }
+    Ok(registered_sync_report(selection, options, items))
+}
+
+fn registered_sync_report(
+    selection: &RegisteredSyncSelection,
+    options: &GitSyncOptions,
+    items: Vec<RegisteredSyncItemReport>,
+) -> RegisteredSyncReport {
     let conflicted = items
         .iter()
         .filter(|item| item.retained_conflicts.is_some_and(|count| count > 0))
@@ -714,7 +722,7 @@ pub fn sync_registered_wikis(
                 && item.retained_conflicts.is_none_or(|count| count == 0)
         })
         .count();
-    Ok(RegisteredSyncReport {
+    RegisteredSyncReport {
         selection: selection_label(selection),
         dry_run: options.dry_run,
         total,
@@ -723,7 +731,7 @@ pub fn sync_registered_wikis(
         incomplete,
         failed,
         items,
-    })
+    }
 }
 
 fn opted_into_sync(wiki: &WikiRegistration) -> bool {
@@ -766,6 +774,40 @@ fn sync_registration(
     options: &GitSyncOptions,
     permission_profile: Option<&str>,
 ) -> RegisteredSyncItemReport {
+    sync_registration_observed(
+        wiki,
+        options,
+        permission_profile,
+        &mut vulcan_sync::IgnoreGitSyncProgress,
+        &vulcan_sync::SyncCancellationToken::default(),
+    )
+}
+
+/// One registered wiki's synchronization, reporting its phases to
+/// `observer` and stopping at the engine's next safe point once
+/// `cancellation` is cancelled.
+pub fn sync_registered_wiki_observed(
+    registry: &WikiRegistry,
+    id: &crate::registry::WikiId,
+    options: &GitSyncOptions,
+    observer: &mut dyn vulcan_sync::GitSyncObserver,
+    cancellation: &vulcan_sync::SyncCancellationToken,
+) -> Result<RegisteredSyncReport, RegisteredSyncError> {
+    let selection = RegisteredSyncSelection::Wiki(id.clone());
+    let items = select_wikis(registry, &selection)?
+        .iter()
+        .map(|wiki| sync_registration_observed(wiki, options, None, observer, cancellation))
+        .collect();
+    Ok(registered_sync_report(&selection, options, items))
+}
+
+fn sync_registration_observed(
+    wiki: &WikiRegistration,
+    options: &GitSyncOptions,
+    permission_profile: Option<&str>,
+    observer: &mut dyn vulcan_sync::GitSyncObserver,
+    cancellation: &vulcan_sync::SyncCancellationToken,
+) -> RegisteredSyncItemReport {
     let paths = VaultPaths::new(&wiki.path);
     let result = resolve_permission_profile(&paths, permission_profile)
         .map_err(vulcan_app::AppError::operation)
@@ -782,10 +824,12 @@ fn sync_registration(
             {
                 let effective = options_for_registration(options, wiki)
                     .map_err(vulcan_app::AppError::operation)?;
-                vulcan_app::sync::sync_git_vault_with_profile(
+                vulcan_app::sync::sync_git_vault_observed(
                     &paths,
                     &effective,
+                    observer,
                     app_profile(wiki.profile),
+                    cancellation,
                 )
             } else {
                 Err(vulcan_app::AppError::operation(format!(

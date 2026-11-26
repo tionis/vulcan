@@ -9,7 +9,7 @@ use vulcan_core::{
 use crate::commit::AutoCommitPolicy;
 use crate::mcp_progress::McpProgress;
 use crate::mcp_protocol::{McpIndexScanArgs, McpMethodError};
-use crate::scan::scan_vault_with_automation;
+use crate::scan::scan_vault_with_automation_until;
 
 /// Scan progress as MCP progress: files processed of files discovered while
 /// scanning, then the finishing phases, ending at the total.
@@ -32,12 +32,15 @@ pub fn index_scan(
     profile_name: &str,
     args: &McpIndexScanArgs,
     progress: Option<&McpProgress>,
+    cancellation: Option<&crate::execution::ExecutionCancellationToken>,
 ) -> Result<ScanSummary, McpMethodError> {
     guard
         .check_index()
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
     let auto_commit = AutoCommitPolicy::for_scan(paths, args.no_commit);
-    scan_vault_with_automation(
+    let stop =
+        || cancellation.is_some_and(crate::execution::ExecutionCancellationToken::is_cancelled);
+    scan_vault_with_automation_until(
         paths,
         if args.full {
             ScanMode::Full
@@ -52,6 +55,7 @@ pub fn index_scan(
                 report_scan_progress(progress, &event);
             }
         },
+        &stop,
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))
 }
@@ -81,11 +85,11 @@ mod tests {
             no_commit: true,
         };
         assert!(matches!(
-            index_scan(&paths, &readonly, "readonly", &args, None),
+            index_scan(&paths, &readonly, "readonly", &args, None, None),
             Err(McpMethodError::Tool { .. })
         ));
         let full =
-            index_scan(&paths, &allowed, "daily-wiki-agent", &args, None).expect("full scan");
+            index_scan(&paths, &allowed, "daily-wiki-agent", &args, None, None).expect("full scan");
         assert_eq!(full.added, 1);
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = std::sync::Arc::clone(&sent);
@@ -105,6 +109,7 @@ mod tests {
                 no_commit: true,
             },
             progress.as_ref(),
+            None,
         )
         .expect("incremental scan");
         assert_eq!(incremental.added, 0);

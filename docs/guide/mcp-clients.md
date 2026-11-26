@@ -88,8 +88,11 @@ handshake or session. Clients choose; nothing needs configuring.
 ## Long-running calls
 
 - **Progress:** a client that sends a progress token on a call (Claude Code does) gets progress
-  for `index_scan` (files scanned, then the finishing phases) and a start notice for
-  `sync_refresh` and `changeset_land`.
+  for `index_scan` (files scanned, then the finishing phases), `changeset_land` (each step) and
+  `sync_refresh` (each phase of a cycle it runs; with the daemon running it only queues one).
+- **Stopping:** cancelling a call (or its task, or closing a 2026-07-28 HTTP request) stops
+  `index_scan` between files without changing the index, `changeset_land` before it changes the
+  branch, and `sync_refresh` at the sync engine's next safe point. Other tools finish.
 - **Tasks:** a 2026-07-28 client that supports tasks gets `index_scan`, `sync_refresh`,
   `changeset_land`, `web_fetch`, `query` and `search` back as a task when they run longer than 5
   seconds, and follows the task to its result instead of waiting.

@@ -1356,6 +1356,24 @@ pub fn sync_git_vault_with_profile_and_progress(
     observer: &mut dyn GitSyncObserver,
     profile: SyncContentProfile,
 ) -> Result<VaultSyncReport, AppError> {
+    sync_git_vault_observed(
+        paths,
+        options,
+        observer,
+        profile,
+        &SyncCancellationToken::default(),
+    )
+}
+
+/// One direct cycle that reports its phases to `observer` and stops at the
+/// engine's next safe point once `cancellation` is cancelled.
+pub fn sync_git_vault_observed(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    observer: &mut dyn GitSyncObserver,
+    profile: SyncContentProfile,
+    cancellation: &SyncCancellationToken,
+) -> Result<VaultSyncReport, AppError> {
     let state_store = SyncStateStore::user_default()?;
     let engine = crate::sync_transport::apply_transport_with_state(
         vulcan_sync::GitCliEngine::default(),
@@ -1368,7 +1386,7 @@ pub fn sync_git_vault_with_profile_and_progress(
         paths,
         options,
         &state_store,
-        &SyncCancellationToken::default(),
+        cancellation,
         observer,
         profile,
     )

@@ -84,10 +84,15 @@ pub enum ScanError {
     Checkpoint(String),
     Ignore(ignore::Error),
     Io(std::io::Error),
-    MetadataOverflow { field: &'static str, path: PathBuf },
+    MetadataOverflow {
+        field: &'static str,
+        path: PathBuf,
+    },
     OrdinaryWrite(OrdinaryWriteError),
     Sqlite(rusqlite::Error),
     Time(SystemTimeError),
+    /// The caller asked the scan to stop; nothing it did was committed.
+    Cancelled,
 }
 
 impl Display for ScanError {
@@ -105,6 +110,10 @@ impl Display for ScanError {
             Self::OrdinaryWrite(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
             Self::Time(error) => write!(formatter, "{error}"),
+            Self::Cancelled => write!(
+                formatter,
+                "scan cancelled before it finished; the index is unchanged"
+            ),
         }
     }
 }
@@ -116,9 +125,10 @@ impl Error for ScanError {
             Self::Ignore(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::OrdinaryWrite(error) => Some(error),
-            Self::AttachmentExtraction(_) | Self::Checkpoint(_) | Self::MetadataOverflow { .. } => {
-                None
-            }
+            Self::AttachmentExtraction(_)
+            | Self::Checkpoint(_)
+            | Self::MetadataOverflow { .. }
+            | Self::Cancelled => None,
             Self::Sqlite(error) => Some(error),
             Self::Time(error) => Some(error),
         }
@@ -281,8 +291,24 @@ pub fn scan_vault_with_progress<F>(
 where
     F: FnMut(ScanProgress),
 {
+    scan_vault_with_progress_until(paths, mode, &mut on_progress, &|| false)
+}
+
+/// [`scan_vault_with_progress`] that stops when `stop` returns `true`, checked
+/// between files. A stopped scan returns [`ScanError::Cancelled`] and commits
+/// nothing: its whole index change is one transaction.
+pub fn scan_vault_with_progress_until<F>(
+    paths: &VaultPaths,
+    mode: ScanMode,
+    on_progress: &mut F,
+    stop: &dyn Fn() -> bool,
+) -> Result<ScanSummary, ScanError>
+where
+    F: FnMut(ScanProgress),
+{
     let _lock = acquire_write_lock(paths)?;
-    scan_vault_unlocked_with_progress(paths, mode, &mut on_progress)
+    recover_ordinary_write_batch_unlocked(paths)?;
+    scan_inventory(paths, mode, on_progress, None, &HashMap::new(), stop)
 }
 
 /// Scans without acquiring the vault write lock.
@@ -306,7 +332,7 @@ where
     F: FnMut(ScanProgress),
 {
     recover_ordinary_write_batch_unlocked(paths)?;
-    scan_inventory(paths, mode, on_progress, None, &HashMap::new())
+    scan_inventory(paths, mode, on_progress, None, &HashMap::new(), &|| false)
 }
 
 /// Incremental scan that carries explicit rename hints from a Vulcan move.
@@ -318,7 +344,14 @@ pub(crate) fn scan_vault_unlocked_with_renames(
     paths: &VaultPaths,
     renames: &HashMap<String, String>,
 ) -> Result<ScanSummary, ScanError> {
-    scan_inventory(paths, ScanMode::Incremental, &mut |_| {}, None, renames)
+    scan_inventory(
+        paths,
+        ScanMode::Incremental,
+        &mut |_| {},
+        None,
+        renames,
+        &|| false,
+    )
 }
 
 /// Incremental scan of vault-relative paths the caller just wrote. Updates
@@ -347,6 +380,7 @@ pub fn scan_vault_paths_unlocked_with_renames(
         &mut |_| {},
         recovered.is_none().then_some(changed),
         renames,
+        &|| false,
     )
 }
 
@@ -364,6 +398,7 @@ pub(crate) fn scan_watched_paths(
         &mut |_| {},
         recovered.is_none().then_some(changed),
         &HashMap::new(),
+        &|| false,
     )
 }
 
@@ -374,6 +409,7 @@ fn scan_inventory<F>(
     on_progress: &mut F,
     changed: Option<&BTreeSet<String>>,
     rename_hints: &HashMap<String, String>,
+    stop: &dyn Fn() -> bool,
 ) -> Result<ScanSummary, ScanError>
 where
     F: FnMut(ScanProgress),
@@ -435,6 +471,9 @@ where
             let discovered_count = discovered.len();
             let deleted_count = deleted_paths.len();
             let prepared = prepare_full_scan_documents(&discovered, &config)?;
+            if stop() {
+                return Err(ScanError::Cancelled);
+            }
             // Disable FK checks for the bulk insert phase.  FK integrity is guaranteed
             // because documents are inserted before all derived rows (headings, links,
             // tags, etc.) within the same transaction.  The pragma must be set outside
@@ -458,6 +497,9 @@ where
                         },
                     );
                     for (index, prepared_document) in prepared.iter().enumerate() {
+                        if stop() {
+                            return Err(ScanError::Cancelled);
+                        }
                         let id = Ulid::new().to_string();
                         apply_prepared_full_scan_document(
                             transaction,
@@ -561,6 +603,7 @@ where
                         &rename_hints,
                         mode,
                         on_progress,
+                        stop,
                     )?;
                     // Follow renames in durable feedback before the cache commits them. If the
                     // commit then fails, the files are still at their new paths on disk and the
@@ -1027,6 +1070,7 @@ fn apply_incremental_scan(
     rename_hints: &HashMap<String, String>,
     mode: ScanMode,
     on_progress: &mut impl FnMut(ScanProgress),
+    stop: &dyn Fn() -> bool,
 ) -> Result<IncrementalScanResult, ScanError> {
     let mut result = IncrementalScanResult {
         summary: ScanSummary {
@@ -1146,6 +1190,10 @@ fn apply_incremental_scan(
 
     let batch_size = full_scan_prepare_batch_size();
     for (batch_index, batch) in work_items.chunks(batch_size).enumerate() {
+        // Stopping rolls the surrounding transaction back.
+        if stop() {
+            return Err(ScanError::Cancelled);
+        }
         // Apply and drop this batch before parsing the next. The surrounding
         // transaction still rolls every batch back on a later read/parse error.
         let prepared = batch
@@ -1320,6 +1368,9 @@ fn apply_incremental_scan(
     }
 
     for path in deleted_paths {
+        if stop() {
+            return Err(ScanError::Cancelled);
+        }
         if renamed_paths.contains(path) {
             continue;
         }
@@ -3841,6 +3892,35 @@ mod tests {
             "SELECT COUNT(*) FROM search_chunks_fts WHERE search_chunks_fts MATCH 'Searchable'", [],
             |row| row.get::<_, i64>(0),
         ).unwrap() > 0);
+    }
+
+    #[test]
+    fn a_stopped_scan_commits_nothing_in_either_mode() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        fs::write(temp.path().join("kept.md"), "# Kept\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        for index in 0..5 {
+            fs::write(temp.path().join(format!("new-{index}.md")), "# New\n").unwrap();
+        }
+        fs::remove_file(temp.path().join("kept.md")).unwrap();
+        for mode in [ScanMode::Incremental, ScanMode::Full] {
+            let error =
+                scan_vault_with_progress_until(&paths, mode, &mut |_| {}, &|| true).unwrap_err();
+            assert!(matches!(error, ScanError::Cancelled), "{error}");
+            let database = CacheDatabase::open(&paths).unwrap();
+            assert_eq!(
+                count_rows(database.connection(), "documents"),
+                1,
+                "{mode:?}"
+            );
+        }
+        // Not stopped, the same scan goes through.
+        let summary =
+            scan_vault_with_progress_until(&paths, ScanMode::Incremental, &mut |_| {}, &|| false)
+                .unwrap();
+        assert_eq!((summary.added, summary.deleted), (5, 1));
     }
 
     #[test]

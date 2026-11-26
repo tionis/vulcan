@@ -110,9 +110,27 @@ pub fn sync_conflicts(
 /// tools. The daemon installs one that queues jobs on its own supervisor;
 /// `vulcan mcp` installs one that asks the running daemon, or syncs directly
 /// when none runs. Registration state lives outside this crate, hence the hook.
+/// What a running `sync_refresh` may report and how it learns to stop.
+pub struct McpSyncHooks<'a> {
+    /// Called with each phase the cycle enters, such as "fetching".
+    pub on_phase: &'a mut dyn FnMut(&str),
+    /// Whether the call was asked to stop.
+    pub cancelled: &'a dyn Fn() -> bool,
+}
+
 pub trait McpSyncHost: Send + Sync {
     /// Starts a synchronization of the registered vault at `vault_root` now.
     fn sync_now(&self, vault_root: &Path) -> Result<Value, String>;
+    /// [`Self::sync_now`] for a call that reports its phases and can be
+    /// stopped. A host that only queues the work answers at once and needs
+    /// neither.
+    fn sync_now_with(
+        &self,
+        vault_root: &Path,
+        _hooks: &mut McpSyncHooks<'_>,
+    ) -> Result<Value, String> {
+        self.sync_now(vault_root)
+    }
     /// Clears the registration's pause and starts a synchronization.
     fn resume(&self, vault_root: &Path) -> Result<Value, String>;
 }
@@ -168,12 +186,13 @@ fn sync_host() -> Result<Arc<dyn McpSyncHost>, McpMethodError> {
 pub fn sync_refresh(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
+    hooks: &mut McpSyncHooks<'_>,
 ) -> Result<Value, McpMethodError> {
     guard
         .check_git()
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
     sync_host()?
-        .sync_now(paths.vault_root())
+        .sync_now_with(paths.vault_root(), hooks)
         .map_err(McpMethodError::tool)
 }
 
@@ -228,7 +247,15 @@ mod tests {
             &paths,
             resolve_permission_profile(&paths, Some("unrestricted")).unwrap(),
         );
-        let error = sync_refresh(&paths, &guard).unwrap_err();
+        let error = sync_refresh(
+            &paths,
+            &guard,
+            &mut McpSyncHooks {
+                on_phase: &mut |_| {},
+                cancelled: &|| false,
+            },
+        )
+        .unwrap_err();
         assert!(
             format!("{error:?}").contains("vulcan sync refresh"),
             "{error:?}"

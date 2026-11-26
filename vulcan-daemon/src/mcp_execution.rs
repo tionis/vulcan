@@ -46,6 +46,9 @@ pub trait McpRequestCore: Clone + Send + 'static {
     fn list_changes(&mut self) -> Vec<Value>;
     /// Deliver progress for the requests this core serves next.
     fn set_notifier(&mut self, _notifier: Option<McpNotifier>) {}
+    /// Let the requests this core serves next stop when `cancellation` is
+    /// cancelled, where their tool can stop safely.
+    fn set_cancellation(&mut self, _cancellation: Option<ExecutionCancellationToken>) {}
 }
 
 impl McpRequestCore for McpProtocolCore {
@@ -83,6 +86,9 @@ impl McpRequestCore for McpProtocolCore {
 
     fn set_notifier(&mut self, notifier: Option<McpNotifier>) {
         McpProtocolCore::set_notifier(self, notifier);
+    }
+    fn set_cancellation(&mut self, cancellation: Option<ExecutionCancellationToken>) {
+        McpProtocolCore::set_cancellation(self, cancellation);
     }
 }
 
@@ -342,6 +348,7 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
     // Progress reaches this call only: the copy carries the notifier, and it
     // is taken off again before the copy replaces the caller's core.
     worker.set_notifier(notifier);
+    worker.set_cancellation(Some(cancellation.clone()));
     let hosted = hosted.cloned();
     // One deadline shared by the scheduler and this response wait, so a queued mutation whose
     // pre-dispatch deadline fires before the worker wait still gets the durable status response.
@@ -471,6 +478,7 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
     match worker_result {
         McpWorkerResult::Completed((mut next, result)) => {
             next.set_notifier(None);
+            next.set_cancellation(None);
             *core = next;
             if let (Err(_), Some(operation_id)) = (&result, operation_id.as_deref()) {
                 if dispatch_deadline.is_expired_at(SystemTime::now()) {

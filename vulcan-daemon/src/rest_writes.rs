@@ -646,6 +646,7 @@ pub(crate) async fn scan(
                     request.profile,
                     &args,
                     None,
+                    None,
                 )
                 .map_err(mcp_failure)?,
             )

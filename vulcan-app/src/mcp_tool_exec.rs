@@ -31,9 +31,17 @@ pub struct McpToolExecution<'a> {
     pub operations: Option<&'a dyn crate::mcp_operations::McpOperationLookup>,
     /// Progress for this call, when the client asked for it.
     pub progress: Option<&'a crate::mcp_progress::McpProgress>,
+    /// Asks the call to stop, where its tool can stop safely.
+    pub cancellation: Option<&'a crate::execution::ExecutionCancellationToken>,
 }
 
 impl McpToolExecution<'_> {
+    /// Whether this call was asked to stop.
+    fn cancelled(&self) -> bool {
+        self.cancellation
+            .is_some_and(crate::execution::ExecutionCancellationToken::is_cancelled)
+    }
+
     /// Run one tool call. A `changeset` argument on a tool that takes one
     /// runs the call in that changeset's worktree instead of the vault.
     pub fn call_tool(
@@ -290,10 +298,29 @@ impl McpToolExecution<'_> {
                 )
             }
             McpToolId::SyncRefresh => {
-                if let Some(progress) = self.progress {
+                let progress = self.progress;
+                if let Some(progress) = progress {
                     progress.report(0.0, None, Some("Synchronizing with the remote"));
                 }
-                self.value(tool.name, mcp_sync::sync_refresh(self.paths, self.guard)?)
+                // A cycle run here reports each phase; one queued on the
+                // daemon answers at once.
+                let mut step = 0.0;
+                let mut on_phase = |phase: &str| {
+                    if let Some(progress) = progress {
+                        step += 1.0;
+                        progress.report(step, None, Some(&format!("Synchronizing: {phase}")));
+                    }
+                };
+                let cancelled = || self.cancelled();
+                let report = mcp_sync::sync_refresh(
+                    self.paths,
+                    self.guard,
+                    &mut mcp_sync::McpSyncHooks {
+                        on_phase: &mut on_phase,
+                        cancelled: &cancelled,
+                    },
+                )?;
+                self.value(tool.name, report)
             }
             McpToolId::SyncResume => {
                 self.value(tool.name, mcp_sync::sync_resume(self.paths, self.guard)?)
@@ -346,15 +373,31 @@ impl McpToolExecution<'_> {
             }
             McpToolId::ChangesetLand => {
                 let args: mcp_protocol::McpChangesetLandArgs = parse(arguments)?;
-                if let Some(progress) = self.progress {
-                    progress.report(0.0, None, Some("Landing the changeset"));
+                let progress = self.progress;
+                if let Some(progress) = progress {
+                    progress.report(0.0, Some(4.0), Some("Landing the changeset"));
                 }
+                // Each step is reported as it starts; a cancelled call stops
+                // before the next one that would change the branch.
+                let mut step = |next: crate::changesets::ChangesetLandStep| {
+                    if let Some(progress) = progress {
+                        let done = match next {
+                            crate::changesets::ChangesetLandStep::Committing => 0.5,
+                            crate::changesets::ChangesetLandStep::Rebasing => 1.0,
+                            crate::changesets::ChangesetLandStep::FastForwarding => 2.0,
+                            crate::changesets::ChangesetLandStep::RefreshingIndex => 3.0,
+                        };
+                        progress.report(done, Some(4.0), Some(next.label()));
+                    }
+                    !self.cancelled()
+                };
                 let report = mcp_changesets::changeset_land(
                     self.paths,
                     self.guard,
                     self.profile_name,
                     self.client,
                     &args,
+                    &mut step,
                 )?;
                 self.value(tool.name, report)
             }
@@ -407,6 +450,7 @@ impl McpToolExecution<'_> {
                         self.profile_name,
                         &args,
                         self.progress,
+                        self.cancellation,
                     )?,
                 )
             }
@@ -581,6 +625,7 @@ mod tests {
             client: &crate::mcp_authority::McpClientAttribution::default(),
             operations: None,
             progress: None,
+            cancellation: None,
         };
         let status = executor.call_tool("status", &Map::new()).unwrap();
         assert_eq!(
@@ -650,6 +695,7 @@ mod tests {
                 client: &crate::mcp_authority::McpClientAttribution::default(),
                 operations: None,
                 progress: None,
+                cancellation: None,
             };
             let result = executor
                 .call_tool(name, arguments.as_object().unwrap())
@@ -708,6 +754,7 @@ mod tests {
             client: &crate::mcp_authority::McpClientAttribution::default(),
             operations: None,
             progress: None,
+            cancellation: None,
         };
         let arguments = Map::from_iter([
             ("note".to_string(), json!("Home.md")),
@@ -733,6 +780,7 @@ mod tests {
             client: &crate::mcp_authority::McpClientAttribution::default(),
             operations: None,
             progress: None,
+            cancellation: None,
         };
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         executor

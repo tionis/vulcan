@@ -338,7 +338,8 @@ pub use saved_queries::{
 };
 pub use scan::{
     detect_document_kind, prove_note_store_fresh, scan_vault, scan_vault_with_progress,
-    DocumentKind, NoteStoreFreshness, ScanError, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    scan_vault_with_progress_until, DocumentKind, NoteStoreFreshness, ScanError, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary,
 };
 pub use search::{
     export_static_search_index, export_static_search_index_with_filter, search_vault,

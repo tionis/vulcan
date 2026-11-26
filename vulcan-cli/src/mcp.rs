@@ -1266,6 +1266,13 @@ impl vulcan_daemon::mcp_execution::McpRequestCore for McpServerCore {
         self.inner.set_notifier(notifier);
     }
 
+    fn set_cancellation(
+        &mut self,
+        cancellation: Option<vulcan_app::execution::ExecutionCancellationToken>,
+    ) {
+        self.inner.set_cancellation(cancellation);
+    }
+
     fn process_request(&mut self, request: Value) -> Vec<Value> {
         self.inner.process_request(request)
     }

@@ -412,11 +412,71 @@ pub struct ChangesetLandCommit<'a> {
 /// Uncommitted worktree changes are committed first with `commit`, or refuse
 /// the landing without one. A conflict while rebasing onto a moved branch
 /// aborts and keeps the changeset as it was, naming the conflicting paths.
+/// Rebase a changeset's worktree onto `base`, aborting and naming the
+/// conflicts when it does not apply cleanly.
+fn rebase_onto(worktree: &Path, base: &str, id: &str) -> Result<(), AppError> {
+    let rebase = git(worktree, &["rebase", "--quiet", base])?;
+    if !rebase.status.success() {
+        let conflicts =
+            git_text(worktree, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+        let _ = git(worktree, &["rebase", "--abort"]);
+        let conflicts = conflicts.lines().collect::<Vec<_>>().join(", ");
+        return Err(AppError::operation(format!(
+            "`{base}` moved and changeset `{id}` does not rebase onto it cleanly{}; the changeset is unchanged",
+            if conflicts.is_empty() {
+                String::new()
+            } else {
+                format!(" (conflicts in {conflicts})")
+            }
+        )));
+    }
+    Ok(())
+}
+
+/// A step of landing a changeset, as reported to a caller that follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangesetLandStep {
+    Committing,
+    Rebasing,
+    FastForwarding,
+    RefreshingIndex,
+}
+
+impl ChangesetLandStep {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Committing => "Committing the changeset's changes",
+            Self::Rebasing => "Rebasing the changeset onto the branch",
+            Self::FastForwarding => "Fast-forwarding the branch",
+            Self::RefreshingIndex => "Refreshing the vault's index",
+        }
+    }
+}
+
 pub fn land_changeset(
     vault: &VaultPaths,
     id: &str,
     commit: Option<&ChangesetLandCommit<'_>>,
 ) -> Result<ChangesetLandReport, AppError> {
+    land_changeset_with(vault, id, commit, &mut |_| true)
+}
+
+/// [`land_changeset`] that tells `step` each step before taking it. `step`
+/// returning `false` stops the landing there, before the commit, the rebase
+/// or the fast-forward, so the vault's branch is never left half-landed; a
+/// stop after the fast-forward only skips the index refresh.
+pub fn land_changeset_with(
+    vault: &VaultPaths,
+    id: &str,
+    commit: Option<&ChangesetLandCommit<'_>>,
+    step: &mut dyn FnMut(ChangesetLandStep) -> bool,
+) -> Result<ChangesetLandReport, AppError> {
+    let stopped = |before: &str| {
+        AppError::operation(format!(
+            "landing changeset `{id}` was cancelled before {before}; the changeset is kept"
+        ))
+    };
     let root = ensure_repository_root(vault)?;
     let changeset = find_changeset(vault, id)?;
     let worktree = changeset.worktree.clone();
@@ -428,6 +488,9 @@ pub fn land_changeset(
                 changeset.uncommitted.join(", ")
             )));
         };
+        if !step(ChangesetLandStep::Committing) {
+            return Err(stopped("committing its changes"));
+        }
         let report = crate::git_ops::commit_request_with_hooks(
             &VaultPaths::new(&worktree),
             commit.permission_profile,
@@ -467,21 +530,13 @@ pub fn land_changeset(
         .status
         .success();
     if !fast_forward {
-        let rebase = git(&worktree, &["rebase", "--quiet", &base])?;
-        if !rebase.status.success() {
-            let conflicts = git_text(&worktree, &["diff", "--name-only", "--diff-filter=U"])
-                .unwrap_or_default();
-            let _ = git(&worktree, &["rebase", "--abort"]);
-            let conflicts = conflicts.lines().collect::<Vec<_>>().join(", ");
-            return Err(AppError::operation(format!(
-                "`{base}` moved and changeset `{id}` does not rebase onto it cleanly{}; the changeset is unchanged",
-                if conflicts.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (conflicts in {conflicts})")
-                }
-            )));
+        if !step(ChangesetLandStep::Rebasing) {
+            return Err(stopped("rebasing"));
         }
+        rebase_onto(&worktree, &base, id)?;
+    }
+    if !step(ChangesetLandStep::FastForwarding) {
+        return Err(stopped("fast-forwarding the branch"));
     }
     let merge = git(&root, &["merge", "--ff-only", "--quiet", &branch])?;
     if !merge.status.success() {
@@ -493,8 +548,11 @@ pub fn land_changeset(
     let head = git_text(&root, &["rev-parse", "HEAD"])?;
     drop(lock);
     remove(&root, &branch, &worktree)?;
-    // Refresh the vault's index; the daemon's watcher would get there too.
-    let _ = vulcan_core::scan_vault(vault, vulcan_core::ScanMode::Incremental);
+    // Refresh the vault's index; the daemon's watcher would get there too,
+    // so a cancelled landing leaves it to the watcher.
+    if step(ChangesetLandStep::RefreshingIndex) {
+        let _ = vulcan_core::scan_vault(vault, vulcan_core::ScanMode::Incremental);
+    }
     Ok(ChangesetLandReport {
         id: id.to_string(),
         branch: base,
@@ -619,7 +677,28 @@ mod tests {
         assert!(!second.worktree.exists());
         let third = begin_changeset(&vault, None).unwrap();
         commit_in(&third.worktree, "New.md", "# New\n");
-        let landed = land_changeset(&vault, &third.id, None).unwrap();
+        // Stopped before the fast-forward, the branch and changeset stay.
+        let head = git_text(&root, &["rev-parse", "HEAD"]).unwrap();
+        let error = land_changeset_with(&vault, &third.id, None, &mut |step| {
+            step != ChangesetLandStep::FastForwarding
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert_eq!(git_text(&root, &["rev-parse", "HEAD"]).unwrap(), head);
+        assert!(find_changeset(&vault, &third.id).is_ok());
+        let mut steps = Vec::new();
+        let landed = land_changeset_with(&vault, &third.id, None, &mut |step| {
+            steps.push(step);
+            true
+        })
+        .unwrap();
+        assert_eq!(
+            steps,
+            [
+                ChangesetLandStep::FastForwarding,
+                ChangesetLandStep::RefreshingIndex
+            ]
+        );
         assert!(landed.landed && !landed.rebased);
         assert!(root.join("New.md").exists());
         assert!(find_changeset(&vault, &third.id).is_err());

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use vulcan_app::mcp_sync::McpSyncHost;
+use vulcan_app::mcp_sync::{McpSyncHooks, McpSyncHost};
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_sync::SyncJobTrigger;
 
@@ -12,7 +12,7 @@ use crate::companion::SyncSelectionRequest;
 use crate::process::{request_queued_sync, DaemonProcessContext, QueuedSyncError};
 use crate::registry::{UpdateWikiRequest, WikiRegistration, WikiRegistry};
 use crate::supervisor::SyncSupervisor;
-use crate::sync::{sync_registered_wikis, RegisteredSyncSelection};
+use crate::sync::{sync_registered_wiki_observed, sync_registered_wikis, RegisteredSyncSelection};
 
 /// Idempotency scope of jobs MCP tools queue.
 const MCP_SCOPE: &str = "mcp";
@@ -49,17 +49,11 @@ impl RegistrySyncHost {
         }
     }
 
-    fn registration(&self, vault_root: &Path) -> Result<WikiRegistration, String> {
-        self.registry.find_by_path(vault_root).map_err(|error| {
-            format!(
-                "this vault is not a registered wiki, so Vulcan does not synchronize it: {error}"
-            )
-        })
-    }
-}
-
-impl McpSyncHost for RegistrySyncHost {
-    fn sync_now(&self, vault_root: &Path) -> Result<Value, String> {
+    fn sync(
+        &self,
+        vault_root: &Path,
+        hooks: Option<&mut McpSyncHooks<'_>>,
+    ) -> Result<Value, String> {
         let registration = self.registration(vault_root)?;
         let key = ulid::Ulid::new().to_string();
         match &self.target {
@@ -84,12 +78,28 @@ impl McpSyncHost for RegistrySyncHost {
                 match request_queued_sync(context, &selection, &key) {
                     Ok(report) => Ok(json!({ "queued": true, "jobs": report })),
                     Err(QueuedSyncError::NotRunning) => {
-                        let report = sync_registered_wikis(
-                            &self.registry,
-                            &RegisteredSyncSelection::Wiki(registration.id.clone()),
-                            &GitSyncOptions::default(),
-                            None,
-                        )
+                        let report = match hooks {
+                            Some(hooks) => {
+                                let cancellation = vulcan_sync::SyncCancellationToken::default();
+                                let mut observer = PhaseObserver {
+                                    hooks,
+                                    cancellation: &cancellation,
+                                };
+                                sync_registered_wiki_observed(
+                                    &self.registry,
+                                    &registration.id,
+                                    &GitSyncOptions::default(),
+                                    &mut observer,
+                                    &cancellation,
+                                )
+                            }
+                            None => sync_registered_wikis(
+                                &self.registry,
+                                &RegisteredSyncSelection::Wiki(registration.id.clone()),
+                                &GitSyncOptions::default(),
+                                None,
+                            ),
+                        }
                         .map_err(|error| error.to_string())?;
                         Ok(json!({ "queued": false, "report": report }))
                     }
@@ -97,6 +107,52 @@ impl McpSyncHost for RegistrySyncHost {
                 }
             }
         }
+    }
+
+    fn registration(&self, vault_root: &Path) -> Result<WikiRegistration, String> {
+        self.registry.find_by_path(vault_root).map_err(|error| {
+            format!(
+                "this vault is not a registered wiki, so Vulcan does not synchronize it: {error}"
+            )
+        })
+    }
+}
+
+/// Reports a direct cycle's phases to a `sync_refresh` call, and stops the
+/// cycle at the engine's next safe point once the call is cancelled.
+struct PhaseObserver<'a, 'h> {
+    hooks: &'a mut McpSyncHooks<'h>,
+    cancellation: &'a vulcan_sync::SyncCancellationToken,
+}
+
+impl vulcan_sync::GitSyncObserver for PhaseObserver<'_, '_> {
+    fn progress(
+        &mut self,
+        progress: &vulcan_sync::GitSyncProgress,
+    ) -> Result<(), vulcan_sync::GitSyncObserverError> {
+        let phase = serde_json::to_value(progress.phase)
+            .ok()
+            .and_then(|phase| phase.as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("{:?}", progress.phase));
+        (self.hooks.on_phase)(&phase);
+        if (self.hooks.cancelled)() {
+            self.cancellation.cancel();
+        }
+        Ok(())
+    }
+}
+
+impl McpSyncHost for RegistrySyncHost {
+    fn sync_now(&self, vault_root: &Path) -> Result<Value, String> {
+        self.sync(vault_root, None)
+    }
+
+    fn sync_now_with(
+        &self,
+        vault_root: &Path,
+        hooks: &mut McpSyncHooks<'_>,
+    ) -> Result<Value, String> {
+        self.sync(vault_root, Some(hooks))
     }
 
     fn resume(&self, vault_root: &Path) -> Result<Value, String> {
@@ -129,6 +185,44 @@ impl McpSyncHost for RegistrySyncHost {
 mod tests {
     use super::*;
     use crate::registry::AddWikiRequest;
+
+    #[test]
+    fn a_direct_cycle_reports_its_phases_and_trips_the_engine_token_when_cancelled() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut seen = Vec::new();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let cancelled = || stop.load(std::sync::atomic::Ordering::Acquire);
+        let mut on_phase = |phase: &str| seen.push(phase.to_string());
+        let mut hooks = McpSyncHooks {
+            on_phase: &mut on_phase,
+            cancelled: &cancelled,
+        };
+        let cancellation = vulcan_sync::SyncCancellationToken::default();
+        let mut observer = PhaseObserver {
+            hooks: &mut hooks,
+            cancellation: &cancellation,
+        };
+        let mut progress = vulcan_sync::GitSyncProgress {
+            phase: vulcan_sync::GitSyncPhase::Fetching,
+            attempt: 1,
+            repository: vulcan_sync::GitRepository {
+                git_dir: temporary.path().join(".git"),
+                common_dir: temporary.path().join(".git"),
+                work_tree: Some(temporary.path().to_path_buf()),
+                layout: vulcan_sync::GitRepositoryLayout::Colocated,
+                object_format: vulcan_sync::GitObjectFormat::Sha1,
+            },
+            local_snapshot: None,
+            local_tree: None,
+        };
+        vulcan_sync::GitSyncObserver::progress(&mut observer, &progress).unwrap();
+        assert!(!cancellation.is_cancelled());
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        progress.phase = vulcan_sync::GitSyncPhase::Merging;
+        vulcan_sync::GitSyncObserver::progress(&mut observer, &progress).unwrap();
+        assert!(cancellation.is_cancelled());
+        assert_eq!(seen, ["fetching", "merging"]);
+    }
 
     #[test]
     fn resume_clears_the_pause_and_queues_a_manual_job() {

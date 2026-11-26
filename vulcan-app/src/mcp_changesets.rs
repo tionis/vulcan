@@ -53,6 +53,7 @@ pub fn changeset_land(
     profile_name: &str,
     client: &McpClientAttribution,
     args: &McpChangesetLandArgs,
+    step: &mut dyn FnMut(changesets::ChangesetLandStep) -> bool,
 ) -> Result<Value, McpMethodError> {
     guard.check_git().map_err(tool_error)?;
     let trailers = client.trailers(profile_name);
@@ -61,8 +62,8 @@ pub fn changeset_land(
         trailers: &trailers,
         permission_profile: Some(profile_name),
     });
-    let report =
-        changesets::land_changeset(vault, &args.id, commit.as_ref()).map_err(tool_error)?;
+    let report = changesets::land_changeset_with(vault, &args.id, commit.as_ref(), step)
+        .map_err(tool_error)?;
     to_value(report)
 }
 

@@ -9,12 +9,13 @@
 //! the same to each open `subscriptions/listen` of a 2026-07-28 client.
 
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use vulcan_app::execution::ExecutionCancellationToken;
 
 use super::McpServerCore;
 use vulcan_app::mcp_core::{
@@ -72,7 +73,11 @@ fn run_job(
     worker.set_notifier(Some(McpNotifier(Arc::new(move |message| {
         send_while(&sink, &open, &message);
     }))));
-    let messages = run_call(worker, request, request_timeout, operations);
+    // `notifications/cancelled` and `tasks/cancel` both trip this token,
+    // which a tool checks where it can stop safely.
+    let cancellation = tracker.token(key);
+    worker.set_cancellation(Some(cancellation.clone()));
+    let messages = run_call(worker, request, request_timeout, operations, cancellation);
     {
         let _quiet = output.lock().unwrap_or_else(PoisonError::into_inner);
         active.store(false, Ordering::Release);
@@ -103,6 +108,8 @@ fn send_while(output: &Output, open: &AtomicBool, message: &Value) {
 struct Calls {
     pending: HashSet<String>,
     cancelled: HashSet<String>,
+    /// Each running call's token, which asks its tool to stop.
+    tokens: HashMap<String, ExecutionCancellationToken>,
 }
 
 struct Tracker {
@@ -119,8 +126,23 @@ impl Tracker {
         let mut calls = self.lock();
         // Only a call still pending can be cancelled; others are done.
         if calls.pending.contains(&key) {
+            if let Some(token) = calls.tokens.get(&key) {
+                token.cancel();
+            }
             calls.cancelled.insert(key);
         }
+    }
+
+    /// The token of a call about to run: cancelled already if the client
+    /// cancelled it while it waited.
+    fn token(&self, key: &str) -> ExecutionCancellationToken {
+        let mut calls = self.lock();
+        let token = ExecutionCancellationToken::default();
+        if calls.cancelled.contains(key) {
+            token.cancel();
+        }
+        calls.tokens.insert(key.to_string(), token.clone());
+        token
     }
 
     fn is_cancelled(&self, key: &str) -> bool {
@@ -131,6 +153,7 @@ impl Tracker {
         let mut calls = self.lock();
         calls.pending.remove(key);
         calls.cancelled.remove(key);
+        calls.tokens.remove(key);
         if calls.pending.is_empty() {
             self.idle.notify_all();
         }
@@ -290,6 +313,7 @@ fn run_call(
     request: Value,
     request_timeout: Duration,
     operations: &Arc<McpOperationRegistry>,
+    cancellation: ExecutionCancellationToken,
 ) -> Vec<Value> {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let tool = request
@@ -298,6 +322,7 @@ fn run_call(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let operation_id = operations.begin(tool);
+    operations.attach_cancellation(&operation_id, cancellation);
     // A task-capable call from a client that declares the tasks extension
     // becomes a task once it has run for a while, instead of timing out.
     let background_after = task_eligible(&request).then(task_after);
@@ -510,7 +535,13 @@ mod tests {
         core.keep_operations(Arc::clone(&operations) as Arc<dyn McpOperationLookup>);
         let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "note_get", "arguments": {"note": "Home.md"}}});
-        let messages = run_call(core.clone(), call, Duration::ZERO, &operations);
+        let messages = run_call(
+            core.clone(),
+            call,
+            Duration::ZERO,
+            &operations,
+            ExecutionCancellationToken::default(),
+        );
         let structured = &messages[0]["result"]["structuredContent"];
         assert_eq!(structured["error"]["code"], "indeterminate", "{messages:?}");
         let operation_id = structured["operation_id"].as_str().unwrap().to_string();
@@ -523,7 +554,13 @@ mod tests {
         }
         let get = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
             "params": {"name": "operation_get", "arguments": {"id": operation_id}}});
-        let reported = run_call(core, get, Duration::from_secs(30), &operations);
+        let reported = run_call(
+            core,
+            get,
+            Duration::from_secs(30),
+            &operations,
+            ExecutionCancellationToken::default(),
+        );
         let record = &reported[0]["result"]["structuredContent"];
         assert_eq!(record["state"], "succeeded", "{reported:?}");
         assert_eq!(record["tool"], "note_get");
@@ -548,6 +585,28 @@ mod tests {
         tracker.finish(&id_key(&json!(7)));
         assert!(tracker.lock().cancelled.is_empty());
         tracker.drain(Duration::from_millis(1));
+    }
+
+    #[test]
+    fn cancelling_a_call_trips_the_token_its_tool_checks() {
+        let tracker = Tracker {
+            calls: Mutex::new(Calls::default()),
+            idle: Condvar::new(),
+        };
+        // Running: the token is tripped when the client cancels.
+        tracker.lock().pending.insert(id_key(&json!(1)));
+        let running = tracker.token(&id_key(&json!(1)));
+        assert!(!running.is_cancelled());
+        tracker.cancel(id_key(&json!(1)));
+        assert!(running.is_cancelled());
+        // Cancelled while it waited: its token starts out tripped.
+        tracker.lock().pending.insert(id_key(&json!(2)));
+        tracker.cancel(id_key(&json!(2)));
+        assert!(tracker.token(&id_key(&json!(2))).is_cancelled());
+        for key in [1, 2] {
+            tracker.finish(&id_key(&json!(key)));
+        }
+        assert!(tracker.lock().tokens.is_empty());
     }
 
     #[test]

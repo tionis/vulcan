@@ -2,9 +2,7 @@ use crate::commit::AutoCommitPolicy;
 use crate::AppError;
 use serde_json::json;
 use vulcan_core::Verbosity;
-use vulcan_core::{
-    scan_vault_with_progress, PluginEvent, ScanMode, ScanProgress, ScanSummary, VaultPaths,
-};
+use vulcan_core::{PluginEvent, ScanMode, ScanProgress, ScanSummary, VaultPaths};
 
 /// Run a user-requested scan and its configured post-scan automation.
 pub fn scan_vault_with_automation<F>(
@@ -18,8 +16,33 @@ pub fn scan_vault_with_automation<F>(
 where
     F: FnMut(ScanProgress),
 {
-    let summary =
-        scan_vault_with_progress(paths, mode, on_progress).map_err(AppError::operation)?;
+    scan_vault_with_automation_until(
+        paths,
+        mode,
+        auto_commit,
+        active_permission_profile,
+        verbosity,
+        on_progress,
+        &|| false,
+    )
+}
+
+/// [`scan_vault_with_automation`] that stops between files once `stop`
+/// returns `true`; a stopped scan changes nothing and runs no automation.
+pub fn scan_vault_with_automation_until<F>(
+    paths: &VaultPaths,
+    mode: ScanMode,
+    auto_commit: &AutoCommitPolicy,
+    active_permission_profile: Option<&str>,
+    verbosity: Verbosity,
+    mut on_progress: F,
+    stop: &dyn Fn() -> bool,
+) -> Result<ScanSummary, AppError>
+where
+    F: FnMut(ScanProgress),
+{
+    let summary = vulcan_core::scan_vault_with_progress_until(paths, mode, &mut on_progress, stop)
+        .map_err(AppError::operation)?;
     if summary.added + summary.updated + summary.deleted > 0 {
         auto_commit
             .commit(paths, "scan", &[], active_permission_profile, verbosity)
@@ -71,7 +94,8 @@ pub fn refresh_cache_incrementally_with_progress<F>(
 where
     F: FnMut(ScanProgress),
 {
-    scan_vault_with_progress(paths, ScanMode::Incremental, on_progress).map_err(AppError::operation)
+    vulcan_core::scan_vault_with_progress(paths, ScanMode::Incremental, on_progress)
+        .map_err(AppError::operation)
 }
 
 #[cfg(test)]

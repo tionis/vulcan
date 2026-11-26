@@ -101,6 +101,8 @@ pub struct McpRequestContext<'a> {
     pub subscriptions: bool,
     /// Progress for this request, when it asked and the host can deliver.
     pub progress: Option<&'a McpProgress>,
+    /// Asks a running call to stop, where its tool can stop safely.
+    pub cancellation: Option<&'a crate::execution::ExecutionCancellationToken>,
 }
 
 /// The `_meta` of a modern request, once validated.
@@ -410,6 +412,7 @@ fn dispatch(
                 ctx.client,
                 ctx.operations,
                 ctx.progress,
+                ctx.cancellation,
                 &params.name,
                 &params.arguments,
             )?
@@ -771,6 +774,7 @@ mod tests {
             operations: None,
             subscriptions: false,
             progress: None,
+            cancellation: None,
         };
         let discover = handle(&ctx, "server/discover", None).unwrap().unwrap();
         assert_eq!(discover["resultType"], "complete");
@@ -836,6 +840,7 @@ mod tests {
             operations: None,
             subscriptions: false,
             progress: None,
+            cancellation: None,
         };
         let modern = context(McpEra::Modern);
         let discover = handle(&modern, "server/discover", None).unwrap().unwrap();

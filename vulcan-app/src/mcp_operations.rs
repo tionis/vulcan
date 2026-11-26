@@ -99,7 +99,7 @@ impl McpOperationRecord {
                 "working",
                 if self.cancel_requested {
                     format!(
-                        "`{}` is still running; cancellation was requested, and a call that has started stops only if the tool checks for it",
+                        "`{}` is still running; cancellation was requested, and it stops where its tool can stop safely (index_scan, changeset_land, sync_refresh) or else runs to completion",
                         self.tool
                     )
                 } else {
