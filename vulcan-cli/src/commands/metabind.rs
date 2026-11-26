@@ -3,8 +3,11 @@
 
 use serde::Serialize;
 use vulcan_app::metabind::{
-    list_metabind_fields, plan_metabind_apply, plan_metabind_set, MetaBindChange, MetaBindWritePlan,
+    list_metabind_fields, plan_metabind_apply, plan_metabind_set, press_metabind_button,
+    ButtonSelector, MetaBindChange, MetaBindFileWrite, MetaBindPressOptions, MetaBindPressReport,
+    MetaBindWritePlan, MetaBindWriter,
 };
+use vulcan_app::AppError;
 use vulcan_core::metabind::{field_markdown, MetaBindLevel, MetaBindOutcome};
 use vulcan_core::VaultPaths;
 
@@ -30,7 +33,8 @@ pub(crate) fn handle_metabind_command(
     let note = match command {
         MetabindCommand::List { note }
         | MetabindCommand::Set { note, .. }
-        | MetabindCommand::Apply { note, .. } => note,
+        | MetabindCommand::Apply { note, .. }
+        | MetabindCommand::Press { note, .. } => note,
     };
     let source = read_existing_markdown_source(paths, note)?;
     let Some(path) = source.target.vault_relative_path.clone() else {
@@ -58,6 +62,23 @@ pub(crate) fn handle_metabind_command(
             plan_metabind_apply(paths, config, &path, &source.source, profile),
             *dry_run,
         ),
+        MetabindCommand::Press {
+            button,
+            line,
+            dry_run,
+            ..
+        } => {
+            return press(
+                cli,
+                paths,
+                config,
+                &path,
+                &source.source,
+                button.as_deref(),
+                *line,
+                *dry_run,
+            );
+        }
     };
     let plan = plan.map_err(CliError::operation)?;
     write_plan(cli, paths, &plan, dry_run)?;
@@ -88,6 +109,115 @@ pub(crate) fn handle_metabind_command(
                 println!("skipped {skipped}");
             }
             if report.dry_run && report.changed {
+                println!("Dry run: nothing written");
+            }
+            Ok(())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn press(
+    cli: &Cli,
+    paths: &VaultPaths,
+    config: &vulcan_core::VaultConfig,
+    path: &str,
+    source: &str,
+    button: Option<&str>,
+    line: Option<usize>,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let selector = match (button, line) {
+        (Some(id), _) => ButtonSelector::Id(id.to_string()),
+        (None, Some(line)) => ButtonSelector::Line(line),
+        (None, None) => return Err(CliError::operation("name a button id or pass --line")),
+    };
+    let mut writer = CliWriter {
+        cli,
+        paths,
+        written: Vec::new(),
+    };
+    let report = press_metabind_button(
+        paths,
+        config,
+        path,
+        source,
+        &selector,
+        MetaBindPressOptions {
+            dry_run,
+            permission_profile: cli.permissions.as_deref(),
+        },
+        &mut writer,
+    )
+    .map_err(CliError::operation)?;
+    if !writer.written.is_empty() {
+        refresh_after_write(paths, &writer.written)?;
+    }
+    print_press_report(cli, &report)
+}
+
+/// Writes a pressed button's edits as `set` and `apply` write theirs.
+struct CliWriter<'a> {
+    cli: &'a Cli,
+    paths: &'a VaultPaths,
+    written: Vec<String>,
+}
+
+impl MetaBindWriter for CliWriter<'_> {
+    fn write(&mut self, write: &MetaBindFileWrite) -> Result<(), AppError> {
+        let profile = self.cli.permissions.as_deref();
+        let verbosity = self.cli.verbosity();
+        let before = (!write.created).then_some(write.before.as_str());
+        dispatch_note_write_plugin_hooks(
+            self.paths,
+            profile,
+            &write.path,
+            "metabind",
+            before,
+            &write.after,
+            verbosity,
+        )
+        .map_err(AppError::operation)?;
+        vulcan_app::notes::write_note_content(
+            self.paths,
+            &write.path,
+            before,
+            &write.after,
+            "metabind",
+            profile,
+            verbosity,
+        )?;
+        if !self.written.contains(&write.path) {
+            self.written.push(write.path.clone());
+        }
+        Ok(())
+    }
+}
+
+fn print_press_report(cli: &Cli, report: &MetaBindPressReport) -> Result<(), CliError> {
+    match cli.output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!("Pressed \"{}\" in {}", report.label, report.path);
+            for (index, action) in report.actions.iter().enumerate() {
+                let state = if action.ran { "" } else { " (not run)" };
+                println!(
+                    "  {}. {}{state}: {}",
+                    index + 1,
+                    action.action_type,
+                    action.detail
+                );
+            }
+            for path in &report.written {
+                let verb = match (report.dry_run, report.created.contains(path)) {
+                    (true, true) => "would create",
+                    (true, false) => "would write",
+                    (false, true) => "created",
+                    (false, false) => "wrote",
+                };
+                println!("{verb} {path}");
+            }
+            if report.dry_run && !report.written.is_empty() {
                 println!("Dry run: nothing written");
             }
             Ok(())

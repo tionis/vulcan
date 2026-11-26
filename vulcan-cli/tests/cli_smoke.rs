@@ -2671,6 +2671,64 @@ fn metabind_list_set_and_apply_round_trip() {
 }
 
 #[test]
+fn metabind_press_runs_button_actions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan should be created");
+    let note = concat!(
+        "---\ncount: 1\n---\n",
+        "```meta-bind-button\nlabel: Log\nid: log\nactions:\n",
+        "  - type: updateMetadata\n    bindTarget: count\n    value: 2\n",
+        "  - type: createNote\n    folderPath: Logs\n    fileName: Entry\n",
+        "  - type: open\n    link: https://example.com\n```\n",
+    );
+    fs::write(vault_root.join("Tracker.md"), note).expect("note should write");
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    run_scan(&vault_root);
+    let vulcan = || Command::cargo_bin("vulcan").expect("binary should build");
+
+    let dry_run = parse_stdout_json(
+        &vulcan()
+            .args([
+                "--vault",
+                &vault,
+                "--output",
+                "json",
+                "metabind",
+                "press",
+                "Tracker",
+                "log",
+                "--dry-run",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(dry_run["label"], serde_json::json!("Log"));
+    assert_eq!(dry_run["created"], serde_json::json!(["Logs/Entry.md"]));
+    assert_eq!(dry_run["actions"][2]["ran"], serde_json::json!(false));
+    assert!(!vault_root.join("Logs/Entry.md").exists());
+
+    vulcan()
+        .args([
+            "--vault", &vault, "metabind", "press", "Tracker", "--line", "5",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created Logs/Entry.md"));
+    assert!(vault_root.join("Logs/Entry.md").exists());
+    let updated = fs::read_to_string(vault_root.join("Tracker.md")).expect("note should read");
+    assert!(updated.starts_with("---\ncount: 2\n---\n"), "{updated}");
+    vulcan()
+        .args(["--vault", &vault, "metabind", "press", "Tracker", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no button with id `nope`"));
+}
+
+#[test]
 fn plugin_set_and_delete_manage_full_registration_surface() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -12308,6 +12366,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     assert!(bases_skill.contains("[customjs.dql_functions]"));
     assert!(bases_skill.contains("vulcan numerals apply <note> --dry-run"));
     assert!(bases_skill.contains("vulcan metabind set <note> <target> <value>"));
+    assert!(bases_skill.contains("vulcan metabind press <note> <button-id> --dry-run"));
     assert!(bases_skill.contains("full evaluation (the configured sandbox tier, still read-only) in a vault trusted with `vulcan trust`"));
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();

@@ -25,6 +25,42 @@ pub(crate) fn test_env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Points the trust store at a temporary config home for the test's
+/// lifetime, under the lock that serializes environment changes.
+#[cfg(all(test, feature = "js_runtime"))]
+pub(crate) struct IsolatedTrust {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    _home: tempfile::TempDir,
+    previous: Option<std::ffi::OsString>,
+}
+
+#[cfg(all(test, feature = "js_runtime"))]
+impl IsolatedTrust {
+    pub(crate) fn new() -> Self {
+        let lock = test_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let home = tempfile::tempdir().expect("config home");
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", home.path());
+        Self {
+            _lock: lock,
+            _home: home,
+            previous,
+        }
+    }
+}
+
+#[cfg(all(test, feature = "js_runtime"))]
+impl Drop for IsolatedTrust {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct TrustedVaults {
     vaults: BTreeSet<PathBuf>,

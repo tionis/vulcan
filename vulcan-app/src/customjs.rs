@@ -150,7 +150,7 @@ pub fn run_customjs_startup(
         .collect()
 }
 
-fn invocation_session(
+pub(crate) fn invocation_session(
     paths: &VaultPaths,
     permission_profile: Option<&str>,
     dry_run: bool,
@@ -238,41 +238,9 @@ const LIST_CLASSES: &str = r#"(() => {
 #[cfg(all(test, feature = "js_runtime"))]
 mod tests {
     use super::{build_customjs_report, invoke_customjs, run_customjs_startup};
+    use crate::trust::IsolatedTrust;
     use std::fs;
     use vulcan_core::{initialize_vulcan_dir, VaultPaths};
-
-    /// Points the trust store at a temporary config home for the test's
-    /// lifetime, under the lock that serializes environment changes.
-    struct IsolatedTrust {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        _home: tempfile::TempDir,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl IsolatedTrust {
-        fn new() -> Self {
-            let lock = crate::trust::test_env_lock()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let home = tempfile::tempdir().expect("config home");
-            let previous = std::env::var_os("XDG_CONFIG_HOME");
-            std::env::set_var("XDG_CONFIG_HOME", home.path());
-            Self {
-                _lock: lock,
-                _home: home,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for IsolatedTrust {
-        fn drop(&mut self) {
-            match self.previous.take() {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-        }
-    }
 
     fn vault(config: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, VaultPaths) {
         let dir = tempfile::tempdir().expect("temp dir");

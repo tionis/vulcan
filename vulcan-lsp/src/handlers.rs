@@ -482,6 +482,18 @@ fn code_action(
                 })]),
             }),
         ),
+        EditorAction::MetaBindPress { path, button, line } => (
+            None,
+            Some(lsp::Command {
+                title: action.title.clone(),
+                command: "vulcan.metabind.press".to_string(),
+                arguments: Some(vec![serde_json::json!({
+                    "path": uri(session, &path)?.to_string(),
+                    "button": button,
+                    "line": line,
+                })]),
+            }),
+        ),
         EditorAction::ToggleTask { path, line } => (
             None,
             Some(lsp::Command {

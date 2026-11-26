@@ -47,6 +47,13 @@ pub enum EditorAction {
         input_type: String,
         current: serde_json::Value,
     },
+    /// Press a Meta Bind button: `vulcan.metabind.press` with its id, or
+    /// with a (one-based) line of its block.
+    MetaBindPress {
+        path: String,
+        button: Option<String>,
+        line: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

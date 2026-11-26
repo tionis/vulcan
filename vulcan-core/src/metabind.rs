@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::ops::Range;
 
+pub mod buttons;
+
 // ---------------------------------------------------------------- targets
 
 /// Where a bind target's value lives.

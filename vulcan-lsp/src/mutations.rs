@@ -35,6 +35,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "vulcan.capture",
     "vulcan.section.extract",
     "vulcan.metabind.set",
+    "vulcan.metabind.press",
 ];
 
 /// Server-to-client requests whose responses someone awaits.
@@ -363,6 +364,20 @@ fn execute_command(
                 ))
             })?;
             session.plan_metabind_set(&document("path")?, &text("target")?, &value)?
+        }
+        "vulcan.metabind.press" => {
+            let selector = match (argument["button"].as_str(), argument["line"].as_u64()) {
+                (Some(id), _) => vulcan_app::metabind::ButtonSelector::Id(id.to_string()),
+                (None, Some(line)) => vulcan_app::metabind::ButtonSelector::Line(
+                    usize::try_from(line).map_err(|error| invalid(error.to_string()))?,
+                ),
+                (None, None) => {
+                    return Err(invalid(format!(
+                        "{command} needs a `button` id or a (1-based) `line`"
+                    )))
+                }
+            };
+            session.plan_metabind_press(&document("path")?, &selector)?
         }
         "vulcan.task.toggle" => {
             let line = argument["line"]

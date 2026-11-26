@@ -3628,6 +3628,60 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Press a button: run its actions in order",
+            "name": "press",
+            "options": [
+              {
+                "help": "Note path, filename, or alias",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Button id",
+                "id": "button",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BUTTON"
+                ]
+              },
+              {
+                "help": "A line of the meta-bind-button block, for buttons without an id",
+                "id": "line",
+                "long": "line",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LINE"
+                ]
+              },
+              {
+                "help": "Show the changes without writing them; JavaScript runs read-only",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },

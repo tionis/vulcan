@@ -1,8 +1,8 @@
 # Live documents: shared scope, vault functions, bound inputs, and calculator blocks
 
 **Status:** Design contract for Roadmap Phase 9.42. 9.42.1 (shared scope), 9.42.2 (CustomJS), and
-9.42.4 (Numerals) are implemented. 9.42.3 (Meta Bind) renders fields and has `list`, `set`, and
-`apply` and editor code actions; button presses and JS views are still planned.
+9.42.4 (Numerals) are implemented. 9.42.3 (Meta Bind) renders fields, runs JS views, and has
+`list`, `set`, `apply`, and `press` and editor code actions.
 
 SilverBullet's Space Lua and Ink & Switch's Potluck make a note a small live program: values
 defined in one place, computed inline elsewhere, edited in place, with helpers defined in the
@@ -226,8 +226,8 @@ number, unknown template.
   (`null` → `null`, or empty with `view_field_display_null_as_empty`; lists joined with `", "`;
   objects as JSON), with `renderMarkdown` rendering the result. `link` turns a value into a
   wikilink or URL; `image` embeds one target. `hidden` suppresses output.
-- `BUTTON` and ` meta-bind-button ` render the label with a "buttons run in Obsidian" notice,
-  except the button actions listed under "Buttons" below.
+- `BUTTON` and ` meta-bind-button ` render the label; renders never press them (see "Buttons"
+  below).
 - ` meta-bind-js-view ` blocks run when `metabind.enable_js` is on (as Meta Bind requires its
   "enable JS" setting), under the render's DataviewJS policy: not at all for `off`, in the strict
   sandbox for `static`, at the vault's tier for `on`, and never writing. The block is
@@ -262,12 +262,39 @@ number, unknown template.
 
 ### Buttons
 
-Button actions that only edit the vault map to explicit commands:
-`vulcan metabind press <note> <button-id>` runs `updateMetadata` (with `evaluate: false`, or
-`evaluate: true` under the DataviewJS policy), `createNote`, `replaceInNote`,
-`regexpReplaceInNote`, `replaceSelf`, `insertIntoNote`, `sleep`, and `js`/`inlineJS` (at the
-configured sandbox tier), with `--dry-run`. `command`, `open`, `input`, and the Templater actions
-report "runs in Obsidian" diagnostics.
+`vulcan metabind press <note> <button-id>` (or `--line N`, a line of a ` meta-bind-button ` block
+without an id) presses a button: an id names a block in the note, else a `button_templates`
+entry. Its `actions` (or single `action`) run in order, each seeing the edits before it, and
+`--dry-run` reports what would change without writing:
+
+- `updateMetadata` writes `value` to `bindTarget` (same note, `File#prop`, nested paths). With
+  `evaluate: true` (which needs `enable_js`), `value` is a JavaScript expression evaluated in the
+  strict sandbox with `x`, the target's current value, and `getMetadata('target')` for targets
+  written as string literals in the expression.
+- `createNote` creates an empty note `folderPath/fileName.md` (default `Untitled`); a taken name
+  becomes `fileName 1`, `fileName 2`, …, unless `openIfAlreadyExists` is set, which keeps the
+  existing note. `openNote` is reported.
+- `replaceInNote` (`fromLine`, `toLine`, inclusive), `insertIntoNote` (`line`: the inserted text
+  starts at that line; one past the end appends), and `replaceSelf` (the button's own block) edit
+  the button's note. Lines are one-based numbers or `selfStart`/`selfEnd` with `+ n`/`- n`,
+  relative to the block as it is when the action runs (a template has no block). `templater: true`
+  is reported as running in Obsidian and skipped.
+- `regexpReplaceInNote` replaces `regexp` matches with JavaScript flags (`regexpFlags`, default
+  `g`; `i`, `m`, `s` apply) and replacement syntax (`$1`, `$<name>`, `$&`, `$$`). Patterns use the
+  Rust `regex` dialect: lookaround and backreferences fail with an error.
+- `js` (a vault `file` with `args`) and `inlineJS` (`code`) need `enable_js` and a trusted vault.
+  Edits before the script are written first; the script runs as an async function body in a
+  DataviewJS session at the configured tier, with vault writes allowed (read-only for
+  `--dry-run`), and sees `context.args`, `context.file.path`, `context.jsFile.path`,
+  `context.buttonConfig`, and `context.buttonContext` (`position.lineStart`/`lineEnd`, zero-based,
+  `isInline`). `new Notice(text)` messages are reported.
+- `sleep` does nothing outside Obsidian. `command`, `open`, `input`, `runTemplaterFile`, and
+  `templaterCreateNote` are reported as running in Obsidian and skipped, as are unknown types.
+
+An action that fails stops the press; edits already written by an earlier script stay. Editors
+offer "Press <label>" code actions on button blocks and `BUTTON[id]` fields
+(`vulcan.metabind.press`); they apply the edits to open buffers and refuse buttons with
+JavaScript actions, which `vulcan metabind press` runs.
 
 ### Settings
 

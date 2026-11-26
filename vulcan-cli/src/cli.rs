@@ -3750,6 +3750,30 @@ pub enum MetabindCommand {
         #[arg(long, help = "Show the changes without writing them")]
         dry_run: bool,
     },
+    #[command(
+        about = "Press a button: run its actions in order",
+        long_about = "Press a button: run its actions in order. Name the button by its `id` (a meta-bind-button block in the note, else a button template) or by a line of its block with --line. Text actions (updateMetadata, createNote, replaceInNote, insertIntoNote, regexpReplaceInNote, replaceSelf) edit notes; js and inlineJS actions and evaluated updates need `metabind.enable_js`, and JavaScript actions a trusted vault. Actions that need Obsidian's interface (command, open, input, Templater) are reported, not run."
+    )]
+    Press {
+        #[arg(help = "Note path, filename, or alias")]
+        note: String,
+        #[arg(
+            help = "Button id",
+            required_unless_present = "line",
+            conflicts_with = "line"
+        )]
+        button: Option<String>,
+        #[arg(
+            long,
+            help = "A line of the meta-bind-button block, for buttons without an id"
+        )]
+        line: Option<usize>,
+        #[arg(
+            long,
+            help = "Show the changes without writing them; JavaScript runs read-only"
+        )]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

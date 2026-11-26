@@ -17,6 +17,13 @@ use vulcan_core::{NoteRecord, PermissionGuard, ProfilePermissionGuard, VaultConf
 
 use crate::AppError;
 
+mod press;
+pub use press::{
+    press_metabind_button, MetaBindActionReport, MetaBindPressOptions, MetaBindPressReport,
+    MetaBindWriter,
+};
+pub use vulcan_core::metabind::buttons::ButtonSelector;
+
 /// A note's fields.
 #[derive(Debug, Clone, Serialize)]
 pub struct MetaBindReport {
@@ -50,6 +57,8 @@ pub struct MetaBindFileWrite {
     pub path: String,
     pub before: String,
     pub after: String,
+    /// A note the write creates (`before` is empty).
+    pub created: bool,
 }
 
 /// The render environment `vulcan metabind` uses: the device clock, the
@@ -292,6 +301,7 @@ fn finish(
             path,
             before,
             after,
+            created: false,
         })
         .collect();
     plan

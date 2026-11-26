@@ -341,6 +341,11 @@ with template mutations disabled and follows the existing template trust rules.
   it; other clients get an `invalid_request` naming the missing value. The value is checked against
   every input in the note bound to the target, and the edit goes to the open buffer (or the file
   when closed), changing only that property's lines.
+- Meta Bind buttons (`vulcan.metabind.press` with `{ "path", "button"? , "line"?, "dryRun"? }`,
+  `line` one-based): on a ` meta-bind-button ` block or a `BUTTON[id]` field, a `Press <label>`
+  code action runs the button's actions as `vulcan metabind press` would, applying edits to open
+  buffers (or files when closed). Buttons with `js` or `inlineJS` actions get an
+  `invalid_request` pointing at `vulcan metabind press`.
 - Extract section (`vulcan.section.extract` with `{ "path", "position", "dryRun"? }`, offered as a
   `refactor.extract` code action on a heading line): the heading's section, up to the next heading
   of the same or a higher level, becomes a note named after the heading in the source note's
