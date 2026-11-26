@@ -334,8 +334,11 @@ task id is the call's operation id: `tasks/get` reports `working`, then `complet
 started stops only where its tool checks the token, so it may still complete. Vulcan's tasks do
 not ask for input, so `tasks/update` is acknowledged and changes nothing. Records last an hour
 after the call finishes (`ttlMs`), `pollIntervalMs` is 2000; an unknown task is -32602, and a
-client that has not declared the extension gets -32021. On a named remote, a mutation the hosted
-ledger keeps answers as before, with its durable operation id and `status_path`, not as a task.
+client that has not declared the extension gets -32021. On a named remote, a hosted mutation
+that may become a task is also recorded in memory under its durable ledger id, so the task
+reports the call's result; the ledger stays the durable record (`operation_get`,
+`status_path`), and a task outlives a restart only there. Hosted mutations from clients that do
+not declare the extension answer as before, with their operation id and `status_path`.
 
 **Timeouts without tasks:** a call that exceeds `--request-timeout` returns an `indeterminate`
 tool error carrying the operation id; the work either finishes (and `operation_get` reports it)

@@ -172,6 +172,14 @@ impl McpOperationRegistry {
     /// [`Self::begin`] for a call made by `owner`.
     pub fn begin_owned(&self, owner: &str, tool: &str) -> String {
         let operation_id = ulid::Ulid::new().to_string();
+        self.begin_owned_as(owner, tool, &operation_id);
+        operation_id
+    }
+
+    /// Record a call that already has an operation id, such as one a
+    /// durable ledger assigned, so it can also be followed as a task.
+    pub fn begin_owned_as(&self, owner: &str, tool: &str, operation_id: &str) {
+        let operation_id = operation_id.to_string();
         let now = now_unix_ms();
         let mut records = self.records.lock().unwrap_or_else(PoisonError::into_inner);
         let expired = |record: &McpOperationRecord| {
@@ -196,7 +204,6 @@ impl McpOperationRegistry {
             cancel_requested: false,
             cancellation: None,
         });
-        operation_id
     }
 
     /// Let a client's cancellation reach the call through `token`.

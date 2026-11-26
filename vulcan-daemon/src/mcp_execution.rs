@@ -361,17 +361,28 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
     let failed_ledger = hosted.as_ref().map(|hosted| hosted.executor.ledger());
     // Tool calls the hosted ledger does not keep are recorded here, so one
     // that outlives its deadline can still be looked up with operation_get.
-    let recorded = (operation_id.is_none()
-        && request.get("method").and_then(Value::as_str) == Some("tools/call"))
-    .then(|| {
-        let tool = request
-            .pointer("/params/name")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        http_context
-            .operations
-            .begin_owned(&authority.operation_owner(), tool)
-    });
+    // A hosted mutation that may become a task is recorded here too, under
+    // its ledger id, so the task can report the call's result; the ledger
+    // stays the durable record that operation_get and status_path read.
+    let recorded = (request.get("method").and_then(Value::as_str) == Some("tools/call"))
+        .then(|| {
+            let tool = request
+                .pointer("/params/name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let owner = authority.operation_owner();
+            match operation_id.as_deref() {
+                None => Some(http_context.operations.begin_owned(&owner, tool)),
+                Some(ledger_id) if task_eligible(&request) => {
+                    http_context
+                        .operations
+                        .begin_owned_as(&owner, tool, ledger_id);
+                    Some(ledger_id.to_string())
+                }
+                Some(_) => None,
+            }
+        })
+        .flatten();
     // A task-capable call from a client that declares the tasks extension
     // becomes a task once it has run for a while, instead of timing out.
     let background_after = recorded
@@ -913,6 +924,101 @@ mod tests {
             }
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
+        }
+    }
+
+    #[cfg(feature = "oauth")]
+    #[test]
+    fn a_hosted_mutation_becomes_a_task_under_its_ledger_id() {
+        use crate::hosted_jobs::HostedJobLedger;
+        use crate::mutation_scheduler::MutationSchedulerConfig;
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let mut core = CounterCore::new(&paths);
+        let (release, wait) = mpsc::channel();
+        let (entered, observed_entered) = mpsc::channel();
+        let (finished, observed_finished) = mpsc::channel();
+        core.gate = Some(Arc::new(Gate {
+            release: Mutex::new(wait),
+            entered,
+            finished,
+        }));
+        let host = host(&paths);
+        let inbound = inbound();
+        let authority = host.authenticate(&inbound.headers).unwrap();
+        let request = serde_json::json!({
+            "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+            "params": {
+                "name": "index_scan", "arguments": {},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {
+                        "extensions": {"io.modelcontextprotocol/tasks": {}}
+                    }
+                }
+            }
+        });
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let scheduler =
+            Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).unwrap());
+        let ledger = Arc::new(HostedJobLedger::at(temporary.path().join("operations")));
+        let executor = Arc::new(HostedExecutor::new(
+            Arc::clone(&scheduler),
+            Arc::clone(&ledger),
+        ));
+        let hosted = HostedMcpExecution {
+            scheduler,
+            executor,
+            runtime: runtime.handle().clone(),
+        };
+        let records = Arc::clone(&host.operations);
+        let owner = authority.operation_owner();
+        let worker = std::thread::spawn(move || {
+            process_http_request_with_timeout(
+                &mut core,
+                request,
+                Duration::from_secs(60),
+                &host,
+                &inbound,
+                &authority,
+                &ExecutionCancellationToken::default(),
+                Some(&hosted),
+            )
+        });
+        observed_entered
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        // The call is still held at the gate when the task threshold passes.
+        let result = worker.join().unwrap().unwrap();
+        let response = result.response.unwrap();
+        assert_eq!(response["result"]["resultType"], "task", "{response}");
+        let task_id = response["result"]["taskId"].as_str().unwrap().to_string();
+        assert!(
+            ledger.load(&task_id).is_ok(),
+            "the task id is the ledger id"
+        );
+        assert_eq!(
+            records.task_owned(&owner, &task_id).unwrap()["status"],
+            "working"
+        );
+
+        release.send(()).unwrap();
+        observed_finished
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let task = records.task_owned(&owner, &task_id).unwrap();
+            if task["status"] == "completed" {
+                assert_eq!(task["result"]["calls"], 1, "{task}");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{task}");
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
