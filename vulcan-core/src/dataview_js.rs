@@ -368,6 +368,7 @@ mod runtime {
         permissions: Option<ProfilePermissionGuard>,
         deterministic_static: bool,
         read_only: bool,
+        link_resolution: crate::config::LinkResolutionMode,
         runtime_timeout: Option<Duration>,
         transaction: Mutex<Option<JsTransactionState>>,
         tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
@@ -388,6 +389,8 @@ mod runtime {
         /// Page selections returned with lazy file fields; the first lazy
         /// read in a selection hydrates all of it.
         page_sets: Vec<Vec<String>>,
+        /// Link resolution over this universe, built on first use.
+        resolver: Option<crate::resolver::ResolverIndex>,
     }
 
     /// What a runtime call reads from the page universe.
@@ -413,11 +416,51 @@ mod runtime {
                 complete: false,
                 generation,
                 page_sets: Vec::new(),
+                resolver: None,
             }
         }
 
         fn note(&self, path: &str) -> Option<&NoteRecord> {
             self.by_path.get(path).and_then(|key| self.notes.get(key))
+        }
+
+        /// The path of the note a link `target` written in `origin` names,
+        /// as Obsidian resolves it; an ambiguous target takes its first match.
+        fn resolve_link_path(
+            &mut self,
+            target: &str,
+            origin: Option<&str>,
+            mode: crate::config::LinkResolutionMode,
+        ) -> Option<String> {
+            let notes = &self.notes;
+            let resolver = self.resolver.get_or_insert_with(|| {
+                let documents = notes
+                    .values()
+                    .map(|note| crate::resolver::ResolverDocument {
+                        id: note.document_path.clone(),
+                        path: note.document_path.clone(),
+                        filename: note.file_name.clone(),
+                        aliases: note.aliases.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                crate::resolver::ResolverIndex::build(&documents)
+            });
+            let origin = origin.unwrap_or_default();
+            let result = resolver.resolve(
+                &crate::resolver::ResolverLink {
+                    source_document_id: origin.to_string(),
+                    source_path: origin.to_string(),
+                    target_path_candidate: Some(target.to_string()),
+                    link_kind: crate::parser::LinkKind::Wikilink,
+                },
+                mode,
+            );
+            result.resolved_target_id.or_else(|| match result.problem {
+                Some(crate::resolver::LinkResolutionProblem::Ambiguous(candidates)) => {
+                    candidates.into_iter().next()
+                }
+                _ => None,
+            })
         }
 
         fn hydrate(&mut self, state: &JsEvalState, need: IndexNeed) -> Result<(), DataviewJsError> {
@@ -868,6 +911,10 @@ function __vulcanResolveKey(value, key, index = undefined, values = undefined) {
 }
 
 function __vulcanNormalizeComparable(value) {
+  // Dataview compares links by where they point, not how they display.
+  if (value instanceof Link) {
+    return `${value.embed ? "!" : ""}[[${value.obsidianLink()}]]`;
+  }
   if (value instanceof Date) {
     return value.toISOString();
   }
@@ -894,6 +941,9 @@ function __vulcanPlain(value) {
   if (typeof value === "function") {
     return "[function " + (value.name || "anonymous") + "]";
   }
+  if (value instanceof Link) {
+    return value.markdown();
+  }
   if (value instanceof DataArray) {
     return value.array().map(__vulcanPlain);
   }
@@ -915,6 +965,27 @@ function __vulcanPlain(value) {
       normalized[key] = __vulcanPlain(child);
     }
     return normalized;
+  }
+  return value;
+}
+
+// Dataview's deepCopy: Links, dates, and durations stay what they are.
+function __vulcanClone(value) {
+  if (value instanceof Link) {
+    return new Link({ ...value });
+  }
+  if (value instanceof DataArray) {
+    return new DataArray(value.values.map(__vulcanClone));
+  }
+  if (Array.isArray(value)) {
+    return value.map(__vulcanClone);
+  }
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const copy = {};
+    for (const [key, item] of Object.entries(value)) {
+      copy[key] = __vulcanClone(item);
+    }
+    return copy;
   }
   return value;
 }
@@ -944,6 +1015,9 @@ function __vulcanCompareForSort(left, right, dir) {
 function __vulcanRenderScalar(value) {
   if (typeof value === "string") {
     return value;
+  }
+  if (value instanceof Link) {
+    return value.markdown();
   }
   return JSON.stringify(__vulcanPlain(value));
 }
@@ -1000,6 +1074,11 @@ function __vulcanReviveFileMetadata(file) {
   }
   // Copy descriptors so lazy fields stay lazy.
   const revived = Object.defineProperties({}, Object.getOwnPropertyDescriptors(file));
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(revived))) {
+    if ("value" in descriptor) {
+      revived[key] = __vulcanReviveFileField(key, descriptor.value, file.path);
+    }
+  }
   // Dataview hands out every `file` array (tasks, lists, links, tags) as a
   // DataArray; lazy fields wrap theirs when they load.
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(revived))) {
@@ -1044,7 +1123,11 @@ function __vulcanLazyFile(file, generation, set) {
       enumerable: true,
       configurable: true,
       get() {
-        const value = JSON.parse(__vulcan_page_file_field_json(generation, set, path, key));
+        const value = __vulcanReviveFileField(
+          key,
+          JSON.parse(__vulcan_page_file_field_json(generation, set, path, key)),
+          path
+        );
         return settle(this, Array.isArray(value) ? new DataArray(value) : value);
       },
       set(value) {
@@ -1066,10 +1149,12 @@ function __vulcanRevivePage(page) {
   if (!page || typeof page !== "object" || Array.isArray(page)) {
     return page;
   }
-  return {
-    ...page,
-    file: __vulcanReviveFileMetadata(page.file),
-  };
+  const origin = page.file?.path ?? null;
+  const revived = {};
+  for (const [key, value] of Object.entries(page)) {
+    revived[key] = key === "file" ? __vulcanReviveFileMetadata(value) : __vulcanReviveFieldValue(value, origin);
+  }
+  return revived;
 }
 
 function __vulcanDurationMillis(value) {
@@ -1208,6 +1293,9 @@ function __vulcanTypeName(value) {
   if (value instanceof VulcanDateTime || value instanceof Date) {
     return "date";
   }
+  if (value instanceof Link) {
+    return "link";
+  }
   if (typeof value === "string" && /^!?\[\[[^\]]+\]\]$/.test(value.trim())) {
     return "link";
   }
@@ -1233,6 +1321,15 @@ function __vulcanTypeName(value) {
 }
 
 function __vulcanMeta(value) {
+  if (value instanceof Link) {
+    return {
+      display: value.display ?? null,
+      embed: value.embed,
+      path: value.path,
+      subpath: value.subpath ?? null,
+      type: value.type,
+    };
+  }
   return JSON.parse(__vulcan_link_meta_json(__vulcanSerialize(value)));
 }
 
@@ -1510,6 +1607,258 @@ class VulcanDuration {
   }
 }
 
+// Dataview's Link: a file, header, or block reference.
+class Link {
+  constructor(fields) {
+    Object.assign(this, fields);
+  }
+
+  static file(path, embed = false, display = undefined) {
+    return new Link({ path, embed, display, subpath: undefined, type: "file" });
+  }
+
+  static infer(linkpath, embed = false, display = undefined) {
+    if (linkpath.includes("#^")) {
+      const [path, blockId] = linkpath.split("#^");
+      return Link.block(path, blockId, embed, display);
+    }
+    if (linkpath.includes("#")) {
+      const [path, header] = linkpath.split("#");
+      return Link.header(path, header, embed, display);
+    }
+    return Link.file(linkpath, embed, display);
+  }
+
+  static header(path, header, embed = false, display = undefined) {
+    return new Link({
+      path,
+      embed,
+      display,
+      subpath: __vulcanNormalizeHeaderForLink(header),
+      type: "header",
+    });
+  }
+
+  static block(path, blockId, embed = false, display = undefined) {
+    return new Link({ path, embed, display, subpath: blockId, type: "block" });
+  }
+
+  static fromObject(object) {
+    return new Link(object);
+  }
+
+  equals(other) {
+    return (
+      other != null &&
+      this.path == other.path &&
+      this.type == other.type &&
+      this.subpath == other.subpath
+    );
+  }
+
+  toString() {
+    return this.markdown();
+  }
+
+  toJSON() {
+    return this.markdown();
+  }
+
+  toObject() {
+    return {
+      path: this.path,
+      type: this.type,
+      subpath: this.subpath,
+      display: this.display,
+      embed: this.embed,
+    };
+  }
+
+  withPath(path) {
+    return new Link({ ...this, path });
+  }
+
+  withDisplay(display) {
+    return new Link({ ...this, display });
+  }
+
+  withHeader(header) {
+    return Link.header(this.path, header, this.embed, this.display);
+  }
+
+  toFile() {
+    return Link.file(this.path, this.embed, this.display);
+  }
+
+  toEmbed() {
+    return this.embed ? this : new Link({ ...this, embed: true });
+  }
+
+  fromEmbed() {
+    return this.embed ? new Link({ ...this, embed: false }) : this;
+  }
+
+  markdown() {
+    let result = `${this.embed ? "!" : ""}[[${this.obsidianLink()}`;
+    if (this.display) {
+      result += `|${this.display}`;
+    } else {
+      result += `|${__vulcanFileTitle(this.path)}`;
+      if (this.type == "header" || this.type == "block") {
+        result += ` > ${this.subpath}`;
+      }
+    }
+    return `${result}]]`;
+  }
+
+  obsidianLink() {
+    const escaped = this.path.replaceAll("|", "\\|");
+    if (this.type == "header") {
+      return `${escaped}#${this.subpath?.replaceAll("|", "\\|")}`;
+    }
+    if (this.type == "block") {
+      return `${escaped}#^${this.subpath?.replaceAll("|", "\\|")}`;
+    }
+    return escaped;
+  }
+
+  fileName() {
+    return __vulcanFileTitle(this.path).replace(".md", "");
+  }
+}
+
+function __vulcanFileTitle(path) {
+  let title = String(path);
+  if (title.includes("/")) {
+    title = title.substring(title.lastIndexOf("/") + 1);
+  }
+  return title.endsWith(".md") ? title.substring(0, title.length - 3) : title;
+}
+
+// Dataview's header canonicalization: letters, digits, `_`, `-`, and emoji
+// stay; anything else becomes a space, and runs of spaces collapse.
+function __vulcanNormalizeHeaderForLink(header) {
+  return String(header)
+    .replace(/[^\p{L}\p{N}_\-\p{Extended_Pictographic}‍️]/gu, " ")
+    .split(/\s+/)
+    .join(" ")
+    .trim();
+}
+
+const __vulcanWikilinkPattern = /^(!?)\[\[([^\[\]]*?)\]\]$/u;
+
+// The Link a whole-string `[[wikilink]]` names, unresolved; null otherwise.
+function __vulcanParseWikilink(text) {
+  const match = typeof text === "string" ? __vulcanWikilinkPattern.exec(text) : null;
+  if (!match) {
+    return null;
+  }
+  let inner = match[2];
+  let display;
+  let pipe = -1;
+  while ((pipe = inner.indexOf("|", pipe + 1)) >= 0) {
+    if (pipe > 0 && inner[pipe - 1] == "\\") {
+      continue;
+    }
+    display = inner.substring(pipe + 1);
+    inner = inner.substring(0, pipe);
+    break;
+  }
+  const link = Link.infer(inner.replace(/\\\|/g, "|"), false, display);
+  link.embed = match[1] === "!";
+  return link;
+}
+
+// The path a link `target` written in `origin` names; the target itself when
+// no note matches, and `origin` for a link within the same note.
+function __vulcanResolveLinkPath(target, origin) {
+  if (!target) {
+    return origin ?? target;
+  }
+  return __vulcan_resolve_link_path(String(target), origin ?? null) ?? target;
+}
+
+// A whole-string `[[wikilink]]` written in `origin` as a resolved Link.
+function __vulcanResolvedLink(text, origin) {
+  const link = __vulcanParseWikilink(text);
+  return link === null ? null : link.withPath(__vulcanResolveLinkPath(link.path, origin));
+}
+
+// Field values as Dataview types them: wikilink strings, at any depth,
+// become Links.
+function __vulcanReviveFieldValue(value, origin) {
+  if (typeof value === "string") {
+    return __vulcanResolvedLink(value, origin) ?? value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => __vulcanReviveFieldValue(item, origin));
+  }
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const revived = {};
+    for (const [key, item] of Object.entries(value)) {
+      revived[key] = __vulcanReviveFieldValue(item, origin);
+    }
+    return revived;
+  }
+  return value;
+}
+
+// A link Obsidian found in a note, with the text it shows as its display.
+function __vulcanOutlink(text, origin) {
+  const link = __vulcanResolvedLink(text, origin);
+  if (link === null || link.display !== undefined) {
+    return link ?? text;
+  }
+  const inner = __vulcanWikilinkPattern.exec(text)[2];
+  return link.withDisplay(inner);
+}
+
+const __vulcanListItemPlainKeys = new Set([
+  "text", "visual", "symbol", "path", "status", "statusName", "statusType", "statusNext",
+  "taskSource", "blockId", "tags", "line", "lineCount", "parent", "list",
+]);
+
+function __vulcanReviveListItem(item, origin) {
+  if (!item || typeof item !== "object") {
+    return item;
+  }
+  const revived = {};
+  for (const [key, value] of Object.entries(item)) {
+    if (key === "link" || key === "section" || key === "header") {
+      revived[key] = typeof value === "string" ? __vulcanResolvedLink(value, origin) ?? value : value;
+    } else if (key === "outlinks") {
+      revived[key] = __vulcanAsArray(value).map((link) => __vulcanOutlink(link, origin));
+    } else if (key === "children" || key === "subtasks") {
+      revived[key] = __vulcanAsArray(value).map((child) => __vulcanReviveListItem(child, origin));
+    } else if (__vulcanListItemPlainKeys.has(key)) {
+      revived[key] = value;
+    } else {
+      revived[key] = __vulcanReviveFieldValue(value, origin);
+    }
+  }
+  return revived;
+}
+
+// A `file` field as Dataview types it.
+function __vulcanReviveFileField(key, value, path) {
+  switch (key) {
+    case "link":
+      return typeof value === "string" ? Link.file(path) : value;
+    case "outlinks":
+      return __vulcanAsArray(value).map((link) => __vulcanOutlink(link, path));
+    case "inlinks":
+      return __vulcanAsArray(value).map((link) => {
+        const resolved = __vulcanResolvedLink(link, path);
+        return resolved === null ? link : Link.file(resolved.path);
+      });
+    case "lists":
+    case "tasks":
+      return __vulcanAsArray(value).map((item) => __vulcanReviveListItem(item, path));
+    default:
+      return value;
+  }
+}
+
 function __vulcanQuerySync(dql, file) {
   return JSON.parse(__vulcan_query_json(dql, file));
 }
@@ -1742,15 +2091,23 @@ function buildDvFunctions(dv) {
         item == null ? null : __vulcanRenderScalar(item)
       );
     },
+    // Dataview's link(): a Link to the note `path` resolves to.
     link(path, display) {
-      if (path == null) {
-        return null;
-      }
-      return display == null
-        ? `[[${String(path)}]]`
-        : `[[${String(path)}|${String(display)}]]`;
+      return __vulcanVectorizeUnary(path, (item) => {
+        if (item == null) {
+          return null;
+        }
+        const link =
+          item instanceof Link
+            ? item
+            : Link.file(__vulcanResolveLinkPath(String(item), dv.currentFilePath || null));
+        return display == null ? link : link.withDisplay(String(display));
+      });
     },
     embed(value, shouldEmbed = true) {
+      if (value instanceof Link) {
+        return shouldEmbed ? value.toEmbed() : value.fromEmbed();
+      }
       if (typeof value !== "string") {
         return null;
       }
@@ -2283,7 +2640,8 @@ const dv = {
     return new DataArray(__vulcanLazyPages(source).map(__vulcanRevivePage));
   },
   page(path) {
-    return __vulcanRevivePage(JSON.parse(__vulcan_page_json(path)));
+    const target = path instanceof Link ? path.path : path;
+    return __vulcanRevivePage(JSON.parse(__vulcan_page_json(target)));
   },
   current() {
     return __vulcanRevivePage(JSON.parse(__vulcan_current_json()));
@@ -2440,7 +2798,16 @@ const dv = {
     );
   },
   clone(value) {
-    return JSON.parse(__vulcanSerialize(value));
+    return __vulcanClone(value);
+  },
+  fileLink(path, embed = false, display = undefined) {
+    return Link.file(path, embed, display);
+  },
+  sectionLink(path, section, embed = false, display = undefined) {
+    return Link.header(path, section, embed, display);
+  },
+  blockLink(path, blockId, embed = false, display = undefined) {
+    return Link.block(path, blockId, embed, display);
   },
   markdownTable(headers, values, _settings) {
     return __vulcanMarkdownTable(
@@ -4087,6 +4454,7 @@ globalThis.this = dv.current();
                 permissions,
                 deterministic_static: options.deterministic_static,
                 read_only: options.read_only,
+                link_resolution: loaded_config.link_resolution,
                 runtime_timeout: timeout,
                 transaction: Mutex::new(None),
                 tool_registry: options.tool_registry,
@@ -4762,6 +5130,25 @@ globalThis.this = dv.current();
                         };
                     to_json_string(&ctx, response)
                 }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let resolve_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_resolve_link_path",
+                Func::from(
+                    move |ctx: Ctx<'_>, target: String, origin: Option<String>| {
+                        let mut note_index = resolve_state.note_index.lock().map_err(|_| {
+                            Exception::throw_message(&ctx, "DataviewJS note index lock poisoned")
+                        })?;
+                        Ok::<_, rquickjs::Error>(note_index.resolve_link_path(
+                            &target,
+                            origin.as_deref(),
+                            resolve_state.link_resolution,
+                        ))
+                    },
+                ),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
@@ -7933,6 +8320,87 @@ globalThis.this = dv.current();
         }
 
         #[test]
+        fn dataviewjs_links_are_dataview_link_objects() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const owner = dv.current().owner;
+                const section = dv.sectionLink("People/Bob", "Contact & Notes!", true);
+                const missing = dv.func.link("Nowhere");
+                ({
+                  owner: [owner.path, owner.type, owner.embed, owner.display ?? null],
+                  ownerPage: dv.page(owner).file.name,
+                  fileLink: String(dv.current().file.link),
+                  section: [section.subpath, section.markdown(), section.obsidianLink()],
+                  block: dv.blockLink("Projects/Alpha", "abc").markdown(),
+                  missing: missing.path,
+                  equal: dv.equal(owner, dv.fileLink("People/Bob.md", false, "Shown")),
+                  sameLink: owner.equals(dv.fileLink("People/Bob.md")),
+                  toObject: owner.withDisplay("Bob").toObject(),
+                  embed: dv.func.embed(owner).markdown(),
+                  meta: dv.func.meta(owner),
+                  clonedIsLink: typeof dv.clone({ owner }).owner.obsidianLink,
+                  outlinkDisplays: dv.current().file.outlinks.map((link) => link.display).distinct().sort().array(),
+                })
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            let value = result.value.expect("script value");
+            assert_eq!(
+                value["owner"],
+                serde_json::json!(["People/Bob.md", "file", false, null])
+            );
+            assert_eq!(value["ownerPage"], "Bob");
+            assert_eq!(value["fileLink"], "[[Dashboard.md|Dashboard]]");
+            assert_eq!(
+                value["section"],
+                serde_json::json!([
+                    "Contact Notes",
+                    "![[People/Bob#Contact Notes|Bob > Contact Notes]]",
+                    "People/Bob#Contact Notes"
+                ])
+            );
+            assert_eq!(value["block"], "[[Projects/Alpha#^abc|Alpha > abc]]");
+            assert_eq!(value["missing"], "Nowhere");
+            assert_eq!(value["equal"], true);
+            assert_eq!(value["sameLink"], true);
+            assert_eq!(
+                value["toObject"],
+                serde_json::json!({
+                    "path": "People/Bob.md",
+                    "type": "file",
+                    "display": "Bob",
+                    "embed": false,
+                })
+            );
+            assert_eq!(value["embed"], "![[People/Bob.md|Bob]]");
+            assert_eq!(
+                value["meta"],
+                serde_json::json!({
+                    "display": null,
+                    "embed": false,
+                    "path": "People/Bob.md",
+                    "subpath": null,
+                    "type": "file",
+                })
+            );
+            assert_eq!(value["clonedIsLink"], "function");
+            assert!(value["outlinkDisplays"]
+                .as_array()
+                .is_some_and(|displays| displays
+                    .iter()
+                    .any(|display| display == "Projects/Alpha")));
+        }
+
+        #[test]
         fn dataviewjs_reports_unhandled_rejections_and_awaits_views() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
@@ -8347,14 +8815,14 @@ globalThis.this = dv.current();
                 value["before"],
                 serde_json::json!({
                     "pages": ["Public/Target.md", "Public/Visible.md"],
-                    "inlinks": ["[[Public/Visible]]"],
+                    "inlinks": ["Public/Visible.md"],
                 })
             );
             assert_eq!(
                 value["after"],
                 serde_json::json!({
                     "pages": ["Public/New.md", "Public/Target.md", "Public/Visible.md"],
-                    "inlinks": ["[[Public/New]]", "[[Public/Visible]]"],
+                    "inlinks": ["Public/New.md", "Public/Visible.md"],
                 })
             );
         }
@@ -9390,7 +9858,7 @@ cpu_limit_ms = 25
                     assert_eq!(rows[0][0], Value::String("alpha, beta".to_string()));
                     assert_eq!(rows[0][1], Value::Bool(true));
                     assert_eq!(rows[0][2], Value::String("2026-04-03".to_string()));
-                    assert_eq!(rows[0][3], Value::String("People/Bob".to_string()));
+                    assert_eq!(rows[0][3], Value::String("People/Bob.md".to_string()));
                     assert_eq!(rows[0][4], Value::String("2026-04-05".to_string()));
                 }
                 other => panic!("expected table output, got {other:?}"),
@@ -9974,37 +10442,22 @@ shell = "allow"
             ".behaviour.dateParse",
             ".behaviour.duration",
             ".behaviour.evaluateLink",
-            ".behaviour.fileLink",
             ".behaviour.frontmatterDateKind",
-            ".behaviour.frontmatterLinkKind",
             ".behaviour.inlineDurationKind",
-            ".behaviour.inlinkSource",
             ".behaviour.mtimeKind",
-            ".behaviour.pageByLink",
             ".behaviour.parseDate",
             ".behaviour.parseLink",
             ".behaviour.queryMarkdown",
-            ".behaviour.sectionLink",
             ".behaviour.whereStatus",
-            ".dvMembers.blockLink",
-            ".dvMembers.fileLink",
             ".dvMembers.literal",
             ".dvMembers.parse",
-            ".dvMembers.sectionLink",
             ".fileKeys.ctime",
-            ".fileKeys.inlinks",
-            ".fileKeys.link",
             ".fileKeys.mtime",
-            ".fileKeys.outlinks",
             ".fileValues.day",
             ".fileValues.etags",
-            ".fileValues.inlinks",
-            ".fileValues.link",
-            ".fileValues.outlinks",
             ".fileValues.tags",
             ".lists[0].keys",
             ".lists[0].parent",
-            ".lists[1].fields",
             ".lists[1].keys",
             ".lists[1].parent",
             ".lists[2].keys",
@@ -10037,8 +10490,6 @@ shell = "allow"
             ".pageKeys.inline-duration",
             ".pageKeys.inline-link",
             ".pageKeys.inline-number",
-            ".pageKeys.link",
-            ".pageKeys.links",
             ".pageKeys.rep",
             ".pageKeys.status",
             ".pageKeys.up",
@@ -10060,8 +10511,6 @@ shell = "allow"
             ".pageValues.inline-duration",
             ".pageValues.inline-link",
             ".pageValues.inline-number",
-            ".pageValues.link",
-            ".pageValues.links",
             ".pageValues.rep",
             ".pageValues.status",
             ".pageValues.up",
