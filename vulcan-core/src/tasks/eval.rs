@@ -64,6 +64,9 @@ impl TaskRow {
             "status.next" | "status.nextSymbol" => {
                 self.task.get("statusNext").cloned().unwrap_or(Value::Null)
             }
+            // The Tasks plugin's done date; the index stores it as
+            // `completion` for inline and file tasks alike.
+            "done" => self.task.get("completion").cloned().unwrap_or(Value::Null),
             other => self.task.get(other).cloned().unwrap_or(Value::Null),
         }
     }
@@ -670,6 +673,35 @@ mod tests {
         assert_eq!(
             task_texts(&has_id),
             vec!["Alpha task #work 🗓️ 2026-04-02 ➕ 2026-04-01 🔼 🆔 ALPHA-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn done_dates_filter_and_sort_by_the_completion_date() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        std::fs::write(
+            vault_root.join("Done.md"),
+            "- [x] Early ✅ 2026-04-01\n- [x] Late ✅ 2026-04-03\n- [ ] Open\n",
+        )
+        .expect("note should be written");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let on = evaluate_tasks_query(&paths, "done on 2026-04-03").expect("query");
+        assert_eq!(task_texts(&on), vec!["Late ✅ 2026-04-03".to_string()]);
+        let before = evaluate_tasks_query(&paths, "done before 2026-04-02").expect("query");
+        assert_eq!(task_texts(&before), vec!["Early ✅ 2026-04-01".to_string()]);
+        let has = evaluate_tasks_query(&paths, "has done date").expect("query");
+        assert_eq!(has.tasks.len(), 2);
+        let sorted = evaluate_tasks_query(&paths, "done\nsort by done reverse").expect("query");
+        assert_eq!(
+            task_texts(&sorted),
+            vec![
+                "Late ✅ 2026-04-03".to_string(),
+                "Early ✅ 2026-04-01".to_string()
+            ]
         );
     }
 
