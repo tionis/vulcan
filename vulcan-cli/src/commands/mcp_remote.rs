@@ -353,6 +353,7 @@ fn handle_connections(
             if reports.is_empty() {
                 println!("No approved MCP connections.");
             }
+            let now = unix_timestamp()?;
             for report in reports {
                 println!(
                     "{}\t{}\t{}\t{}\t{}",
@@ -360,11 +361,7 @@ fn handle_connections(
                     report.remote_id,
                     report.subject,
                     report.permission_profile,
-                    if report.revoked_at.is_some() {
-                        "revoked"
-                    } else {
-                        "active"
-                    }
+                    connection_state(&report, now)
                 );
             }
             Ok(())
@@ -381,15 +378,18 @@ fn handle_connections(
                 println!("Vault: {}", report.wiki_id);
                 println!("Permission profile: {}", report.permission_profile);
                 println!("Scopes: {}", report.scopes.join(" "));
-                println!("Expires: {}", report.expires_at);
+                println!("Approved: {}", unix_time(report.created_at));
+                println!("Expires: {}", unix_time(report.expires_at));
                 println!(
-                    "State: {}",
-                    if report.revoked_at.is_some() {
-                        "revoked"
-                    } else {
-                        "active"
-                    }
+                    "Last used: {}",
+                    report
+                        .last_used_at
+                        .map_or_else(|| "never".to_string(), unix_time)
                 );
+                if let Some(revoked_at) = report.revoked_at {
+                    println!("Revoked: {}", unix_time(revoked_at));
+                }
+                println!("State: {}", connection_state(&report, unix_timestamp()?));
                 Ok(())
             }
         }
@@ -410,6 +410,32 @@ fn handle_connections(
             }
         }
     }
+}
+
+/// A connection's state at `now`: revoked, expired, or active.
+fn connection_state(report: &ConnectionGrantReport, now: u64) -> &'static str {
+    state_at(report.revoked_at.is_some(), report.expires_at, now)
+}
+
+fn state_at(revoked: bool, expires_at: u64, now: u64) -> &'static str {
+    if revoked {
+        "revoked"
+    } else if expires_at <= now {
+        "expired"
+    } else {
+        "active"
+    }
+}
+
+/// Seconds since the Unix epoch as an RFC 3339 UTC time.
+fn unix_time(seconds: u64) -> String {
+    i64::try_from(seconds)
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map_or_else(
+            || seconds.to_string(),
+            |time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )
 }
 
 fn show_remote(
@@ -562,4 +588,18 @@ fn unix_timestamp() -> Result<u64, CliError> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(CliError::operation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{state_at, unix_time};
+
+    #[test]
+    fn connection_times_read_as_rfc3339_and_lapsed_ones_as_expired() {
+        assert_eq!(unix_time(1_798_300_638), "2026-12-26T15:57:18Z");
+        assert_eq!(unix_time(u64::MAX), u64::MAX.to_string());
+        assert_eq!(state_at(false, 200, 100), "active");
+        assert_eq!(state_at(false, 100, 100), "expired");
+        assert_eq!(state_at(true, 200, 100), "revoked");
+    }
 }
