@@ -1173,6 +1173,51 @@ impl McpHttpSession {
         self.request("DELETE", &headers, None)
     }
 
+    /// Open a `subscriptions/listen` stream (2026-07-28) asking for `notifications`.
+    fn listen(&self, id: u64, notifications: &Value) -> McpSseStream {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "subscriptions/listen",
+            "params": {
+                "notifications": notifications,
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }
+            }
+        }))
+        .expect("listen request should serialize");
+        let mut stream =
+            TcpStream::connect(&self.bind_addr).expect("listen connection should open");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("read timeout should be configurable");
+        let mut request = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: subscriptions/listen\r\nContent-Length: {}\r\n",
+            self.endpoint,
+            self.bind_addr,
+            body.len()
+        );
+        if let Some(token) = self.auth_token.as_deref() {
+            request.push_str("Authorization: Bearer ");
+            request.push_str(token);
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .expect("listen request should write");
+        stream.write_all(&body).expect("listen body should write");
+        stream.flush().expect("listen request should flush");
+        let mut reader = BufReader::new(stream);
+        let (status_line, headers) = read_http_status_and_headers(&mut reader);
+        assert_eq!(status_line, "HTTP/1.1 200 OK");
+        assert_eq!(
+            headers.get("content-type").map(String::as_str),
+            Some("text/event-stream")
+        );
+        McpSseStream { reader }
+    }
+
     fn open_sse(&self, session_id: &str) -> McpSseStream {
         let mut headers = vec![
             ("Accept".to_string(), "text/event-stream".to_string()),
@@ -32821,6 +32866,67 @@ fn mcp_http_transport_negotiates_sessions_and_calls_tools() {
             .is_some_and(|message| message.contains("unknown Mcp-Session-Id")),
         "deleted sessions should no longer accept follow-up requests"
     );
+}
+
+#[test]
+fn mcp_http_transport_delivers_subscribed_list_changes_to_listen_streams() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts dir");
+
+    let session = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
+    let discover = session
+        .post(
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+                "params": { "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }}
+            }),
+            None,
+        )
+        .json_body();
+    assert_eq!(
+        discover["result"]["capabilities"]["prompts"]["listChanged"],
+        true
+    );
+
+    let mut stream = session.listen(
+        9,
+        &serde_json::json!({"promptsListChanged": true, "resourceSubscriptions": ["vulcan://agents"]}),
+    );
+    let ack = stream.read_event();
+    assert_eq!(ack["method"], "notifications/subscriptions/acknowledged");
+    assert_eq!(
+        ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        9
+    );
+    assert_eq!(
+        ack["params"]["notifications"],
+        serde_json::json!({"promptsListChanged": true})
+    );
+
+    fs::write(
+        vault_root.join("AI/Prompts/summarize-note.md"),
+        "---\nname: summarize-note\n---\nSummarize {{note}}.\n",
+    )
+    .expect("prompt file should write");
+    let change = stream.read_event();
+    assert_eq!(change["method"], "notifications/prompts/list_changed");
+    assert_eq!(
+        change["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        9
+    );
+
+    // A 2025 client is pointed at its session's GET stream.
+    let legacy = session.post(
+        &serde_json::json!({"jsonrpc": "2.0", "id": 10, "method": "subscriptions/listen"}),
+        None,
+    );
+    assert!(legacy.status_line.starts_with("HTTP/1.1 400"));
 }
 
 #[test]

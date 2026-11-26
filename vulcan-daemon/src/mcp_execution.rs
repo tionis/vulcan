@@ -34,6 +34,11 @@ pub trait McpRequestCore: Clone + Send + 'static {
     fn process_request(&mut self, request: Value) -> Vec<Value>;
     fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value>;
     fn list_changed_notifications(&mut self) -> Vec<Value>;
+    /// Tell modern clients that `subscriptions/listen` is served.
+    fn offer_subscriptions(&mut self);
+    /// List changes since the core was made or last asked, for a
+    /// subscription stream.
+    fn list_changes(&mut self) -> Vec<Value>;
 }
 
 impl McpRequestCore for McpProtocolCore {
@@ -55,6 +60,14 @@ impl McpRequestCore for McpProtocolCore {
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
         vulcan_app::mcp_dispatch::McpMethodHandler::list_changed_notifications(self)
+    }
+
+    fn offer_subscriptions(&mut self) {
+        McpProtocolCore::offer_subscriptions(self);
+    }
+
+    fn list_changes(&mut self) -> Vec<Value> {
+        McpProtocolCore::list_changes(self)
     }
 }
 
@@ -506,6 +519,10 @@ mod tests {
         }
 
         fn list_changed_notifications(&mut self) -> Vec<Value> {
+            Vec::new()
+        }
+        fn offer_subscriptions(&mut self) {}
+        fn list_changes(&mut self) -> Vec<Value> {
             Vec::new()
         }
         fn process_request(&mut self, request: Value) -> Vec<Value> {

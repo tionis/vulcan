@@ -130,6 +130,16 @@ impl<C> McpHttpSession<C> {
                 <= Instant::now()
     }
 
+    /// Whether a GET stream is open on this session.
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        !self
+            .subscribers
+            .lock()
+            .expect("mcp subscribers lock should not be poisoned")
+            .is_empty()
+    }
+
     #[must_use]
     pub fn register_subscriber(&self) -> mpsc::Receiver<Value> {
         let (tx, rx) = mpsc::sync_channel(MAX_MCP_SSE_PENDING_EVENTS);
@@ -257,6 +267,7 @@ pub struct ResolvedMcpSession<C> {
 pub struct McpSessionRegistry<C> {
     sessions: Mutex<BTreeMap<String, Arc<McpHttpSession<C>>>>,
     max_sessions: usize,
+    watching: AtomicBool,
 }
 
 impl<C> McpSessionRegistry<C> {
@@ -357,6 +368,7 @@ impl<C> McpSessionRegistry<C> {
         Self {
             sessions: Mutex::new(BTreeMap::new()),
             max_sessions,
+            watching: AtomicBool::new(false),
         }
     }
 
@@ -441,6 +453,48 @@ impl<C> McpSessionRegistry<C> {
             session.close();
         }
         session
+    }
+
+    /// Start, once, the listener's change watcher: every `interval` it asks
+    /// each session with an open stream what changed in its lists (`poll`)
+    /// and sends that to the stream. A session busy with a request is asked
+    /// next time. The watcher stops once the registry is dropped.
+    pub fn watch_list_changes(self: &Arc<Self>, interval: Duration, poll: fn(&mut C) -> Vec<Value>)
+    where
+        C: Send + 'static,
+    {
+        if self.watching.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let registry = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("vulcan-mcp-list-watch".to_string())
+            .spawn(move || loop {
+                std::thread::sleep(interval);
+                let Some(registry) = registry.upgrade() else {
+                    return;
+                };
+                let streaming = registry
+                    .sessions
+                    .lock()
+                    .expect("mcp sessions lock should not be poisoned")
+                    .values()
+                    .filter(|session| !session.is_closed() && session.has_subscribers())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                drop(registry);
+                for session in streaming {
+                    let Ok(mut core) = session.core.try_lock() else {
+                        continue;
+                    };
+                    let changes = poll(&mut core);
+                    drop(core);
+                    session.broadcast(&changes);
+                }
+            });
+        if spawned.is_err() {
+            self.watching.store(false, Ordering::SeqCst);
+        }
     }
 
     pub fn close_all(&self) {

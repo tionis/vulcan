@@ -57,6 +57,14 @@ pub trait McpHttpRouteHandler {
         authority: &Self::Authority,
         stream: &mut McpHttpConnection,
     ) -> io::Result<()>;
+    /// A `subscriptions/listen` request, answered with an event stream.
+    fn listen(
+        &self,
+        request: &McpHttpRequest,
+        authority: &Self::Authority,
+        payload: &Value,
+        stream: &mut McpHttpConnection,
+    ) -> io::Result<()>;
     fn delete(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse;
 }
 
@@ -98,7 +106,16 @@ pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
                 Err(response) => return stream.respond(response),
             };
             match request.method.as_str() {
-                "POST" => dispatch_mcp_post(request, &authority, handler),
+                "POST" => match preflight_mcp_post(request, &authority, handler) {
+                    Ok(payload)
+                        if payload.get("method").and_then(Value::as_str)
+                            == Some("subscriptions/listen") =>
+                    {
+                        return handler.listen(request, &authority, &payload, stream);
+                    }
+                    Ok(payload) => handler.post(request, &authority, &payload),
+                    Err(response) => response,
+                },
                 "GET" => match preflight_mcp_sse(request) {
                     Ok(()) => return handler.sse(request, &authority, stream),
                     Err(response) => response,
@@ -127,33 +144,30 @@ fn require_mcp_session_header(request: &McpHttpRequest) -> Result<(), McpHttpRes
     }
 }
 
-fn dispatch_mcp_post<H: McpHttpRouteHandler>(
+/// Decode a POST and check its scope and protocol version before dispatch.
+fn preflight_mcp_post<H: McpHttpRouteHandler>(
     request: &McpHttpRequest,
     authority: &H::Authority,
     handler: &H,
-) -> McpHttpResponse {
-    let payload = match parse_mcp_http_post(request) {
-        Ok(payload) => payload,
-        Err(error) => return route_error(error.status, &error.message),
-    };
+) -> Result<Value, McpHttpResponse> {
+    let payload =
+        parse_mcp_http_post(request).map_err(|error| route_error(error.status, &error.message))?;
     if let Some(required) = required_scope_for_request(&payload) {
-        if let Err(response) = handler.authorize_scope(authority, required) {
-            return response;
-        }
+        handler.authorize_scope(authority, required)?;
     }
     if let Some(version) = request.headers.get("mcp-protocol-version") {
         if !is_supported_version(version) {
             let id = request_id(&payload).unwrap_or(Value::Null);
-            return McpHttpResponse {
+            return Err(McpHttpResponse {
                 status: 400,
                 content_type: Some("application/json"),
                 body: serde_json::to_vec(&unsupported_version_error(id, version))
                     .expect("JSON-RPC error should serialize"),
                 extra_headers: Vec::new(),
-            };
+            });
         }
     }
-    handler.post(request, authority, &payload)
+    Ok(payload)
 }
 
 fn route_error(status: u16, message: &str) -> McpHttpResponse {
@@ -383,6 +397,17 @@ mod tests {
             stream.respond(route_error(200, "sse"))
         }
 
+        fn listen(
+            &self,
+            _: &McpHttpRequest,
+            (): &(),
+            _: &Value,
+            stream: &mut McpHttpConnection,
+        ) -> io::Result<()> {
+            self.calls.borrow_mut().push("listen");
+            stream.respond(route_error(200, "listen"))
+        }
+
         fn delete(&self, _: &McpHttpRequest, (): &()) -> McpHttpResponse {
             self.calls.borrow_mut().push("delete");
             route_error(200, "delete")
@@ -440,7 +465,12 @@ mod tests {
     fn post_preflight_decodes_then_checks_scope_then_version_before_host_dispatch() {
         let handler = RecordingHandler::default();
         let malformed = request("POST", "/mcp");
-        assert_eq!(dispatch_mcp_post(&malformed, &(), &handler).status, 400);
+        assert_eq!(
+            preflight_mcp_post(&malformed, &(), &handler)
+                .unwrap_err()
+                .status,
+            400
+        );
         assert!(handler.calls.borrow().is_empty());
 
         let denied = RecordingHandler {
@@ -448,7 +478,10 @@ mod tests {
             ..RecordingHandler::default()
         };
         let valid = post_request("tools/list");
-        assert_eq!(dispatch_mcp_post(&valid, &(), &denied).status, 403);
+        assert_eq!(
+            preflight_mcp_post(&valid, &(), &denied).unwrap_err().status,
+            403
+        );
         assert_eq!(*denied.calls.borrow(), ["scope"]);
 
         let mut wrong_version = post_request("tools/list");
@@ -456,8 +489,34 @@ mod tests {
             "mcp-protocol-version".to_string(),
             "unsupported".to_string(),
         );
-        assert_eq!(dispatch_mcp_post(&wrong_version, &(), &handler).status, 400);
+        assert_eq!(
+            preflight_mcp_post(&wrong_version, &(), &handler)
+                .unwrap_err()
+                .status,
+            400
+        );
         assert_eq!(*handler.calls.borrow(), ["scope"]);
+    }
+
+    #[test]
+    fn listen_requests_are_routed_to_the_stream_handler() {
+        let handler = RecordingHandler::default();
+        let (mut server, capture) = McpHttpConnection::for_test();
+        let options = McpHttpRouteOptions {
+            endpoint: "/mcp",
+            oauth_enabled: false,
+            local_oauth: false,
+            named_remote: false,
+        };
+        dispatch_mcp_http_request(
+            &post_request("subscriptions/listen"),
+            &mut server,
+            &options,
+            &handler,
+        )
+        .unwrap();
+        assert_eq!(capture.response().0, 200);
+        assert_eq!(*handler.calls.borrow(), ["authenticate", "listen"]);
     }
 
     #[test]

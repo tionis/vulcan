@@ -277,10 +277,14 @@ summary, `vulcan://tool-results/*`.
 Prompts: Markdown files in `assistant.prompts_folder`, with standard `arguments` (no extra
 fields) and completion for arguments typed as notes.
 
-Change notification: one server-level watcher per vault observes the prompts folder, the skills
-folder, the trust store and the vault's configuration. When the tool, prompt or resource list
-changes it notifies modern `subscriptions/listen` streams that opted in, legacy HTTP GET streams
-and the legacy stdio connection. No per-request fingerprinting.
+Change notification: list fingerprints (tool catalog, prompt files, resource files) are compared
+every 2 seconds by a watcher: one thread per HTTP listener for the legacy sessions with a GET
+stream, one per stdio process, and each `subscriptions/listen` stream for its own authority. A
+change is delivered to modern `subscriptions/listen` streams that opted in (first message
+`notifications/subscriptions/acknowledged`, every notification carrying
+`_meta["io.modelcontextprotocol/subscriptionId"]`), legacy HTTP GET streams and the legacy stdio
+connection. Resource update subscriptions are not offered. `listChanged` is advertised to modern
+clients only where the transport serves `subscriptions/listen`.
 
 ## 9. Skills
 

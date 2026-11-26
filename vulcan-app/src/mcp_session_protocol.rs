@@ -32,6 +32,8 @@ pub struct McpProtocolCore {
     list_changes_on_responses: bool,
     /// Operation records, where the host keeps them.
     operations: Option<Arc<dyn McpOperationLookup>>,
+    /// Whether the host serves `subscriptions/listen`.
+    subscriptions: bool,
 }
 
 impl McpProtocolCore {
@@ -49,6 +51,7 @@ impl McpProtocolCore {
             host,
             list_changes_on_responses: true,
             operations: None,
+            subscriptions: false,
         })
     }
 
@@ -81,6 +84,18 @@ impl McpProtocolCore {
     /// Offer `operation_get` over the host's operation records.
     pub fn keep_operations(&mut self, operations: Arc<dyn McpOperationLookup>) {
         self.operations = Some(operations);
+    }
+
+    /// Tell modern clients that list changes can be subscribed to: the host
+    /// serves `subscriptions/listen` with [`Self::list_changes`].
+    pub fn offer_subscriptions(&mut self) {
+        self.subscriptions = true;
+    }
+
+    /// List-change notifications for what changed since the core was made
+    /// or last asked, whatever the era; a subscription stream filters them.
+    pub fn list_changes(&mut self) -> Vec<Value> {
+        self.legacy.list_changed_notifications(&self.authority)
     }
 
     /// Deliver legacy list changes through [`Self::poll_list_changes`] from a
@@ -163,6 +178,7 @@ impl McpMethodHandler for McpProtocolCore {
                     era: McpEra::Modern,
                     host: &self.host,
                     operations: self.operations.as_deref(),
+                    subscriptions: self.subscriptions,
                 },
                 method,
                 params,
@@ -187,6 +203,7 @@ impl McpMethodHandler for McpProtocolCore {
                         era: McpEra::Legacy,
                         host: &self.host,
                         operations: self.operations.as_deref(),
+                        subscriptions: self.subscriptions,
                     },
                     method,
                     params,

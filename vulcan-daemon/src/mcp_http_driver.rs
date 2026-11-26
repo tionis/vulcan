@@ -6,6 +6,7 @@ use crate::mcp_execution::{process_http_request_with_timeout, HostedMcpExecution
 use crate::mcp_http_auth::McpHttpAuthError;
 #[cfg(feature = "oauth")]
 use crate::mcp_http_auth::McpOAuthMode;
+use crate::mcp_http_codec::{write_mcp_http_sse_event, write_mcp_http_sse_keepalive};
 use crate::mcp_http_codec::{McpHttpRequest, McpHttpResponse};
 use crate::mcp_http_host::{McpHttpHost, McpHttpProtocolConfig};
 use crate::mcp_http_routes::{
@@ -13,6 +14,7 @@ use crate::mcp_http_routes::{
 };
 #[cfg(feature = "oauth")]
 use crate::mcp_oauth_authorize::IndieAuthExchange;
+use crate::mcp_session::mcp_notification_scope;
 use crate::mcp_session::{
     McpCancellationError, McpHttpSession, McpSessionAuthority, ResolvedMcpSession,
     SessionAdmissionError, SessionLookupError, SessionResolutionError,
@@ -23,9 +25,15 @@ use serde_json::Value;
 use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 use vulcan_app::execution::ExecutionCancellationToken;
-use vulcan_app::mcp_core::{requested_modern_version, MCP_HEADER_MISMATCH};
+use vulcan_app::mcp_core::{
+    listen_request, requested_modern_version, subscription_acknowledged, subscription_closed,
+    subscription_notification, MCP_HEADER_MISMATCH,
+};
 use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id, McpHttpProcessResult};
+use vulcan_app::mcp_protocol::McpMethodError;
 
 pub type McpHttpCoreFactory<C> = fn(McpHttpProtocolConfig) -> Result<C, String>;
 
@@ -189,6 +197,16 @@ impl<C: McpRequestCore> McpHttpRouteHandler for McpHttpDriver<'_, C> {
         handle_mcp_http_sse(self, request, authority, stream)
     }
 
+    fn listen(
+        &self,
+        request: &McpHttpRequest,
+        authority: &Self::Authority,
+        payload: &Value,
+        stream: &mut McpHttpConnection,
+    ) -> io::Result<()> {
+        handle_mcp_http_listen(self, request, authority, payload, stream)
+    }
+
     fn delete(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse {
         handle_mcp_http_delete(self, request, authority)
     }
@@ -306,6 +324,106 @@ pub fn handle_modern_mcp_http_post<C: McpRequestCore>(
         context.hosted,
     );
     modern_http_response(result)
+}
+
+/// How often a subscription stream looks for list changes.
+const LISTEN_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// How often the change watcher looks at sessions with a GET stream.
+const LIST_WATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// A comment line at least this often keeps proxies from closing an idle
+/// stream, and finds a client that has gone.
+const LISTEN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// `subscriptions/listen`: an event stream that acknowledges what it will
+/// deliver, then carries the list changes the client asked for, each tagged
+/// with the subscription's id. It runs until the client closes it, or until
+/// the authority it was opened under is no longer valid, when it ends with a
+/// response to the listen request.
+pub fn handle_mcp_http_listen<C: McpRequestCore>(
+    context: &McpHttpDriver<'_, C>,
+    request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
+    payload: &Value,
+    stream: &mut McpHttpConnection,
+) -> io::Result<()> {
+    handle_mcp_http_listen_with_timing(
+        context,
+        request,
+        authority,
+        payload,
+        stream,
+        LISTEN_POLL_INTERVAL,
+        LISTEN_KEEPALIVE_INTERVAL,
+    )
+}
+
+fn handle_mcp_http_listen_with_timing<C: McpRequestCore>(
+    context: &McpHttpDriver<'_, C>,
+    request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
+    payload: &Value,
+    stream: &mut McpHttpConnection,
+    poll_interval: Duration,
+    keepalive_interval: Duration,
+) -> io::Result<()> {
+    let id = request_id(payload).unwrap_or(Value::Null);
+    if let Some(mismatch) = modern_header_mismatch(request, payload) {
+        return stream.respond(mcp_http_json_response(
+            400,
+            &jsonrpc_error(id, MCP_HEADER_MISMATCH, mismatch, None),
+        ));
+    }
+    let filter = match listen_request(payload.get("params")) {
+        Ok(filter) => filter,
+        Err(McpMethodError::JsonRpc {
+            code,
+            message,
+            data,
+        }) => {
+            return stream.respond(modern_http_response(Err(jsonrpc_error(
+                id, code, message, data,
+            ))));
+        }
+        Err(McpMethodError::Tool { message, .. }) => {
+            return stream.respond(modern_http_response(Err(jsonrpc_error(
+                id, -32602, message, None,
+            ))));
+        }
+    };
+    let mut core = match create_mcp_http_core(context, authority) {
+        Ok(core) => core,
+        Err(response) => return stream.respond(response),
+    };
+    stream.start_event_stream()?;
+    write_mcp_http_sse_event(stream, &subscription_acknowledged(&id, filter))?;
+    let mut quiet = Duration::ZERO;
+    loop {
+        thread::sleep(poll_interval);
+        let valid = authenticate_mcp_http_request(context, request)
+            .is_ok_and(|current| authority.matches(&current))
+            && core.attenuate_profile().is_ok();
+        if !valid {
+            return write_mcp_http_sse_event(stream, &subscription_closed(&id));
+        }
+        let mut sent = false;
+        for notification in core.list_changes() {
+            let permitted = mcp_notification_scope(&notification)
+                .is_none_or(|scope| authority.allows_scope(scope));
+            if permitted && filter.wants(&notification) {
+                write_mcp_http_sse_event(stream, &subscription_notification(&id, notification))?;
+                sent = true;
+            }
+        }
+        quiet = if sent {
+            Duration::ZERO
+        } else {
+            quiet + poll_interval
+        };
+        if quiet >= keepalive_interval {
+            write_mcp_http_sse_keepalive(stream)?;
+            quiet = Duration::ZERO;
+        }
+    }
 }
 
 /// The routing headers of a modern request must agree with its body: the
@@ -469,8 +587,10 @@ pub fn create_mcp_http_core<C: McpRequestCore>(
         .inner
         .protocol_config(authority)
         .map_err(|error| mcp_http_json_error_response(error.status, error.message, Value::Null))?;
-    (context.core_factory)(config)
-        .map_err(|error| mcp_http_json_error_response(500, error.clone(), Value::Null))
+    let mut core = (context.core_factory)(config)
+        .map_err(|error| mcp_http_json_error_response(500, error.clone(), Value::Null))?;
+    core.offer_subscriptions();
+    Ok(core)
 }
 
 #[must_use]
@@ -512,27 +632,19 @@ pub fn handle_mcp_http_sse<C: McpRequestCore>(
         }
     };
 
-    let end = serve_mcp_sse(
-        &session,
-        stream,
-        || {
-            authenticate_mcp_http_request(context, request)
-                .is_ok_and(|current| session.authority.matches(&current))
-                && session
-                    .core
-                    .lock()
-                    .expect("mcp core lock should not be poisoned")
-                    .attenuate_profile()
-                    .is_ok()
-        },
-        || {
-            session
+    context
+        .sessions
+        .watch_list_changes(LIST_WATCH_INTERVAL, C::list_changed_notifications);
+    let end = serve_mcp_sse(&session, stream, || {
+        authenticate_mcp_http_request(context, request)
+            .is_ok_and(|current| session.authority.matches(&current))
+            && session
                 .core
                 .lock()
                 .expect("mcp core lock should not be poisoned")
-                .list_changed_notifications()
-        },
-    )?;
+                .attenuate_profile()
+                .is_ok()
+    })?;
     if end == McpSseEnd::RetireSession {
         context.sessions.retire(session_id);
     }

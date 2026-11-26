@@ -1271,6 +1271,14 @@ impl vulcan_daemon::mcp_execution::McpRequestCore for McpServerCore {
         McpMethodHandler::list_changed_notifications(self)
     }
 
+    fn offer_subscriptions(&mut self) {
+        self.inner.offer_subscriptions();
+    }
+
+    fn list_changes(&mut self) -> Vec<Value> {
+        self.inner.list_changes()
+    }
+
     fn process_request(&mut self, request: Value) -> Vec<Value> {
         self.inner.process_request(request)
     }

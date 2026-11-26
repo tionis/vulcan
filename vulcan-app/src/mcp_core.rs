@@ -88,6 +88,8 @@ pub struct McpRequestContext<'a> {
     pub host: &'a McpProtocolHost,
     /// Operation records, where the transport keeps them.
     pub operations: Option<&'a dyn McpOperationLookup>,
+    /// Whether the transport serves `subscriptions/listen`.
+    pub subscriptions: bool,
 }
 
 /// The `_meta` of a modern request, once validated.
@@ -168,16 +170,123 @@ fn server_info(host: &McpProtocolHost) -> Value {
     })
 }
 
-/// The server capabilities for an era. Legacy connections are told about
-/// list changes on their own stream; modern list-change subscriptions are not
-/// offered yet.
-fn capabilities(era: McpEra) -> Value {
-    let list_changed = era == McpEra::Legacy;
+/// The server capabilities. Legacy connections are told about list changes
+/// on their own stream; modern clients subscribe with `subscriptions/listen`
+/// where the transport serves it.
+fn capabilities(era: McpEra, subscriptions: bool) -> Value {
+    let list_changed = era == McpEra::Legacy || subscriptions;
     json!({
         "tools": { "listChanged": list_changed },
         "resources": { "listChanged": list_changed },
         "prompts": { "listChanged": list_changed },
         "completions": {},
+    })
+}
+
+const META_SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId";
+
+/// The list changes a `subscriptions/listen` stream delivers: what the client
+/// asked for that the server can send. Resource update subscriptions are not
+/// offered, so they are left out of the acknowledgement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct McpSubscriptionFilter {
+    pub tools: bool,
+    pub prompts: bool,
+    pub resources: bool,
+}
+
+impl McpSubscriptionFilter {
+    /// Whether a list-change notification is one the client asked for.
+    #[must_use]
+    pub fn wants(&self, notification: &Value) -> bool {
+        match notification.get("method").and_then(Value::as_str) {
+            Some("notifications/tools/list_changed") => self.tools,
+            Some("notifications/prompts/list_changed") => self.prompts,
+            Some("notifications/resources/list_changed") => self.resources,
+            _ => false,
+        }
+    }
+
+    fn acknowledged(self) -> Value {
+        let mut acknowledged = serde_json::Map::new();
+        for (key, wanted) in [
+            ("toolsListChanged", self.tools),
+            ("promptsListChanged", self.prompts),
+            ("resourcesListChanged", self.resources),
+        ] {
+            if wanted {
+                acknowledged.insert(key.to_string(), Value::Bool(true));
+            }
+        }
+        Value::Object(acknowledged)
+    }
+}
+
+/// Validate a `subscriptions/listen` request and read what it asks for. It
+/// is a 2026-07-28 method; a legacy client has its GET stream instead.
+pub fn listen_request(params: Option<&Value>) -> Result<McpSubscriptionFilter, McpMethodError> {
+    if modern_meta(params)?.is_none() {
+        return Err(McpMethodError::JsonRpc {
+            code: -32601,
+            message: format!(
+                "`subscriptions/listen` is a {MCP_MODERN_VERSION} method; 2025 clients receive list changes on their session's GET stream"
+            ),
+            data: None,
+        });
+    }
+    let requested = params.and_then(|params| params.get("notifications"));
+    if requested.is_some_and(|requested| !requested.is_object()) {
+        return Err(McpMethodError::invalid_params(
+            "`notifications` must be an object naming the notifications to receive",
+        ));
+    }
+    let flag = |key: &str| {
+        requested
+            .and_then(|requested| requested.get(key))
+            .and_then(Value::as_bool)
+            == Some(true)
+    };
+    Ok(McpSubscriptionFilter {
+        tools: flag("toolsListChanged"),
+        prompts: flag("promptsListChanged"),
+        resources: flag("resourcesListChanged"),
+    })
+}
+
+fn subscription_meta(id: &Value) -> Value {
+    json!({ META_SUBSCRIPTION_ID: id })
+}
+
+/// The first message on a subscription stream: what it will deliver.
+#[must_use]
+pub fn subscription_acknowledged(id: &Value, filter: McpSubscriptionFilter) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/subscriptions/acknowledged",
+        "params": {
+            "_meta": subscription_meta(id),
+            "notifications": filter.acknowledged(),
+        },
+    })
+}
+
+/// A notification delivered on the subscription `id`.
+#[must_use]
+pub fn subscription_notification(id: &Value, mut notification: Value) -> Value {
+    if !notification.get("params").is_some_and(Value::is_object) {
+        notification["params"] = json!({});
+    }
+    notification["params"]["_meta"] = subscription_meta(id);
+    notification
+}
+
+/// The response that ends a subscription the server closes on its own.
+#[must_use]
+pub fn subscription_closed(id: &Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": { "resultType": "complete", "_meta": subscription_meta(id) },
     })
 }
 
@@ -279,7 +388,7 @@ fn discover_result(ctx: &McpRequestContext<'_>) -> Value {
     json!({
         "resultType": "complete",
         "supportedVersions": supported_versions(),
-        "capabilities": capabilities(ctx.era),
+        "capabilities": capabilities(ctx.era, ctx.subscriptions),
         "instructions": server_instructions(&ctx.authority.active_tool_names()),
         "_meta": { META_SERVER_INFO: server_info(ctx.host) },
         "ttlMs": LIST_TTL_MS,
@@ -412,7 +521,7 @@ impl McpLegacyConnection {
         self.version = Some(version.to_string());
         json!({
             "protocolVersion": version,
-            "capabilities": capabilities(McpEra::Legacy),
+            "capabilities": capabilities(McpEra::Legacy, false),
             "serverInfo": server_info(host),
             "instructions": server_instructions(&authority.active_tool_names()),
         })
@@ -466,6 +575,51 @@ mod tests {
     }
 
     #[test]
+    fn listen_requests_acknowledge_what_can_be_delivered() {
+        let params = modern_params(&json!({"notifications": {
+            "toolsListChanged": true,
+            "promptsListChanged": false,
+            "resourceSubscriptions": ["vulcan://note/Home.md"],
+        }}));
+        let filter = listen_request(Some(&params)).unwrap();
+        assert_eq!(
+            filter,
+            McpSubscriptionFilter {
+                tools: true,
+                prompts: false,
+                resources: false,
+            }
+        );
+        let ack = subscription_acknowledged(&json!(7), filter);
+        assert_eq!(ack["method"], "notifications/subscriptions/acknowledged");
+        assert_eq!(ack["params"]["_meta"][META_SUBSCRIPTION_ID], 7);
+        assert_eq!(
+            ack["params"]["notifications"],
+            json!({"toolsListChanged": true})
+        );
+
+        let tools = json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+        let prompts = json!({"jsonrpc": "2.0", "method": "notifications/prompts/list_changed"});
+        assert!(filter.wants(&tools));
+        assert!(!filter.wants(&prompts));
+        let tagged = subscription_notification(&json!(7), tools);
+        assert_eq!(tagged["params"]["_meta"][META_SUBSCRIPTION_ID], 7);
+        assert_eq!(
+            subscription_closed(&json!(7))["result"]["resultType"],
+            "complete"
+        );
+
+        assert!(matches!(
+            listen_request(Some(&json!({}))),
+            Err(McpMethodError::JsonRpc { code: -32601, .. })
+        ));
+        assert!(matches!(
+            listen_request(Some(&modern_params(&json!({"notifications": true})))),
+            Err(McpMethodError::JsonRpc { code: -32602, .. })
+        ));
+    }
+
+    #[test]
     fn modern_requests_are_recognized_and_validated() {
         assert_eq!(modern_meta(None).unwrap(), None);
         assert_eq!(modern_meta(Some(&json!({"_meta": {}}))).unwrap(), None);
@@ -504,6 +658,7 @@ mod tests {
             era: McpEra::Modern,
             host: &host,
             operations: None,
+            subscriptions: false,
         };
         let discover = handle(&ctx, "server/discover", None).unwrap().unwrap();
         assert_eq!(discover["resultType"], "complete");
