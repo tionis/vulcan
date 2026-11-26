@@ -67,6 +67,9 @@ pub struct DqlQueryResult {
     /// The note plan, when explaining (QRY.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<crate::plan::QueryPlanExplain>,
+    /// For grouped results, the column that holds the group keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_column: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -809,7 +812,6 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     let mut result = render_result(
         query,
         &config.dataview.primary_column_name,
-        &config.dataview.group_column_name,
         rows,
         lookup,
         env,
@@ -1489,14 +1491,14 @@ pub(crate) fn synthetic_group_note(fields: &Map<String, Value>) -> NoteRecord {
 fn render_result(
     query: &DqlQuery,
     primary_column_name: &str,
-    group_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &dyn NoteLookup,
     env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
-    let first_column_name = result_first_column_name(query, primary_column_name, group_column_name);
-    match query.query_type {
+    let group_column = group_column_name(query);
+    let first_column_name = group_column.as_deref().unwrap_or(primary_column_name);
+    let mut result = match query.query_type {
         super::DqlQueryType::Table => render_table_result(
             query,
             first_column_name,
@@ -1522,26 +1524,33 @@ fn render_result(
             env,
             diagnostics,
         ),
-    }
+    }?;
+    result.group_column = group_column;
+    Ok(result)
 }
 
-fn result_first_column_name<'a>(
-    query: &DqlQuery,
-    primary_column_name: &'a str,
-    group_column_name: &'a str,
-) -> &'a str {
-    if query_has_group_by(query) {
-        group_column_name
-    } else {
-        primary_column_name
+/// The name of the column that holds group keys, as Dataview names it: the
+/// last `GROUP BY` field's alias or text, unless a later `FLATTEN` of the
+/// same name took the grouping back.
+fn group_column_name(query: &DqlQuery) -> Option<String> {
+    let mut groups = Vec::<String>::new();
+    for command in &query.commands {
+        match command {
+            DqlDataCommand::GroupBy(named) => groups.push(named_expr_label(named)),
+            DqlDataCommand::Flatten(named) if groups.last() == Some(&named_expr_label(named)) => {
+                groups.pop();
+            }
+            _ => {}
+        }
     }
+    groups.pop()
 }
 
-fn query_has_group_by(query: &DqlQuery) -> bool {
-    query
-        .commands
-        .iter()
-        .any(|command| matches!(command, DqlDataCommand::GroupBy(_)))
+fn named_expr_label(named: &DqlNamedExpr) -> String {
+    named
+        .alias
+        .clone()
+        .unwrap_or_else(|| expression_label(&named.expr))
 }
 
 fn render_table_result(
@@ -1579,6 +1588,7 @@ fn render_table_result(
         rows: rendered_rows,
         diagnostics: Vec::new(),
         plan: None,
+        group_column: None,
     })
 }
 
@@ -1741,6 +1751,7 @@ fn render_list_result(
         rows: rendered_rows,
         diagnostics: Vec::new(),
         plan: None,
+        group_column: None,
     })
 }
 
@@ -1779,6 +1790,7 @@ fn render_task_result(
         rows: rendered_rows,
         diagnostics: Vec::new(),
         plan: None,
+        group_column: None,
     }
 }
 
@@ -1833,6 +1845,7 @@ fn render_calendar_result(
         rows: rendered_rows,
         diagnostics: Vec::new(),
         plan: None,
+        group_column: None,
     })
 }
 
@@ -2922,15 +2935,18 @@ SORT key ASC"#,
         .expect("DQL should evaluate");
 
         assert_eq!(result.query_type, super::super::DqlQueryType::Table);
-        assert_eq!(result.columns, vec!["Group", "pages", "count"]);
+        assert_eq!(result.columns, vec!["category", "pages", "count"]);
         assert_eq!(result.result_count, 2);
-        assert_eq!(result.rows[0]["Group"], Value::Null);
+        assert_eq!(result.rows[0]["category"], Value::Null);
         assert_eq!(
             result.rows[0]["pages"],
             Value::Array(vec![Value::String("[[Notes/C]]".to_string())])
         );
         assert_eq!(result.rows[0]["count"].as_f64(), Some(1.0));
-        assert_eq!(result.rows[1]["Group"], Value::String("alpha".to_string()));
+        assert_eq!(
+            result.rows[1]["category"],
+            Value::String("alpha".to_string())
+        );
         assert_eq!(
             result.rows[1]["pages"],
             Value::Array(vec![
@@ -3100,7 +3116,7 @@ SORT page ASC",
     }
 
     #[test]
-    fn respects_configured_primary_and_group_column_names() {
+    fn names_the_group_column_after_the_group_by_field() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
@@ -3129,7 +3145,29 @@ GROUP BY category"#,
             None,
         )
         .expect("grouped query should evaluate");
-        assert_eq!(grouped.columns, vec!["Bucket", "count"]);
+        // As in Dataview, the group column takes the field's name; the
+        // imported `groupColumnName` setting is not used.
+        assert_eq!(grouped.columns, vec!["category", "count"]);
+        assert_eq!(grouped.group_column.as_deref(), Some("category"));
+
+        let aliased = evaluate_dql(
+            &paths,
+            r#"TABLE length(rows) AS count
+FROM "Notes"
+GROUP BY lower(category) AS kind"#,
+            None,
+        )
+        .expect("aliased query should evaluate");
+        assert_eq!(aliased.columns, vec!["kind", "count"]);
+
+        let regrouped = evaluate_dql(
+            &paths,
+            r#"LIST FROM "Notes" GROUP BY category FLATTEN rows AS category"#,
+            None,
+        )
+        .expect("flattened query should evaluate");
+        assert_eq!(regrouped.group_column, None);
+        assert_eq!(regrouped.columns[0], "Document");
     }
 
     #[test]

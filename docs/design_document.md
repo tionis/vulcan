@@ -1214,7 +1214,7 @@ Vaults may have customized Dataview behavior via `.obsidian/plugins/dataview/dat
 | `defaultDateTimeFormat` | `"h:mm a - MMMM dd, yyyy"` | Default format for datetime display |
 | `maxRecursiveRenderDepth` | `4` | Max depth for inline expression nesting |
 | `primaryColumnName` | `"File"` | Header text for the auto-generated file column in TABLE |
-| `groupColumnName` | `"Group"` | Header text for the group key column |
+| `groupColumnName` | `"Group"` | Imported but unused, as in Dataview: the group key column takes the `GROUP BY` field's alias or text, and DQL JSON results name it in `group_column` |
 
 This file is one of the frozen legacy runtime defaults (§14): it is read at config load beneath `.vulcan/config.toml` and `.vulcan/config.local.toml`, fills only values the Vulcan config leaves unset, and falls back to Vulcan defaults for missing keys. `vulcan config import` copies it into `.vulcan/config.toml` so a vault can stop depending on it. It is not a precedent for runtime reads of other plugin files.
 

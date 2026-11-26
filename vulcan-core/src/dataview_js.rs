@@ -2739,7 +2739,8 @@ function __vulcanDataviewQueryResult(raw, origin) {
   const columns = raw?.columns ?? [];
   const rows = raw?.rows ?? [];
   const revive = (value) => __vulcanReviveFieldValue(value, origin);
-  const idMeaning = columns[0] === "Group" ? { type: "group", name: "Group" } : { type: "path" };
+  const idMeaning =
+    raw?.group_column != null ? { type: "group", name: raw.group_column, on: { type: "path" } } : { type: "path" };
   switch (raw?.query_type) {
     case "list":
       return {
@@ -9299,7 +9300,8 @@ globalThis.this = dv.current();
                   bare: [bare.values, Array.isArray(bare.values)],
                   table: [table.type, table.headers, table.idMeaning.type, table.values[1].slice(1)],
                   task: [tasks.type, tasks.values[0].text, tasks.values[0].line, tasks.values[0].due.toISODate(), "reviewed" in tasks.values[0]],
-                  grouped: [grouped.primaryMeaning.type, grouped.values.length],
+                  grouped: [grouped.primaryMeaning.type, grouped.primaryMeaning.name, grouped.values.length],
+                  groupedTable: (await dv.tryQuery('TABLE length(rows) AS n FROM "Projects" GROUP BY status AS state')).headers,
                   markdown: await dv.tryQueryMarkdown(`TABLE status ${sorted}`),
                   pairMarkdown: await dv.tryQueryMarkdown(`LIST status ${sorted}`),
                 })
@@ -9350,7 +9352,8 @@ globalThis.this = dv.current();
                     false
                 ])
             );
-            assert_eq!(value["grouped"], serde_json::json!(["group", 2]));
+            assert_eq!(value["grouped"], serde_json::json!(["group", "status", 2]));
+            assert_eq!(value["groupedTable"], serde_json::json!(["state", "n"]));
             assert_eq!(
                 value["markdown"],
                 "| File                         | status  |\n| ---------------------------- | ------- |\n| [[Projects/Alpha.md\\|Alpha]] | active  |\n| [[Projects/Beta.md\\|Beta]]   | backlog |\n"

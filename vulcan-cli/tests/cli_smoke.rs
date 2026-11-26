@@ -17307,7 +17307,8 @@ fn dataview_plugin_display_settings_affect_human_output() {
         .success();
     let grouped_stdout = String::from_utf8(grouped_assert.get_output().stdout.clone())
         .expect("stdout should be valid utf-8");
-    assert!(grouped_stdout.contains("| Bucket | count |"));
+    // The imported group column name is unused, as in Dataview.
+    assert!(grouped_stdout.contains("| status | count |"));
     assert!(grouped_stdout.contains("| --- | --- |"));
     assert!(!grouped_stdout.contains("result(s)"));
 }
