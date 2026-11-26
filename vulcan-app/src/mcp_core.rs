@@ -16,6 +16,7 @@ use crate::mcp_assistant::{
 use crate::mcp_authority::{McpAuthority, McpClientAttribution};
 use crate::mcp_discovery::McpDiscovery;
 use crate::mcp_help::HelpTopicReport;
+use crate::mcp_input::{ambiguity_input, apply_input_responses, declares_form_elicitation};
 use crate::mcp_operations::McpOperationLookup;
 use crate::mcp_protocol::{
     server_instructions, tool_error_structured, McpCompletionParams, McpListParams,
@@ -314,9 +315,29 @@ pub fn handle(
     method: &str,
     params: Option<&Value>,
 ) -> Result<Option<Value>, McpMethodError> {
-    let result = dispatch(ctx, method, params);
     if ctx.era == McpEra::Legacy {
-        return result;
+        return dispatch(ctx, method, params);
+    }
+    // A modern tool call may be a retry answering an input request, and
+    // may be answered with one when it names a note ambiguously.
+    let mut call_params = None;
+    let mut declined = false;
+    if method == "tools/call" {
+        let mut owned = params.cloned().unwrap_or_else(|| json!({}));
+        declined = apply_input_responses(&mut owned);
+        call_params = Some(owned);
+    }
+    let params = call_params.as_ref().or(params);
+    let result = dispatch(ctx, method, params);
+    if let Err(McpMethodError::Tool { message, .. }) = &result {
+        if method == "tools/call" && !declined && declares_form_elicitation(params) {
+            let arguments = params
+                .and_then(|params| params.get("arguments"))
+                .and_then(Value::as_object);
+            if let Some(input) = ambiguity_input(ctx.authority, message, arguments) {
+                return Ok(Some(decorate_modern(ctx, method, input)));
+            }
+        }
     }
     // A modern client gets tool failures as results like any other, and
     // every result marked as complete with the server named.

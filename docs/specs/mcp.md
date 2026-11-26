@@ -341,9 +341,13 @@ ledger keeps answers as before, with its durable operation id and `status_path`,
 tool error carrying the operation id; the work either finishes (and `operation_get` reports it)
 or is cancelled through its token. A timed-out worker is never left running unobserved.
 
-**Input requests** (modern clients that declare form elicitation): `input_required` with a form
-for an ambiguous `note` reference. Destructive operations do not elicit by default (client
-approval prompts already cover them); `mcp.confirm_destructive = true` turns it on.
+**Input requests** (modern clients that declare form elicitation): a `tools/call` whose note
+argument matches several notes the caller may read answers `input_required` with one form
+request, keyed `note:<argument>`, offering the candidate paths (at most 25) as a single choice.
+The retry carries the arguments, so there is no `requestState`: an accepted answer replaces that
+argument; a declined or cancelled one, or a client without form elicitation, gets the `ambiguous`
+tool error. Destructive operations do not elicit by default (client approval prompts already
+cover them); `mcp.confirm_destructive = true` is to turn that on (not implemented yet).
 
 **Progress:** `index_scan`, `sync_refresh` and `changeset_land` report progress on the
 request's stream when the client sent a progress token.

@@ -82,6 +82,7 @@ pub mod mcp_files;
 pub mod mcp_git;
 pub mod mcp_graph;
 pub mod mcp_help;
+pub mod mcp_input;
 pub mod mcp_notes;
 pub mod mcp_operations;
 pub mod mcp_paging;

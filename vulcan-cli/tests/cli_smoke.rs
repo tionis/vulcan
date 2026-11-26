@@ -35490,6 +35490,84 @@ fn mcp_long_calls_become_tasks_for_clients_that_declare_them() {
     stdio.finish();
 }
 
+/// A modern client that declares form elicitation is asked which note an
+/// ambiguous reference means, and its retry with the answer gets the note;
+/// one that declines, or does not declare elicitation, gets the ambiguity
+/// as a tool error.
+#[test]
+fn mcp_ambiguous_notes_ask_clients_that_can_answer() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("ambiguous-links", &vault_root);
+    run_scan(&vault_root);
+    let meta = |elicitation: bool| {
+        let capabilities = if elicitation {
+            serde_json::json!({"elicitation": {"form": {}}})
+        } else {
+            serde_json::json!({})
+        };
+        serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": capabilities,
+            "io.modelcontextprotocol/clientInfo": {"name": "input", "version": "1"},
+        })
+    };
+    let mut session = McpSession::start(&vault_root, &[]);
+    let mut call = |id: u64, params: Value| -> Value {
+        session
+            .send(serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params
+            }))
+            .into_iter()
+            .find(|message| message["id"] == id)
+            .expect("a response")["result"]
+            .clone()
+    };
+
+    let asked = call(
+        1,
+        serde_json::json!({"_meta": meta(true), "name": "note_get", "arguments": {"note": "Topic"}}),
+    );
+    assert_eq!(asked["resultType"], "input_required", "{asked}");
+    let request = &asked["inputRequests"]["note:note"];
+    assert_eq!(request["method"], "elicitation/create");
+    assert_eq!(request["params"]["mode"], "form");
+    let choices = request["params"]["requestedSchema"]["properties"]["note"]["oneOf"]
+        .as_array()
+        .expect("choices")
+        .iter()
+        .map(|choice| choice["const"].as_str().expect("path").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(choices, ["Archive/Topic.md", "Projects/Topic.md"]);
+
+    let answered = call(
+        2,
+        serde_json::json!({
+            "_meta": meta(true), "name": "note_get", "arguments": {"note": "Topic"},
+            "inputResponses": {"note:note": {"action": "accept", "content": {"note": "Projects/Topic.md"}}}
+        }),
+    );
+    assert_eq!(answered["resultType"], "complete", "{answered}");
+    assert_eq!(answered["structuredContent"]["path"], "Projects/Topic.md");
+
+    let declined = call(
+        3,
+        serde_json::json!({
+            "_meta": meta(true), "name": "note_get", "arguments": {"note": "Topic"},
+            "inputResponses": {"note:note": {"action": "decline"}}
+        }),
+    );
+    assert_eq!(declined["isError"], true, "{declined}");
+    assert_eq!(declined["structuredContent"]["error"]["code"], "ambiguous");
+
+    let unable = call(
+        4,
+        serde_json::json!({"_meta": meta(false), "name": "note_get", "arguments": {"note": "Topic"}}),
+    );
+    assert_eq!(unable["isError"], true, "{unable}");
+    session.finish();
+}
+
 #[test]
 fn mcp_server_serves_modern_requests_without_a_handshake() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
