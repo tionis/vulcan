@@ -169,10 +169,10 @@ where
                     .map_err(|error| HostedOperationFailure::before_commit(error.to_string()))?;
                 attenuate(&mut core).map_err(HostedOperationFailure::before_commit)?;
                 let response = process(&mut core, &request);
-                if mutation_outcome_is_indeterminate(&response) {
-                    return Err(HostedOperationFailure::indeterminate(
-                        "MCP mutation returned an error; its write outcome is unverified",
-                    ));
+                if let Some(error) = mutation_error(&response) {
+                    return Err(HostedOperationFailure::indeterminate(format!(
+                        "MCP mutation returned an error; its write outcome is unverified: {error}"
+                    )));
                 }
                 Ok(HostedOperationCompletion {
                     value: (core, response),
@@ -183,14 +183,44 @@ where
         .map_err(HostedMcpRunError::Execution)
 }
 
-fn mutation_outcome_is_indeterminate(response: &Result<McpHttpProcessResult, Value>) -> bool {
-    response.is_err()
-        || response.as_ref().is_ok_and(|result| {
-            result.response.as_ref().is_some_and(|value| {
-                value.get("error").is_some()
-                    || value.pointer("/result/isError").and_then(Value::as_bool) == Some(true)
-            })
-        })
+/// Longest tool error kept in an operation's detail.
+const MUTATION_ERROR_LIMIT: usize = 500;
+
+/// The error a mutation's response carries, if any, as the text the tool gave:
+/// a JSON-RPC error's message, or the text content of an `isError` result. The
+/// write outcome stays unverified, but the caller and the ledger keep the cause.
+fn mutation_error(response: &Result<McpHttpProcessResult, Value>) -> Option<String> {
+    let value = match response {
+        Err(value) => value,
+        Ok(result) => result.response.as_ref()?,
+    };
+    let text = if let Some(error) = value.get("error") {
+        error
+            .get("message")
+            .and_then(Value::as_str)
+            .map_or_else(|| error.to_string(), str::to_string)
+    } else if value.pointer("/result/isError").and_then(Value::as_bool) == Some(true) {
+        value
+            .pointer("/result/content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else if response.is_err() {
+        value.to_string()
+    } else {
+        return None;
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return Some("the tool gave no message".to_string());
+    }
+    Some(match text.char_indices().nth(MUTATION_ERROR_LIMIT) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    })
 }
 
 fn build_execution_context(
@@ -551,16 +581,58 @@ mod tests {
             |_| Ok(()),
             |_, _| {
                 Ok(McpHttpProcessResult {
-                    response: Some(json!({"result": {"isError": true}})),
+                    response: Some(json!({"result": {
+                        "isError": true,
+                        "content": [{"type": "text", "text": "path is outside the allowed folders"}],
+                    }})),
                     notifications: vec![],
                     accepted_notification: false,
                     session_stale: false,
                 })
             },
         );
-        assert!(matches!(result, Err(HostedMcpRunError::Execution(_))));
+        let Err(HostedMcpRunError::Execution(error)) = result else {
+            panic!("a tool error is an execution failure");
+        };
+        // The caller and the ledger keep the tool's own message.
+        assert!(error
+            .to_string()
+            .ends_with("unverified: path is outside the allowed folders"));
         let record = ledger.load(&operation_id).unwrap();
         assert_eq!(record.state, HostedJobState::Failed);
         assert_eq!(record.committed, None);
+        assert!(record
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.ends_with("path is outside the allowed folders")));
+    }
+
+    #[test]
+    fn mutation_error_reads_rpc_errors_and_ignores_success() {
+        let ok = |response| {
+            Ok(McpHttpProcessResult {
+                response: Some(response),
+                notifications: vec![],
+                accepted_notification: false,
+                session_stale: false,
+            })
+        };
+        assert_eq!(
+            super::mutation_error(&ok(
+                json!({"error": {"code": -32602, "message": "bad path"}})
+            )),
+            Some("bad path".to_string())
+        );
+        assert_eq!(
+            super::mutation_error(&ok(json!({"result": {"isError": false}}))),
+            None
+        );
+        assert_eq!(
+            super::mutation_error(&ok(json!({"result": {"isError": true, "content": []}}))),
+            Some("the tool gave no message".to_string())
+        );
+        let long = "x".repeat(600);
+        let cut = super::mutation_error(&ok(json!({"error": {"message": long}}))).unwrap();
+        assert_eq!(cut.chars().count(), 501);
     }
 }
