@@ -256,7 +256,25 @@ pub fn extract_indexed_properties(
     parsed: &crate::ParsedDocument,
     config: &VaultConfig,
 ) -> Result<Option<IndexedProperties>, serde_json::Error> {
-    if parsed.frontmatter.is_none() && parsed.inline_fields.is_empty() {
+    // As in Dataview, fields on plain (non-task) list items are page fields
+    // too, ahead of paragraph fields; task fields stay on their tasks.
+    let inline_fields = parsed
+        .list_items
+        .iter()
+        .filter(|item| !item.is_task)
+        .flat_map(|item| {
+            item.inline_fields
+                .iter()
+                .map(|field| (&field.key, &field.value_text, field.kind))
+        })
+        .chain(
+            parsed
+                .inline_fields
+                .iter()
+                .map(|field| (&field.key, &field.value_text, field.kind)),
+        )
+        .collect::<Vec<_>>();
+    if parsed.frontmatter.is_none() && inline_fields.is_empty() {
         return Ok(None);
     }
 
@@ -293,24 +311,18 @@ pub fn extract_indexed_properties(
         }
     }
 
-    for inline_field in &parsed.inline_fields {
+    for (key, value_text, kind) in inline_fields {
         let expected_type = config
             .property_types
-            .get(&inline_field.key)
+            .get(key)
             .map(String::as_str)
             .map(canonical_property_type);
-        let extracted = extract_inline_property_value(
-            &inline_field.key,
-            &inline_field.value_text,
-            inline_field.kind,
-            config,
-            expected_type,
-        );
+        let extracted = extract_inline_property_value(key, value_text, kind, config, expected_type);
         if let Some(diagnostic) = extracted.diagnostic.clone() {
             diagnostics.push(diagnostic);
         }
         inline_json_values
-            .entry(inline_field.key.clone())
+            .entry(key.clone())
             .or_default()
             .push(extracted_property_json_value(&extracted));
         values.push(extracted.value);
@@ -4084,6 +4096,39 @@ mod tests {
                 "tags=list",
             ]
         );
+    }
+
+    #[test]
+    fn plain_list_item_fields_are_page_fields_but_task_fields_are_not() {
+        let config = VaultConfig::default();
+        let parsed = parse_document(
+            concat!(
+                "rep:: 3\n",
+                "\n",
+                "- Plain [cost:: 12] [rep:: 1]\n",
+                "\t- Child [child:: yes]\n",
+                "- [ ] Task [due:: 2026-04-01] [rep:: 9]\n",
+                "- Last [rep:: 2]\n",
+            ),
+            &config,
+        );
+        let indexed = extract_indexed_properties(&parsed, &config)
+            .expect("property extraction should succeed")
+            .expect("list fields should produce properties");
+        let properties: Value =
+            serde_json::from_str(&indexed.canonical_json).expect("canonical JSON should parse");
+
+        assert_eq!(properties["cost"], 12.0);
+        assert_eq!(properties["child"], "yes");
+        // List fields come before paragraph fields, as in Dataview.
+        assert_eq!(properties["rep"], serde_json::json!([1.0, 2.0, 3.0]));
+        assert!(properties.get("due").is_none());
+
+        let list_only = parse_document("- Item [kind:: note]\n", &config);
+        let indexed = extract_indexed_properties(&list_only, &config)
+            .expect("property extraction should succeed")
+            .expect("a list field alone should produce properties");
+        assert_eq!(indexed.canonical_json, r#"{"kind":"note"}"#);
     }
 
     #[test]

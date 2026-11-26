@@ -1157,7 +1157,38 @@ function __vulcanRevivePage(page) {
   for (const [key, value] of Object.entries(page)) {
     revived[key] = key === "file" ? __vulcanReviveFileMetadata(value) : __vulcanReviveFieldValue(value, origin);
   }
+  // Dataview's finalizeInlineFields: each field is also reachable by its
+  // canonical name unless a field already has that name; fields sharing a
+  // canonical name pool their values.
+  const canonical = new Map();
+  for (const [key, value] of Object.entries(revived)) {
+    const name = __vulcanCanonicalizeVarName(key);
+    if (key === "file" || name === "" || name in revived) {
+      continue;
+    }
+    canonical.set(name, [...(canonical.get(name) ?? []), value]);
+  }
+  for (const [name, values] of canonical) {
+    revived[name] = values.length === 1 ? values[0] : values;
+  }
   return revived;
+}
+
+const __vulcanVarNamePart =
+  /(\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?)*)|([0-9\p{L}_-]+)|(\s+)|[\s\S]/gu;
+
+// Dataview's canonicalizeVarName: words lowercased, emoji kept, whitespace
+// runs as `-`, and everything else dropped.
+function __vulcanCanonicalizeVarName(name) {
+  return String(name).replace(__vulcanVarNamePart, (_, emoji, word, space) => {
+    if (emoji !== undefined) {
+      return emoji;
+    }
+    if (word !== undefined) {
+      return word.toLocaleLowerCase();
+    }
+    return space !== undefined ? "-" : "";
+  });
 }
 
 function __vulcanDurationMillis(value) {
@@ -9102,6 +9133,56 @@ globalThis.this = dv.current();
         }
 
         #[test]
+        fn dataviewjs_pages_expose_canonical_field_names() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            fs::write(
+                vault_root.join("Keys.md"),
+                concat!(
+                    "---\nProject Status: active\nkept-name: frontmatter\n---\n",
+                    "kept name:: inline\n",
+                    "Twice Over:: 1\n",
+                    "twice  over:: 2\n",
+                    "- Item [Item Kind:: list]\n",
+                ),
+            )
+            .expect("note should be written");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const page = dv.page("Keys");
+                const dashboard = dv.page("Dashboard");
+                ({
+                  status: page["project-status"],
+                  kept: page["kept-name"],
+                  twice: page["twice-over"],
+                  itemKind: page["item-kind"],
+                  dueDate: dashboard["due-date"].month,
+                  emoji: dashboard["🎅"],
+                  accented: dashboard["noël"],
+                })
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            let value = result.value.expect("script value");
+            assert_eq!(value["status"], "active");
+            // An existing field keeps its name and value.
+            assert_eq!(value["kept"], "frontmatter");
+            // Pooled in field-name order: Vulcan's property map is sorted by key.
+            assert_eq!(value["twice"], serde_json::json!([2, 1]));
+            assert_eq!(value["itemKind"], "list");
+            assert_eq!(value["dueDate"], 4);
+            assert_eq!(value["emoji"], "gifts");
+            assert_eq!(value["accented"], "un jeu de console");
+        }
+
+        #[test]
         fn dataviewjs_file_tags_follow_dataview() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
@@ -11347,9 +11428,7 @@ shell = "allow"
         /// Paths where Vulcan's run of the probe still differs from Obsidian's. Remove an
         /// entry once its fix lands: the test fails when a listed path no longer differs.
         const PROBE_KNOWN_DIVERGENCES: &[&str] = &[
-            ".behaviour.inlineDurationKind",
             ".behaviour.queryMarkdown",
-            ".behaviour.whereStatus",
             ".lists[0].keys",
             ".lists[0].parent",
             ".lists[1].keys",
@@ -11371,39 +11450,19 @@ shell = "allow"
             ".pageKeys.Inline Duration",
             ".pageKeys.Inline Link",
             ".pageKeys.Inline Number",
-            ".pageKeys.child",
-            ".pageKeys.cost",
-            ".pageKeys.groups",
             ".pageKeys.inline date",
             ".pageKeys.inline duration",
             ".pageKeys.inline link",
             ".pageKeys.inline number",
-            ".pageKeys.inline-date",
-            ".pageKeys.inline-duration",
-            ".pageKeys.inline-link",
-            ".pageKeys.inline-number",
-            ".pageKeys.rep",
-            ".pageKeys.status",
-            ".pageKeys.up",
             ".pageValues.Inline",
             ".pageValues.Inline Date",
             ".pageValues.Inline Duration",
             ".pageValues.Inline Link",
             ".pageValues.Inline Number",
-            ".pageValues.child",
-            ".pageValues.cost",
-            ".pageValues.groups",
             ".pageValues.inline date",
             ".pageValues.inline duration",
             ".pageValues.inline link",
             ".pageValues.inline number",
-            ".pageValues.inline-date",
-            ".pageValues.inline-duration",
-            ".pageValues.inline-link",
-            ".pageValues.inline-number",
-            ".pageValues.rep",
-            ".pageValues.status",
-            ".pageValues.up",
             ".tasks[0].fields",
             ".tasks[1].fields",
             ".tasks[2].fields",
