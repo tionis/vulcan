@@ -62,8 +62,97 @@ fn default_public_client_auth_method() -> String {
     "none".to_string()
 }
 
+/// Client ID Metadata Documents are at most this large.
+const MAX_CLIENT_METADATA_BYTES: u64 = 64 * 1024;
+/// Fetched documents are reused for what their caching headers allow, at most
+/// this long.
+const MAX_CLIENT_METADATA_CACHE: Duration = Duration::from_hours(1);
+/// Documents kept at once; the soonest to expire goes first.
+const CLIENT_METADATA_CACHE_ENTRIES: usize = 128;
+
+type ClientMetadataCache =
+    std::collections::HashMap<String, (std::time::Instant, ClientIdMetadataDocument)>;
+
+fn client_metadata_cache() -> &'static std::sync::Mutex<ClientMetadataCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<ClientMetadataCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Fetch (or reuse) the Client ID Metadata Document at `client_id`: public
+/// HTTPS only, pinned to the public address it resolved to, no redirects,
+/// read with a 64 KiB cap, and cached for what its `Cache-Control` allows
+/// (at most an hour; not at all without a `max-age`).
 pub fn fetch_client_id_metadata(client_id: &str) -> Result<ClientIdMetadataDocument, OAuthError> {
-    const MAX_METADATA_BYTES: u64 = 64 * 1024;
+    let now = std::time::Instant::now();
+    {
+        let mut cache = client_metadata_cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.retain(|_, (expires, _)| *expires > now);
+        if let Some((_, document)) = cache.get(client_id) {
+            return Ok(document.clone());
+        }
+    }
+    let (document, lifetime) = fetch_client_id_metadata_uncached(client_id)?;
+    if let Some(lifetime) = lifetime {
+        let mut cache = client_metadata_cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.len() >= CLIENT_METADATA_CACHE_ENTRIES {
+            if let Some(soonest) = cache
+                .iter()
+                .min_by_key(|(_, (expires, _))| *expires)
+                .map(|(key, _)| key.clone())
+            {
+                cache.remove(&soonest);
+            }
+        }
+        cache.insert(client_id.to_string(), (now + lifetime, document.clone()));
+    }
+    Ok(document)
+}
+
+/// How long a response may be reused, from its `Cache-Control`: `max-age`,
+/// capped at an hour; nothing for `no-store`, `no-cache`, `private`... none of
+/// which a shared server should keep, or without a `max-age`.
+fn client_metadata_cache_lifetime(cache_control: Option<&str>) -> Option<Duration> {
+    let directives = cache_control?
+        .split(',')
+        .map(|directive| directive.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if directives
+        .iter()
+        .any(|directive| matches!(directive.as_str(), "no-store" | "no-cache"))
+    {
+        return None;
+    }
+    let seconds = directives.iter().find_map(|directive| {
+        directive
+            .strip_prefix("max-age=")
+            .and_then(|value| value.trim_matches('"').parse::<u64>().ok())
+    })?;
+    (seconds > 0).then(|| Duration::from_secs(seconds).min(MAX_CLIENT_METADATA_CACHE))
+}
+
+/// Read at most `limit` bytes; more is an error, without reading the rest.
+fn read_bounded(reader: impl Read, limit: u64) -> Result<Vec<u8>, OAuthError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| OAuthError::Network(error.to_string()))?;
+    if bytes.len() as u64 > limit {
+        return Err(OAuthError::Network(
+            "Client ID Metadata Document exceeded 64 KiB".to_string(),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn fetch_client_id_metadata_uncached(
+    client_id: &str,
+) -> Result<(ClientIdMetadataDocument, Option<Duration>), OAuthError> {
     let url = reqwest::Url::parse(client_id)
         .map_err(|error| OAuthError::Config(format!("invalid client ID URL: {error}")))?;
     let lowercase_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
@@ -123,46 +212,97 @@ pub fn fetch_client_id_metadata(client_id: &str) -> Result<ClientIdMetadataDocum
     if !response.status().is_success()
         || response
             .content_length()
-            .is_some_and(|length| length > MAX_METADATA_BYTES)
+            .is_some_and(|length| length > MAX_CLIENT_METADATA_BYTES)
     {
         return Err(OAuthError::Network(
             "Client ID Metadata Document request failed or was too large".to_string(),
         ));
     }
-    let bytes = response
-        .bytes()
-        .map_err(|error| OAuthError::Network(error.to_string()))?;
-    if bytes.len() as u64 > MAX_METADATA_BYTES {
-        return Err(OAuthError::Network(
-            "Client ID Metadata Document exceeded 64 KiB".to_string(),
-        ));
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|error| OAuthError::Network(format!("invalid client metadata JSON: {error}")))
+    let lifetime = client_metadata_cache_lifetime(
+        response
+            .headers()
+            .get(reqwest::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+    );
+    // Streamed with a cap: a missing or false Content-Length cannot make the
+    // server buffer more than the limit.
+    let bytes = read_bounded(response, MAX_CLIENT_METADATA_BYTES)?;
+    let document = serde_json::from_slice(&bytes)
+        .map_err(|error| OAuthError::Network(format!("invalid client metadata JSON: {error}")))?;
+    Ok((document, lifetime))
 }
 
+/// Whether an address is not on the public internet. IPv6 forms that carry
+/// an IPv4 address (mapped, compatible, NAT64, 6to4) are judged by that
+/// address, so `::ffff:10.0.0.1` is as private as `10.0.0.1`.
 fn ip_is_non_public(address: std::net::IpAddr) -> bool {
     match address {
-        std::net::IpAddr::V4(address) => {
-            let octets = address.octets();
-            address.is_private()
-                || address.is_loopback()
-                || address.is_link_local()
-                || address.is_unspecified()
-                || address.is_multicast()
-                || address.is_broadcast()
-                || address.is_documentation()
-                || octets[0] == 0
-                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
-        }
+        std::net::IpAddr::V4(address) => ipv4_is_non_public(address),
         std::net::IpAddr::V6(address) => {
+            let segments = address.segments();
+            if let Some(embedded) = embedded_ipv4(address) {
+                return ipv4_is_non_public(embedded);
+            }
             address.is_loopback()
                 || address.is_unspecified()
                 || address.is_multicast()
                 || address.is_unique_local()
                 || address.is_unicast_link_local()
+                // Site-local (deprecated), documentation, Teredo, ORCHID and
+                // the discard prefix.
+                || (segments[0] & 0xffc0) == 0xfec0
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || (segments[0] == 0x2001 && segments[1] == 0)
+                || (segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0010)
+                || (segments[0] == 0x0100 && segments[1..4] == [0, 0, 0])
         }
     }
+}
+
+fn ipv4_is_non_public(address: std::net::Ipv4Addr) -> bool {
+    let octets = address.octets();
+    address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || address.is_broadcast()
+        || address.is_documentation()
+        || octets[0] == 0
+        // Shared address space (CGNAT), IETF assignments, 6to4 relay,
+        // benchmarking, and the reserved 240/4.
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+        || octets[0] >= 240
+}
+
+/// The IPv4 address an IPv6 address carries: IPv4-mapped (`::ffff:a.b.c.d`),
+/// IPv4-compatible (`::a.b.c.d`), NAT64 (`64:ff9b::/96`) or 6to4 (`2002::/16`).
+fn embedded_ipv4(address: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let segments = address.segments();
+    let tail = |high: u16, low: u16| {
+        std::net::Ipv4Addr::new(
+            (high >> 8) as u8,
+            (high & 0xff) as u8,
+            (low >> 8) as u8,
+            (low & 0xff) as u8,
+        )
+    };
+    if let Some(mapped) = address.to_ipv4_mapped() {
+        return Some(mapped);
+    }
+    if segments[..6] == [0, 0, 0, 0, 0, 0] && !address.is_loopback() && !address.is_unspecified() {
+        return Some(tail(segments[6], segments[7]));
+    }
+    if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
+        return Some(tail(segments[6], segments[7]));
+    }
+    if segments[0] == 0x2002 {
+        return Some(tail(segments[1], segments[2]));
+    }
+    None
 }
 
 #[derive(Clone)]
@@ -336,8 +476,15 @@ impl LocalOAuthIssuer {
 
     #[must_use]
     pub fn verify_pkce_s256(&self, verifier: &str, challenge: &str) -> bool {
-        let digest = Sha256::digest(verifier.as_bytes());
-        BASE64_URL_SAFE_NO_PAD.encode(digest) == challenge
+        let digest = BASE64_URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        digest.len() == challenge.len()
+            && digest
+                .bytes()
+                .zip(challenge.bytes())
+                .fold(0_u8, |difference, (left, right)| {
+                    difference | (left ^ right)
+                })
+                == 0
     }
 
     #[must_use]
@@ -880,6 +1027,68 @@ mod tests {
             .expect_err("stalled response must time out");
         assert!(error.is_timeout());
         server.join().expect("server");
+    }
+
+    #[test]
+    fn client_metadata_addresses_are_judged_by_any_embedded_ipv4() {
+        for private in [
+            "10.0.0.1",
+            "100.64.0.1",
+            "192.0.0.8",
+            "198.18.0.1",
+            "240.0.0.1",
+            "::1",
+            "::ffff:10.0.0.1",
+            "::ffff:127.0.0.1",
+            "::10.0.0.1",
+            "64:ff9b::a00:1",
+            "2002:a00:1::",
+            "fec0::1",
+            "2001:db8::1",
+            "2001::1",
+            "fd00::1",
+            "fe80::1",
+        ] {
+            assert!(ip_is_non_public(private.parse().unwrap()), "{private}");
+        }
+        for public in [
+            "93.184.216.34",
+            "::ffff:93.184.216.34",
+            "2606:4700::1111",
+            "64:ff9b::5db8:d822",
+        ] {
+            assert!(!ip_is_non_public(public.parse().unwrap()), "{public}");
+        }
+    }
+
+    #[test]
+    fn client_metadata_is_cached_only_as_its_headers_allow_and_at_most_an_hour() {
+        assert_eq!(client_metadata_cache_lifetime(None), None);
+        assert_eq!(client_metadata_cache_lifetime(Some("public")), None);
+        assert_eq!(
+            client_metadata_cache_lifetime(Some("public, max-age=300")),
+            Some(Duration::from_secs(300))
+        );
+        assert_eq!(
+            client_metadata_cache_lifetime(Some("max-age=86400")),
+            Some(MAX_CLIENT_METADATA_CACHE)
+        );
+        assert_eq!(client_metadata_cache_lifetime(Some("max-age=0")), None);
+        assert_eq!(
+            client_metadata_cache_lifetime(Some("max-age=600, no-store")),
+            None
+        );
+        assert_eq!(client_metadata_cache_lifetime(Some("No-Cache")), None);
+    }
+
+    #[test]
+    fn client_metadata_reads_stop_at_the_cap() {
+        let small = read_bounded(&b"{}"[..], 4).unwrap();
+        assert_eq!(small, b"{}");
+        let exact = read_bounded(&b"abcd"[..], 4).unwrap();
+        assert_eq!(exact.len(), 4);
+        // An endless body is refused after limit + 1 bytes.
+        assert!(read_bounded(std::io::repeat(b'x'), 64).is_err());
     }
 
     #[test]

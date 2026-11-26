@@ -216,7 +216,12 @@ pub fn registered_mcp_client_credentials_valid(
         && match credentials.method {
             McpTokenAuthMethod::None => stored_secret.is_empty(),
             _ => {
-                !credentials.client_secret.is_empty() && credentials.client_secret == stored_secret
+                !credentials.client_secret.is_empty()
+                    && credentials.client_secret.len() == stored_secret.len()
+                    && bool::from(subtle::ConstantTimeEq::ct_eq(
+                        credentials.client_secret.as_bytes(),
+                        stored_secret.as_bytes(),
+                    ))
             }
         }
 }
