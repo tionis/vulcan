@@ -1,7 +1,7 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, which tools a connection sees, remote HTTPS setup, credential migration, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 19
+version: 20
 tools:
   - mcp
   - describe
@@ -37,7 +37,7 @@ debugging, and which tools a connection sees (its permission profile).
 ## Guardrails
 
 - Do not expose a no-auth public MCP server for a private vault.
-- Local stdio and loopback HTTP, with an optional static token, work without the `oauth` build feature. OAuth flags and named remotes require that feature; do not pass `--oauth-local-subject` merely to start local HTTP. For direct IndieAuth, leave that flag unset to use the authenticated identity unless intentionally overriding it.
+- Local stdio and loopback HTTP, with an optional static token (`--auth-token`, sent only as `Authorization: Bearer`; the old `X-Vulcan-Token` header is not read), work without the `oauth` build feature. OAuth flags and named remotes require that feature; do not pass `--oauth-local-subject` merely to start local HTTP. For direct IndieAuth, leave that flag unset to use the authenticated identity unless intentionally overriding it.
 - Keep Vulcan bound to loopback or a private interface behind the HTTPS front door unless you have a deliberate deployment reason.
 - For browser-based local HTTP harnesses, send a valid `Origin` header containing only the scheme, host, and optional port. Vulcan accepts loopback origins (`localhost`, `127.0.0.1`, or `[::1]`) on loopback listeners and the public URL's origin, and rejects origins with paths, credentials, queries, or fragments (403). An accepted Origin does not replace the MCP token or OAuth grant.
 - The reverse proxy may forward request bodies length-delimited or chunked, up to 4 MiB. It must pass the public host in `Host` or rewrite it to the listener's IP address (or `localhost` on a loopback bind); any other host name is refused with 421 so a web page cannot reach the listener through DNS rebinding. Repeated `Authorization`, `Host`, `Origin`, `Content-Length`, session or protocol headers fail before authentication or tool dispatch.

@@ -9264,7 +9264,7 @@ Examples:
         endpoint: String,
         #[arg(
             long,
-            help = "Optional bearer/shared token required for HTTP transport requests"
+            help = "Token HTTP requests must send as `Authorization: Bearer <token>`"
         )]
         auth_token: Option<String>,
         #[arg(

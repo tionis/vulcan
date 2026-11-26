@@ -21626,7 +21626,7 @@
             ]
           },
           {
-            "help": "Optional bearer/shared token required for HTTP transport requests",
+            "help": "Token HTTP requests must send as `Authorization: Bearer <token>`",
             "id": "auth_token",
             "long": "auth-token",
             "possible_values": [],

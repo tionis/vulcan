@@ -33138,7 +33138,7 @@ fn mcp_http_transport_enforces_auth_tokens() {
     assert!(
         unauthorized.json_body()["error"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("missing or invalid authentication token")),
+            .is_some_and(|message| message.contains("missing or invalid bearer token")),
         "requests without the configured token should be rejected"
     );
 

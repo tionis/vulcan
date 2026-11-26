@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 #[cfg(feature = "oauth")]
 use std::time::{SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
 use ulid::Ulid;
 #[cfg(feature = "oauth")]
 use vulcan_core::{LocalOAuthIssuer, OAuthResourceServer};
@@ -115,14 +116,17 @@ pub fn authenticate_mcp_http_request(
         credential = token;
     }
     if let Some(expected) = options.auth_token {
-        let actual = bearer_token(headers).or_else(|| headers.get("x-vulcan-token").cloned());
-        if actual.as_deref() != Some(expected) {
+        // Only `Authorization: Bearer`, compared in constant time.
+        let Some(actual) = bearer_token(headers).filter(|actual| {
+            actual.len() == expected.len()
+                && bool::from(actual.as_bytes().ct_eq(expected.as_bytes()))
+        }) else {
             return Err(McpHttpAuthError::Http {
                 status: 401,
-                message: "missing or invalid authentication token".into(),
+                message: "missing or invalid bearer token".into(),
             });
-        }
-        credential = actual.expect("validated token is present");
+        };
+        credential = actual;
     }
     #[cfg(feature = "oauth")]
     let public_url = options.oauth.map(McpOAuthMode::public_url);
@@ -204,9 +208,18 @@ mod tests {
     }
 
     #[test]
-    fn shared_token_authentication_preserves_bearer_precedence() {
+    fn shared_token_authentication_accepts_only_the_bearer_header() {
+        // The former X-Vulcan-Token header is no longer read.
         let mut headers = BTreeMap::from([("x-vulcan-token".into(), "secret".into())]);
-        assert!(authenticate_mcp_http_request(options(), &headers).is_ok());
+        assert!(matches!(
+            authenticate_mcp_http_request(options(), &headers),
+            Err(McpHttpAuthError::Http { status: 401, .. })
+        ));
+        headers.insert("authorization".into(), "Bearer secre".into());
+        assert!(matches!(
+            authenticate_mcp_http_request(options(), &headers),
+            Err(McpHttpAuthError::Http { status: 401, .. })
+        ));
         headers.insert("authorization".into(), "Bearer wrong".into());
         assert!(matches!(
             authenticate_mcp_http_request(options(), &headers),
@@ -276,7 +289,7 @@ mod tests {
             authenticate_mcp_http_request(options(), &headers),
             Err(McpHttpAuthError::Http { status: 401, .. })
         ));
-        headers.insert("x-vulcan-token".into(), "secret".into());
+        headers.insert("authorization".into(), "Bearer secret".into());
         assert!(matches!(
             authenticate_mcp_http_request(options(), &headers),
             Err(McpHttpAuthError::Http { status: 403, .. })

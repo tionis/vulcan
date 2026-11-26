@@ -8830,7 +8830,11 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.9 Authorization
 
-- [ ] Remove direct local OAuth and external resource-server mode and `X-Vulcan-Token`; single `mcp` scope; PRM `resource_name`; challenges with `scope`; RFC 9207 `iss`; constant-time comparisons; CIMD streaming cap, cache and address normalization.
+- [x] Static MCP tokens only as `Authorization: Bearer` (`X-Vulcan-Token` no longer read by MCP; `vulcan serve` and the vault REST API keep it), compared in constant time.
+- [ ] Remove external resource-server mode.
+- [ ] Remove direct local OAuth (approval token, static client, direct IndieAuth flags); named remotes keep the issuer.
+- [ ] Single `mcp` scope; PRM `resource_name`; challenges with `scope` (no `error` without a token); RFC 9207 `iss`.
+- [ ] CIMD streaming cap, cache and address normalization.
 
 ### 9.43.10 Protocol 2026-07-28
 
