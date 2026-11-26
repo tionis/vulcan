@@ -11164,10 +11164,8 @@ fn dataview_query_js_json_output_evaluates_snippets() {
     assert_eq!(json["outputs"][1]["kind"], "query");
     assert_eq!(json["outputs"][1]["result"]["query_type"], "table");
     assert_eq!(json["outputs"][1]["result"]["result_count"], 2);
-    assert_eq!(
-        json["value"]["query_type"],
-        Value::String("table".to_string())
-    );
+    // As in Dataview, `dv.execute()` renders the query and resolves to nothing.
+    assert!(json["value"].is_null(), "unexpected value: {}", json["value"]);
 }
 
 #[test]

@@ -1249,12 +1249,16 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
   **Query methods:**
   - `dv.pages(source?)` — returns DataArray of page objects matching a DQL FROM source (or all pages)
   - `dv.page(path)` — returns a single page's metadata object
-  - `dv.current()` — returns the current note's metadata (`this` equivalent)
-  - `dv.query(dql, [file], [settings])` — evaluate DQL, return `{ successful: boolean, value: result | error: string }`
-  - `dv.tryQuery(dql, [file], [settings])` — like `dv.query()` but throws on failure instead of returning error
-  - `dv.queryMarkdown(dql, [file], [settings])` — evaluate DQL, return rendered Markdown string
-  - `dv.tryQueryMarkdown(dql, [file], [settings])` — like `dv.queryMarkdown()` but throws on failure
+  - `dv.current()` — returns the current note's metadata (`this` equivalent); `dv.currentFilePath` is its path
+  - `dv.pagePaths(source?)` — DataArray of the paths `dv.pages(source)` would return
+  - The query methods are asynchronous, as in Dataview, and return promises; `vault.query()` is the synchronous equivalent:
+  - `dv.query(dql, [file], [settings])` — evaluate DQL, resolve to `{ successful: boolean, value: result | error: string }`
+  - `dv.tryQuery(dql, [file], [settings])` — like `dv.query()` but rejects on failure and resolves to the result
+  - `dv.queryMarkdown(dql, [file], [settings])` — evaluate DQL, resolve to `{ successful, value: markdown | error }`
+  - `dv.tryQueryMarkdown(dql, [file], [settings])` — like `dv.queryMarkdown()` but rejects on failure and resolves to the Markdown
   - `dv.execute(dql)` — shorthand: evaluate DQL and render results directly (equivalent to `dv.tryQuery()` + render)
+  - `dv.executeJs(code)` — run code as a nested DataviewJS block
+  - `dv.evaluate(expression, [context])` — evaluate a Dataview expression whose fields come from `context` and whose `this` is the current page, returning `{ successful, value | error }`; `dv.tryEvaluate()` throws on failure instead
 
   **Render methods:**
   - `dv.table(headers, rows)` — renders a table (CLI: columnar output; JSON: array-of-objects)
@@ -1267,18 +1271,19 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
   - `dv.container` — reference to the output container (in CLI: output buffer object; in WebUI: DOM element)
 
   **I/O methods:**
-  - `dv.io.load(path)` — read a note's content as string (read-only, within vault boundary only)
-  - `dv.io.csv(path, [originFile])` — load and parse a CSV file, return DataArray of row objects
+  - `dv.io.load(path)` — read a note's content, resolving to a string (read-only, within vault boundary only)
+  - `dv.io.csv(path, [originFile])` — load and parse a CSV file, resolving to a DataArray of row objects
   - `dv.io.normalize(path, [originFile])` — resolve a vault-relative path
 
   **View loading:**
-  - `dv.view(path, [input])` — load and execute an external JS file from the vault. `path` is relative to vault root. Optional `input` object is available to the loaded script. Associated CSS file (`<path>.css`) is loaded if present. Vault-boundary enforcement applies (cannot load from outside vault).
+  - `dv.view(path, [input])` — load and execute an external JS file from the vault, as an async function when it uses `await`, returning a promise. `path` is relative to vault root. Optional `input` object is available to the loaded script. Associated CSS file (`<path>.css`) is loaded if present. Vault-boundary enforcement applies (cannot load from outside vault).
 
   **Utility methods:**
   - `dv.date(input)`, `dv.duration(input)` — type constructors matching DQL
   - `dv.compare(a, b)` — Dataview comparison semantics (returns -1, 0, 1)
   - `dv.equal(a, b)` — Dataview equality semantics (returns boolean)
   - `dv.clone(value)` — deep clone a value
+  - `dv.markdownTable(headers, rows)`, `dv.markdownList(values)`, `dv.markdownTaskList(tasks)` — render values to Markdown text as Dataview's export does
   - `dv.func` — namespace exposing all DQL built-in functions (e.g., `dv.func.contains()`)
   - `dv.luxon` — expose the Luxon DateTime/Duration API (or Vulcan's equivalent date library)
 
@@ -1288,6 +1293,8 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
   - Swizzling: `dataArray.field` auto-maps and flattens (e.g., `dv.pages().file.name` returns DataArray of filenames). Chained swizzling (`array.field.subfield`) maps through nested objects.
 
 - Page objects returned by `dv.pages()` expose the same fields as DQL queries: frontmatter, inline fields, and the full `file.*` namespace.
+- A promise rejected with no handler fails the evaluation with its error once pending jobs have run, where Obsidian would only log it to the console.
+- `tests/fixtures/vaults/dataview-probe/` holds a note that reports the types and shapes Dataview gives scripts; `tests/fixtures/dataview-probe-obsidian.json` is its output in Obsidian, and a test compares Vulcan's output against it with the remaining divergences listed.
 - CLI surface: `vulcan dataview eval <file> [--block <n>]` evaluates DataviewJS blocks when the feature is compiled in; `vulcan dataview query-js <js-string>` evaluates a JS snippet directly.
 - Build: `js_runtime` is enabled by default. To exclude the JS runtime from the CLI binary: `cargo build --release -p vulcan-cli --no-default-features`.
 

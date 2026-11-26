@@ -519,6 +519,52 @@ mod runtime {
     const DATAVIEW_JS_PRELUDE: &str = r##"
 const __vulcanDeterministicStatic = Boolean(globalThis.__vulcan_deterministic_static);
 
+// Promises rejected with no handler yet; the host rethrows the first one
+// once pending jobs have run.
+const __vulcanUnhandledRejections = new Map();
+
+function __vulcanTrackRejection(promise, reason, handled) {
+  if (handled) {
+    __vulcanUnhandledRejections.delete(promise);
+  } else {
+    __vulcanUnhandledRejections.set(promise, reason);
+  }
+}
+
+// The completion value of an evaluation that ended in a promise.
+let __vulcanResult;
+
+function __vulcanAwaitResult(promise, wrapped) {
+  __vulcanResult = { pending: true };
+  promise.then(
+    (value) => {
+      __vulcanResult = { value: wrapped ? value?.value : value };
+    },
+    (error) => {
+      __vulcanResult = { error };
+    }
+  );
+}
+
+function __vulcanTakeResult() {
+  const result = __vulcanResult;
+  __vulcanResult = undefined;
+  if (!result || result.pending) {
+    return undefined;
+  }
+  if ("error" in result) {
+    throw result.error;
+  }
+  return result.value;
+}
+
+function __vulcanThrowUnhandledRejection() {
+  for (const reason of __vulcanUnhandledRejections.values()) {
+    __vulcanUnhandledRejections.clear();
+    throw reason;
+  }
+}
+
 function __vulcanStaticTimeError(operation) {
   throw new Error(`DataviewJS static mode does not allow wall-clock time via ${operation}; pass an explicit date or timestamp instead.`);
 }
@@ -1464,6 +1510,162 @@ class VulcanDuration {
   }
 }
 
+function __vulcanQuerySync(dql, file) {
+  return JSON.parse(__vulcan_query_json(dql, file));
+}
+
+function __vulcanTryQuerySync(dql, file) {
+  const result = __vulcanQuerySync(dql, file);
+  if (!result.successful) {
+    throw new Error(result.error ?? "Dataview query failed");
+  }
+  return result.value;
+}
+
+const __vulcanDataviewSettings = {
+  renderNullAs: "\\-",
+  defaultDateFormat: "MMMM dd, yyyy",
+  defaultDateTimeFormat: "h:mm a - MMMM dd, yyyy",
+  ...JSON.parse(globalThis.__vulcan_dataview_settings_json ?? "{}"),
+};
+
+// Dataview's Values.toString: how a value reads in rendered Markdown.
+function __vulcanValueToString(value, recursive = false) {
+  if (value == null) {
+    return __vulcanDataviewSettings.renderNullAs;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "function") {
+    return "<function>";
+  }
+  if (value instanceof VulcanDateTime) {
+    const dateOnly = value.hour === 0 && value.minute === 0 && value.second === 0;
+    return value.toFormat(
+      dateOnly
+        ? __vulcanDataviewSettings.defaultDateFormat
+        : __vulcanDataviewSettings.defaultDateTimeFormat
+    );
+  }
+  if (value instanceof VulcanDuration || value.__vulcanDuration === true) {
+    return String(value);
+  }
+  if (value instanceof DataArray || Array.isArray(value)) {
+    const inner = __vulcanAsArray(value)
+      .map((item) => __vulcanValueToString(item, true))
+      .join(", ");
+    return recursive ? `[${inner}]` : inner;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value).map(
+      ([key, item]) => `${key}: ${__vulcanValueToString(item, true)}`
+    );
+    return `{ ${entries.join(", ")} }`;
+  }
+  return String(value);
+}
+
+// Dataview's markdownTable: padded columns, with arrays and objects as HTML lists.
+function __vulcanMarkdownTable(headers, rows) {
+  if (rows.length > 0 && headers.length !== rows[0].length) {
+    throw new Error(
+      `The number of headers (${headers.length}) must match the number of columns (${rows[0].length})`
+    );
+  }
+  const escape = (text) => String(text).split(/(?!\\)\|/i).join("\\|");
+  const literal = (value) => {
+    if (value instanceof DataArray || Array.isArray(value)) {
+      return `<ul>${__vulcanAsArray(value).map((item) => `<li>${escape(literal(item))}</li>`).join("")}</ul>`;
+    }
+    if (
+      value &&
+      typeof value === "object" &&
+      !(value instanceof VulcanDateTime) &&
+      !(value instanceof VulcanDuration) &&
+      value.__vulcanDuration !== true
+    ) {
+      const inner = Object.entries(value)
+        .map(([key, item]) => `<li><b>${escape(key)}</b>: ${escape(literal(item))}</li>`)
+        .join("");
+      return `<ul>${inner}</ul>`;
+    }
+    return __vulcanValueToString(value);
+  };
+  const pad = (text, padding, length) =>
+    text.length >= length ? text : text + padding.repeat(length - text.length);
+  const widths = headers.map((header) => escape(header).length);
+  const cells = rows.map((row) =>
+    row.map((value, column) => {
+      const text = escape(literal(value));
+      widths[column] = Math.max(widths[column] ?? 0, text.length);
+      return text;
+    })
+  );
+  let table = `| ${headers.map((header, column) => pad(escape(header), " ", widths[column])).join(" | ")} |\n`;
+  table += `| ${widths.map((width) => pad("", "-", width)).join(" | ")} |\n`;
+  for (const row of cells) {
+    table += `| ${row.map((text, column) => pad(text, " ", widths[column])).join(" | ")} |\n`;
+  }
+  return table;
+}
+
+// Dataview's markdownList: nested arrays and objects indent by four spaces.
+function __vulcanMarkdownList(input, depth) {
+  if (input instanceof DataArray || Array.isArray(input)) {
+    let result = depth === 0 ? "" : "\n";
+    for (const value of __vulcanAsArray(input)) {
+      result += `${"    ".repeat(depth)}- ${__vulcanMarkdownList(value, depth)}\n`;
+    }
+    return result;
+  }
+  if (
+    input &&
+    typeof input === "object" &&
+    !(input instanceof VulcanDateTime) &&
+    !(input instanceof VulcanDuration) &&
+    input.__vulcanDuration !== true
+  ) {
+    let result = depth === 0 ? "" : "\n";
+    for (const [key, value] of Object.entries(input)) {
+      result += `${"    ".repeat(depth)}- ${key}: ${__vulcanMarkdownList(value, depth)}\n`;
+    }
+    return result;
+  }
+  return __vulcanValueToString(input);
+}
+
+// Dataview's markdownTaskList: groups become headings, and items listed under
+// a parent that is also present render only beneath it.
+function __vulcanMarkdownTaskList(items, depth) {
+  if (items.length > 0 && items.every((item) => item && "key" in item && "rows" in item)) {
+    let result = "";
+    for (const group of items) {
+      result += `${"#".repeat(depth + 1)} ${__vulcanValueToString(group.key)}\n\n`;
+      result += __vulcanMarkdownTaskList(__vulcanAsArray(group.rows), depth + 1);
+    }
+    return result;
+  }
+  const lineKey = (item, line) => `${item.path ?? ""}:${line}`;
+  const present = new Set(items.map((item) => lineKey(item, item.line)));
+  let result = "";
+  for (const item of items) {
+    if (item.parent != null && present.has(lineKey(item, item.parent))) {
+      continue;
+    }
+    const text = String(item.visual ?? item.text ?? "").split("\n").join(" ");
+    result += `${"    ".repeat(depth)}- ${item.task ? `[${item.status ?? " "}] ` : ""}${text}\n`;
+    const children = __vulcanAsArray(item.children).filter(
+      (child) => child && typeof child === "object"
+    );
+    result += __vulcanMarkdownTaskList(children, depth + 1);
+  }
+  return result;
+}
+
 function __vulcanRenderQueryMarkdown(result) {
   if (!result) {
     return "";
@@ -2086,26 +2288,47 @@ const dv = {
   current() {
     return __vulcanRevivePage(JSON.parse(__vulcan_current_json()));
   },
-  query(dql, file, _settings) {
-    return JSON.parse(__vulcan_query_json(dql, file));
+  pagePaths(source) {
+    return new DataArray(__vulcanLazyPages(source).map((page) => page.file.path));
   },
-  tryQuery(dql, file, settings) {
-    const result = dv.query(dql, file, settings);
+  // Dataview's query functions are asynchronous; `vault.query()` is the
+  // synchronous equivalent.
+  async query(dql, file, _settings) {
+    return __vulcanQuerySync(dql, file);
+  },
+  async tryQuery(dql, file, _settings) {
+    return __vulcanTryQuerySync(dql, file);
+  },
+  async queryMarkdown(dql, file, _settings) {
+    const result = __vulcanQuerySync(dql, file);
+    return result.successful
+      ? { successful: true, value: __vulcanRenderQueryMarkdown(result.value) }
+      : result;
+  },
+  async tryQueryMarkdown(dql, file, _settings) {
+    return __vulcanRenderQueryMarkdown(__vulcanTryQuerySync(dql, file));
+  },
+  async execute(dql) {
+    const result = __vulcanTryQuerySync(dql);
+    __vulcan_emit(JSON.stringify({ kind: "query", result }));
+  },
+  async executeJs(code) {
+    return __vulcanPrivateEval(`(async () => {${code}\n})()`);
+  },
+  evaluate(expression, context) {
+    return JSON.parse(
+      __vulcan_evaluate_json(
+        String(expression),
+        context == null ? null : __vulcanSerialize(context)
+      )
+    );
+  },
+  tryEvaluate(expression, context) {
+    const result = dv.evaluate(expression, context);
     if (!result.successful) {
-      throw new Error(result.error ?? "Dataview query failed");
+      throw new Error(result.error);
     }
     return result.value;
-  },
-  queryMarkdown(dql, file, settings) {
-    return __vulcanRenderQueryMarkdown(dv.tryQuery(dql, file, settings));
-  },
-  tryQueryMarkdown(dql, file, settings) {
-    return dv.queryMarkdown(dql, file, settings);
-  },
-  execute(dql) {
-    const result = dv.tryQuery(dql);
-    __vulcan_emit(JSON.stringify({ kind: "query", result }));
-    return result;
   },
   table(headers, rows) {
     const normalizedRows = __vulcanAsArray(rows).map((row) => __vulcanAsArray(row).map(__vulcanPlain));
@@ -2141,22 +2364,25 @@ const dv = {
     },
   },
   io: {
-    load(path) {
+    async load(path, _originFile) {
       return __vulcan_load(path);
     },
-    csv(path, originFile) {
+    async csv(path, originFile) {
       return new DataArray(JSON.parse(__vulcan_csv_json(path, originFile)));
     },
     normalize(path, originFile) {
       return __vulcan_normalize(path, originFile);
     },
   },
-  view(path, input) {
+  // Dataview runs a view as an async function when it uses `await`.
+  async view(path, input) {
     const source = __vulcan_load_view(path);
     const previousInput = globalThis.input;
     try {
       globalThis.input = input ?? null;
-      return __vulcanPrivateEval(source);
+      return await __vulcanPrivateEval(
+        source.includes("await") ? `(async () => {${source}\n})()` : source
+      );
     } finally {
       globalThis.input = previousInput;
     }
@@ -2216,6 +2442,19 @@ const dv = {
   clone(value) {
     return JSON.parse(__vulcanSerialize(value));
   },
+  markdownTable(headers, values, _settings) {
+    return __vulcanMarkdownTable(
+      __vulcanAsArray(headers ?? []),
+      __vulcanAsArray(values ?? []).map(__vulcanAsArray)
+    );
+  },
+  markdownList(values, _settings) {
+    return __vulcanMarkdownList(__vulcanAsArray(values ?? []), 0);
+  },
+  markdownTaskList(tasks, _settings) {
+    return __vulcanMarkdownTaskList(__vulcanAsArray(tasks ?? []), 0);
+  },
+  currentFilePath: globalThis.__vulcan_current_file ?? "",
   func: null,
   luxon: {
     DateTime: VulcanDateTime,
@@ -2670,7 +2909,7 @@ const vault = {
     if (dql == null) {
       return new VaultQueryBuilder();
     }
-    return dv.tryQuery(dql, opts?.file ?? null, opts);
+    return __vulcanTryQuerySync(dql, opts?.file ?? null);
   },
   search(query, opts = {}) {
     if (query == null) {
@@ -3551,9 +3790,17 @@ __vulcanRegisterHelp(
   dv.header(level, text)   — render a heading (level 1-6)
   dv.span(text)            — render inline text
   dv.el(tag, text, attrs?) — render an arbitrary HTML element
+  dv.pagePaths(source?)    — DataArray of matching page paths
+  await dv.query(dql)      — run DQL, resolving to { successful, value | error }
+  await dv.tryQuery(dql)   — run DQL, resolving to the result or rejecting
+  await dv.queryMarkdown(dql) — run DQL, resolving to rendered Markdown
   dv.execute(dql)          — run a DQL query and emit its output
-  dv.io.csv(path)          — load a CSV file as DataArray
-  dv.io.load(path)         — load a file as raw text
+  dv.evaluate(expr, ctx?)  — evaluate a Dataview expression ({ successful, value })
+  dv.tryEvaluate(expr, ctx?) — evaluate a Dataview expression, throwing on failure
+  dv.markdownTable(headers, rows) — render rows as Markdown table text
+  dv.markdownList(values)  — render values as Markdown list text
+  await dv.io.csv(path)    — load a CSV file as DataArray
+  await dv.io.load(path)   — load a file as raw text
   dv.func.*                — DataviewJS utility functions (date, duration, etc.)
   dv.luxon.*               — Luxon DateTime and Duration classes
 
@@ -3864,8 +4111,29 @@ globalThis.this = dv.current();
 
             let context = Context::full(&runtime)
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            runtime.set_host_promise_rejection_tracker(Some(Box::new(
+                |ctx, promise, reason, handled| {
+                    if let Ok(track) = ctx
+                        .globals()
+                        .get::<_, rquickjs::Function>("__vulcanTrackRejection")
+                    {
+                        let _ = track.call::<_, ()>((promise, reason, handled));
+                    }
+                },
+            )));
             context.with(|ctx| -> Result<(), DataviewJsError> {
                 install_dataview_globals(ctx.clone(), Arc::clone(&state), Arc::clone(&outputs))?;
+                ctx.globals()
+                    .set(
+                        "__vulcan_dataview_settings_json",
+                        serde_json::json!({
+                            "defaultDateFormat": loaded_config.dataview.default_date_format,
+                            "defaultDateTimeFormat":
+                                loaded_config.dataview.default_datetime_format,
+                        })
+                        .to_string(),
+                    )
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
                 ctx.eval::<(), _>(DATAVIEW_JS_PRELUDE)
                     .catch(&ctx)
                     .map_err(|error| map_caught_runtime_error(&error, &timeout_description))?;
@@ -3988,7 +4256,19 @@ globalThis.this = dv.current();
             let drain_result = drain_pending_jobs(&self.runtime, &timeout_description);
             self.runtime.set_interrupt_handler(None);
             drain_result?;
-            let value = eval_result?;
+            let value = match eval_result? {
+                EvaluatedValue::Ready(value) => value,
+                EvaluatedValue::Awaiting => self
+                    .context
+                    .with(|ctx| take_awaited_value(&ctx, &timeout_description))?,
+            };
+            // A promise rejected with no handler fails the evaluation, as an
+            // uncaught exception would, instead of vanishing.
+            self.context.with(|ctx| {
+                ctx.eval::<(), _>("__vulcanThrowUnhandledRejection()")
+                    .catch(&ctx)
+                    .map_err(|error| map_caught_runtime_error(&error, &timeout_description))
+            })?;
             let outputs = self.outputs.lock().map_err(|_| {
                 DataviewJsError::Message("DataviewJS output lock poisoned".to_string())
             })?;
@@ -4059,6 +4339,9 @@ globalThis.this = dv.current();
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         globals
             .set("__vulcan_rendering", state.read_only)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        globals
+            .set("__vulcan_current_file", state.current_file.clone())
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
         globals
@@ -4479,6 +4762,77 @@ globalThis.this = dv.current();
                         };
                     to_json_string(&ctx, response)
                 }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        // dv.evaluate(): a Dataview expression whose fields come from the
+        // context object and whose `this` is the current page.
+        let evaluate_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_evaluate_json",
+                Func::from(
+                    move |ctx: Ctx<'_>, expression: String, context_json: Option<String>| {
+                        let fields = match context_json
+                            .as_deref()
+                            .map(serde_json::from_str::<Value>)
+                            .transpose()
+                        {
+                            Ok(Some(Value::Object(fields))) => fields,
+                            Ok(_) => Map::new(),
+                            Err(error) => {
+                                return Err(Exception::throw_message(&ctx, &error.to_string()))
+                            }
+                        };
+                        with_note_index(
+                            &evaluate_state,
+                            &ctx,
+                            |_| {
+                                Ok((
+                                    IndexNeed::Paths(
+                                        evaluate_state.current_file.iter().cloned().collect(),
+                                    ),
+                                    (),
+                                ))
+                            },
+                            |note_index, ()| {
+                                let notes = &note_index.notes;
+                                let row = crate::dql::eval::synthetic_group_note(&fields);
+                                let formulas = std::collections::BTreeMap::new();
+                                let this_note = evaluate_state
+                                    .current_file
+                                    .as_deref()
+                                    .and_then(|path| note_index.note(path));
+                                let mut eval_ctx = crate::expression::eval::EvalContext::new(
+                                    &row, &formulas,
+                                )
+                                .with_note_lookup(notes)
+                                .with_this_null_when_missing();
+                                if let Some(this_note) = this_note {
+                                    eval_ctx = eval_ctx.with_this_note(this_note);
+                                }
+                                let result = crate::expression::parse_expression(&expression)
+                                    .map_err(|error| {
+                                        format!("Failed to parse expression \"{expression}\": {error}")
+                                    })
+                                    .and_then(|expr| {
+                                        crate::expression::eval::evaluate(&expr, &eval_ctx)
+                                    });
+                                to_json_string(
+                                    &ctx,
+                                    match result {
+                                        Ok(value) => {
+                                            serde_json::json!({ "successful": true, "value": value })
+                                        }
+                                        Err(error) => {
+                                            serde_json::json!({ "successful": false, "error": error })
+                                        }
+                                    },
+                                )
+                            },
+                        )
+                    },
+                ),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
@@ -6989,17 +7343,56 @@ globalThis.this = dv.current();
         source: &str,
         strict: bool,
         timeout_description: &str,
-    ) -> Result<Option<Value>, DataviewJsError> {
+    ) -> Result<EvaluatedValue, DataviewJsError> {
         // `EvalOptions` is non-exhaustive, so it can only be built by
         // changing a default.
         #[allow(clippy::field_reassign_with_default)]
+        let top_level_await = uses_await(source);
         let options = {
             let mut options = EvalOptions::default();
             options.strict = strict;
+            options.promise = top_level_await;
             options
         };
         let value: JsValue<'js> = ctx
             .eval_with_options(source, options)
+            .catch(ctx)
+            .map_err(|error| map_caught_runtime_error(&error, timeout_description))?;
+        // A promise completion value (always the case with top-level
+        // `await`, which wraps the value as `{ value }`) settles once pending
+        // jobs have run; `take_awaited_value` reads it then.
+        if value.is_promise() {
+            let await_fn: rquickjs::Function<'js> = ctx
+                .globals()
+                .get("__vulcanAwaitResult")
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            await_fn
+                .call::<_, ()>((value, top_level_await))
+                .catch(ctx)
+                .map_err(|error| map_caught_runtime_error(&error, timeout_description))?;
+            return Ok(EvaluatedValue::Awaiting);
+        }
+        if value.is_undefined() {
+            Ok(EvaluatedValue::Ready(None))
+        } else {
+            serialize_value(ctx, value, timeout_description)
+                .map(|value| EvaluatedValue::Ready(Some(value)))
+        }
+    }
+
+    enum EvaluatedValue {
+        Ready(Option<Value>),
+        /// A promise handed to `__vulcanAwaitResult`.
+        Awaiting,
+    }
+
+    /// The settled value of the promise `evaluate_value` left awaiting.
+    fn take_awaited_value(
+        ctx: &Ctx<'_>,
+        timeout_description: &str,
+    ) -> Result<Option<Value>, DataviewJsError> {
+        let value: JsValue<'_> = ctx
+            .eval("__vulcanTakeResult()")
             .catch(ctx)
             .map_err(|error| map_caught_runtime_error(&error, timeout_description))?;
         if value.is_undefined() {
@@ -7445,9 +7838,11 @@ globalThis.this = dv.current();
             let result = evaluate_dataview_js_with_options(
                 &paths,
                 r#"
-                const rows = dv.io.csv("data/owners.csv");
-                dv.paragraph(rows.where((row) => row.role === "editor").name.array().join(", "));
-                dv.view("views/status-table.js", { title: "Statuses" });
+                (async () => {
+                  const rows = await dv.io.csv("data/owners.csv");
+                  dv.paragraph(rows.where((row) => row.role === "editor").name.array().join(", "));
+                  await dv.view("views/status-table.js", { title: "Statuses" });
+                })();
                 "#,
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
@@ -7477,6 +7872,136 @@ globalThis.this = dv.current();
         }
 
         #[test]
+        fn dataviewjs_exposes_dataview_helper_members() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const failed = dv.evaluate("1 +");
+                let thrown = null;
+                try { dv.tryEvaluate("1 +"); } catch (error) { thrown = error.message; }
+                ({
+                  path: dv.currentFilePath,
+                  pagePaths: dv.pagePaths('"Projects"').sort().array(),
+                  sum: dv.tryEvaluate("a + b", { a: 2, b: 3 }),
+                  thisStatus: dv.tryEvaluate("this.status"),
+                  failed: failed.successful,
+                  thrownMatches: thrown === failed.error,
+                  table: dv.markdownTable(["Name", "N"], [["Alpha", 1], ["B|eta", [1, 2]]]),
+                  list: dv.markdownList([1, [2, 3], { a: null }]),
+                  tasks: dv.markdownTaskList([
+                    { key: "Group", rows: [
+                      { path: "a.md", line: 1, task: true, status: "x", text: "Parent",
+                        children: [{ path: "a.md", line: 2, parent: 1, task: true, status: " ", text: "Child", children: [] }] },
+                      { path: "a.md", line: 2, parent: 1, task: true, status: " ", text: "Child", children: [] },
+                    ] },
+                  ]),
+                  queryIsPromise: dv.query("LIST") instanceof Promise,
+                  loadIsPromise: dv.io.load("Dashboard.md").catch(() => null) instanceof Promise,
+                })
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            assert_eq!(
+                result.value,
+                Some(serde_json::json!({
+                    "path": "Dashboard.md",
+                    "pagePaths": ["Projects/Alpha.md", "Projects/Beta.md"],
+                    "sum": 5,
+                    "thisStatus": "draft",
+                    "failed": false,
+                    "thrownMatches": true,
+                    "table": "| Name   | N                             |\n\
+                              | ------ | ----------------------------- |\n\
+                              | Alpha  | 1                             |\n\
+                              | B\\|eta | <ul><li>1</li><li>2</li></ul> |\n",
+                    // Dataview passes the same depth to nested values, so
+                    // they render as a run-on item, and indents group rows.
+                    "list": "- 1\n- - 2\n- 3\n\n- - a: \\-\n\n",
+                    "tasks": "# Group\n\n    - [x] Parent\n        - [ ] Child\n",
+                    "queryIsPromise": true,
+                    "loadIsPromise": true,
+                }))
+            );
+        }
+
+        #[test]
+        fn dataviewjs_reports_unhandled_rejections_and_awaits_views() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            fs::write(
+                vault_root.join("views/awaiting.js"),
+                "const markdown = await dv.tryQueryMarkdown('LIST FROM \"Projects\" SORT file.name ASC');\n\
+                 dv.paragraph(input.prefix + markdown.split('\\n').length);\n",
+            )
+            .expect("view should be written");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let options = || DataviewJsEvalOptions {
+                sandbox: Some(JsRuntimeSandbox::Fs),
+                ..DataviewJsEvalOptions::default()
+            };
+
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                "(async () => { throw new Error('lost in a promise'); })();",
+                Some("Dashboard.md"),
+                options(),
+            )
+            .expect_err("an unhandled rejection should fail the evaluation");
+            assert!(
+                error.to_string().contains("lost in a promise"),
+                "unexpected error: {error}"
+            );
+
+            let handled = evaluate_dataview_js_with_options(
+                &paths,
+                "dv.tryQuery('NOT A QUERY').catch(() => dv.paragraph('caught'));\n\
+                 dv.view('views/awaiting.js', { prefix: 'lines: ' });",
+                Some("Dashboard.md"),
+                options(),
+            )
+            .expect("handled rejections and awaiting views should evaluate");
+
+            let awaited = evaluate_dataview_js_with_options(
+                &paths,
+                "const result = await dv.query('LIST FROM \"Projects\"');\n\
+                 result.successful",
+                Some("Dashboard.md"),
+                options(),
+            )
+            .expect("top-level await should evaluate");
+            assert_eq!(awaited.value, Some(Value::Bool(true)));
+            let promised = evaluate_dataview_js_with_options(
+                &paths,
+                "dv.io.load('views/awaiting.js').then((text) => text.startsWith('const'))",
+                Some("Dashboard.md"),
+                options(),
+            )
+            .expect("a promise completion value should settle");
+            assert_eq!(promised.value, Some(Value::Bool(true)));
+            assert_eq!(
+                handled.outputs,
+                vec![
+                    DataviewJsOutput::Paragraph {
+                        text: "caught".to_string(),
+                    },
+                    DataviewJsOutput::Paragraph {
+                        text: "lines: 2".to_string(),
+                    },
+                ]
+            );
+        }
+
+        #[test]
         fn dataviewjs_supports_query_markdown_and_return_values() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
@@ -7489,7 +8014,7 @@ globalThis.this = dv.current();
             let result = evaluate_dataview_js_query(
                 &paths,
                 r#"
-                dv.paragraph(dv.queryMarkdown('LIST FROM "Projects" SORT file.name ASC'));
+                dv.tryQueryMarkdown('LIST FROM "Projects" SORT file.name ASC').then(dv.paragraph);
                 dv.current().status
                 "#,
                 Some("Dashboard.md"),
@@ -9454,32 +9979,18 @@ shell = "allow"
             ".behaviour.frontmatterLinkKind",
             ".behaviour.inlineDurationKind",
             ".behaviour.inlinkSource",
-            ".behaviour.ioLoadIsPromise",
-            ".behaviour.markdownList",
-            ".behaviour.markdownTable",
             ".behaviour.mtimeKind",
             ".behaviour.pageByLink",
-            ".behaviour.pagePaths",
             ".behaviour.parseDate",
             ".behaviour.parseLink",
-            ".behaviour.queryIsPromise",
             ".behaviour.queryMarkdown",
             ".behaviour.sectionLink",
-            ".behaviour.tryEvaluate",
             ".behaviour.whereStatus",
             ".dvMembers.blockLink",
-            ".dvMembers.currentFilePath",
-            ".dvMembers.evaluate",
-            ".dvMembers.executeJs",
             ".dvMembers.fileLink",
             ".dvMembers.literal",
-            ".dvMembers.markdownList",
-            ".dvMembers.markdownTable",
-            ".dvMembers.markdownTaskList",
-            ".dvMembers.pagePaths",
             ".dvMembers.parse",
             ".dvMembers.sectionLink",
-            ".dvMembers.tryEvaluate",
             ".fileKeys.ctime",
             ".fileKeys.inlinks",
             ".fileKeys.link",

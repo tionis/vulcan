@@ -1461,7 +1461,7 @@ fn group_keys_equal(left: &Value, right: &Value) -> bool {
     compare_values(left, right) == Some(Ordering::Equal) || left == right
 }
 
-fn synthetic_group_note(fields: &Map<String, Value>) -> NoteRecord {
+pub(crate) fn synthetic_group_note(fields: &Map<String, Value>) -> NoteRecord {
     NoteRecord {
         document_id: String::new(),
         document_path: String::new(),
