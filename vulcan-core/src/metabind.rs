@@ -1704,12 +1704,13 @@ fn render_declaration<S: std::hash::BuildHasher>(
 
 /// Now as a date or time input shows it, in the device's time zone.
 fn now_value(input_type: &str, now_ms: i64, preferred_date_format: &str) -> Option<Value> {
-    let local = crate::expression::value::DataviewTimeZone::System.localize_utc_ms(now_ms);
-    let now = chrono::DateTime::from_timestamp_millis(local)?.naive_utc();
+    let now = jiff::Timestamp::from_millisecond(now_ms)
+        .ok()?
+        .to_zoned(jiff::tz::TimeZone::system());
     let text = match input_type {
-        "date" => now.format("%Y-%m-%d").to_string(),
-        "time" => now.format("%H:%M").to_string(),
-        "dateTime" => now.format("%Y-%m-%dT%H:%M").to_string(),
+        "date" => now.strftime("%Y-%m-%d").to_string(),
+        "time" => now.strftime("%H:%M").to_string(),
+        "dateTime" => now.strftime("%Y-%m-%dT%H:%M").to_string(),
         "datePicker" => moment_date(now.date(), preferred_date_format),
         _ => return None,
     };
@@ -1718,8 +1719,7 @@ fn now_value(input_type: &str, now_ms: i64, preferred_date_format: &str) -> Opti
 
 /// `date` in a Moment.js format's year, month, and day tokens (`YYYY`,
 /// `YY`, `MM`, `M`, `DD`, `D`); `[...]` is literal text, as in Moment.
-fn moment_date(date: chrono::NaiveDate, format: &str) -> String {
-    use chrono::Datelike;
+fn moment_date(date: jiff::civil::Date, format: &str) -> String {
     let mut out = String::new();
     let mut rest = if format.is_empty() {
         "YYYY-MM-DD"
@@ -1739,7 +1739,7 @@ fn moment_date(date: chrono::NaiveDate, format: &str) -> String {
             .find(|token| rest.starts_with(token));
         match token {
             Some("YYYY") => write!(out, "{:04}", date.year()),
-            Some("YY") => write!(out, "{:02}", date.year().rem_euclid(100)),
+            Some("YY") => write!(out, "{:02}", i32::from(date.year()).rem_euclid(100)),
             Some("MM") => write!(out, "{:02}", date.month()),
             Some("M") => write!(out, "{}", date.month()),
             Some("DD") => write!(out, "{:02}", date.day()),
@@ -2530,12 +2530,9 @@ mod tests {
             now_ms: Some(1_700_000_000_000),
             paths: None,
         });
+        assert!(now[0].parse::<jiff::civil::Date>().is_ok(), "{now:?}");
         assert!(
-            chrono::NaiveDate::parse_from_str(&now[0], "%Y-%m-%d").is_ok(),
-            "{now:?}"
-        );
-        assert!(
-            chrono::NaiveTime::parse_from_str(&now[1], "%H:%M").is_ok(),
+            now[1].len() == 5 && now[1].parse::<jiff::civil::Time>().is_ok(),
             "{now:?}"
         );
         assert_eq!(now[2], "2020-01-02", "a stored value wins over now");
@@ -2543,7 +2540,7 @@ mod tests {
 
     #[test]
     fn moment_date_formats_follow_the_tokens() {
-        let date = chrono::NaiveDate::from_ymd_opt(2026, 3, 7).expect("date");
+        let date = jiff::civil::date(2026, 3, 7);
         assert_eq!(moment_date(date, "YYYY-MM-DD"), "2026-03-07");
         assert_eq!(moment_date(date, "D.M.YY"), "7.3.26");
         assert_eq!(moment_date(date, "[Day] DD/MM/YYYY"), "Day 07/03/2026");
