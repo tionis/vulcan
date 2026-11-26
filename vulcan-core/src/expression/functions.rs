@@ -2268,72 +2268,116 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 /// Format a date timestamp using a subset of Moment.js tokens.
+/// Copy the quoted literal starting at `chars[start]` (a `'`) into
+/// `rendered`, where `''` stands for a quote, and return the index after it.
+fn push_quoted_format_literal(chars: &[char], start: usize, rendered: &mut String) -> usize {
+    let mut index = start + 1;
+    if chars.get(index) == Some(&'\'') {
+        rendered.push('\'');
+        return index + 1;
+    }
+    while index < chars.len() {
+        if chars[index] == '\'' {
+            if chars.get(index + 1) == Some(&'\'') {
+                rendered.push('\'');
+                index += 2;
+                continue;
+            }
+            return index + 1;
+        }
+        rendered.push(chars[index]);
+        index += 1;
+    }
+    index
+}
+
+/// Format a timestamp with Luxon's `toFormat` tokens, in UTC and English:
+/// runs of one letter form a token (`yyyy`, `MMMM`, `h`, `a`, ...), text in
+/// single quotes is literal (`''` is a quote), and other characters pass
+/// through. `YYYY`, `YY`, `DD`, and `D` keep Vulcan's year and day meanings.
 #[must_use]
 pub fn format_date(ms: i64, format: &str) -> String {
     let (year, month, day, hour, minute, second, millisecond) = date_components(ms);
+    let weekday = iso_weekday(year, month, day);
+    let hour12 = if hour % 12 == 0 { 12 } else { hour % 12 };
+    let meridiem = if hour < 12 { "AM" } else { "PM" };
     let mut rendered = String::new();
+    let chars = format.chars().collect::<Vec<_>>();
     let mut index = 0_usize;
-    while index < format.len() {
-        let remainder = &format[index..];
-        if let Some((token, _)) = date_format_token(remainder) {
-            match token {
-                "yyyy" | "YYYY" => {
-                    let _ = write!(rendered, "{year:04}");
-                }
-                "yy" | "YY" => {
-                    let _ = write!(rendered, "{:02}", year.rem_euclid(100));
-                }
-                "MMMM" => rendered.push_str(month_name(month)),
-                "MMM" => rendered.push_str(&month_name(month)[..3]),
-                "MM" => {
-                    let _ = write!(rendered, "{month:02}");
-                }
-                "dd" | "DD" => {
-                    let _ = write!(rendered, "{day:02}");
-                }
-                "d" | "D" => {
-                    let _ = write!(rendered, "{day}");
-                }
-                "HH" => {
-                    let _ = write!(rendered, "{hour:02}");
-                }
-                "mm" => {
-                    let _ = write!(rendered, "{minute:02}");
-                }
-                "ss" => {
-                    let _ = write!(rendered, "{second:02}");
-                }
-                "SSS" => {
-                    let _ = write!(rendered, "{millisecond:03}");
-                }
-                "x" => {
-                    let _ = write!(rendered, "{ms}");
-                }
-                "X" => {
-                    let _ = write!(rendered, "{}", ms / 1000);
-                }
-                "ffff" => {
-                    let _ = write!(
-                        rendered,
-                        "{}, {} {}, {} {:02}:{:02}:{:02}",
-                        weekday_name(iso_weekday(year, month, day)),
-                        month_name(month),
-                        day,
-                        year,
-                        hour,
-                        minute,
-                        second
-                    );
-                }
-                _ => rendered.push_str(token),
-            }
-            index += token.len();
-        } else if let Some(ch) = remainder.chars().next() {
-            rendered.push(ch);
-            index += ch.len_utf8();
-        } else {
-            break;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\'' {
+            index = push_quoted_format_literal(&chars, index, &mut rendered);
+            continue;
         }
+        let mut count = 1_usize;
+        while chars.get(index + count) == Some(&ch) {
+            count += 1;
+        }
+        index += count;
+        let padded = |value: i64, width: usize| format!("{value:0width$}");
+        let token = match (ch, count) {
+            ('y' | 'Y', 2) => padded(year.rem_euclid(100), 2),
+            ('y' | 'Y', width) => padded(year, width),
+            ('M' | 'L', 1) => month.to_string(),
+            ('M' | 'L', 2) => padded(month, 2),
+            ('M' | 'L', 3) => month_name(month)[..3].to_string(),
+            ('M' | 'L', 4) => month_name(month).to_string(),
+            ('M' | 'L', 5) => month_name(month)[..1].to_string(),
+            ('d' | 'D', 1) => day.to_string(),
+            ('d' | 'D', 2) => padded(day, 2),
+            ('D', 3) => format!("{} {day}, {year}", month_name(month)),
+            ('D', 4) => format!(
+                "{}, {} {day}, {year}",
+                weekday_name(weekday),
+                month_name(month)
+            ),
+            ('E' | 'c', 1) => weekday.to_string(),
+            ('E' | 'c', 3) => weekday_name(weekday)[..3].to_string(),
+            ('E' | 'c', 4) => weekday_name(weekday).to_string(),
+            ('E' | 'c', 5) => weekday_name(weekday)[..1].to_string(),
+            ('H', width @ 1..=2) => padded(hour, width),
+            ('h', width @ 1..=2) => padded(hour12, width),
+            ('a', 1) => meridiem.to_string(),
+            ('m', width @ 1..=2) => padded(minute, width),
+            ('s', width @ 1..=2) => padded(second, width),
+            ('S', 1) => millisecond.to_string(),
+            ('S', 3) => padded(millisecond, 3),
+            ('o', 1) => ordinal_day(year, month, day).to_string(),
+            ('o', 3) => padded(ordinal_day(year, month, day), 3),
+            ('q', width @ 1..=2) => padded((month - 1) / 3 + 1, width),
+            ('W', width @ 1..=2) => padded(iso_week_components(year, month, day).1, width),
+            ('k', width @ (2 | 4)) => {
+                let weekyear = iso_week_components(year, month, day).0;
+                if width == 2 {
+                    padded(weekyear.rem_euclid(100), 2)
+                } else {
+                    padded(weekyear, 4)
+                }
+            }
+            ('t', 1) => format!("{hour12}:{minute:02} {meridiem}"),
+            ('t', 2) => format!("{hour12}:{minute:02}:{second:02} {meridiem}"),
+            ('T', 1) => format!("{hour:02}:{minute:02}"),
+            ('T', 2) => format!("{hour:02}:{minute:02}:{second:02}"),
+            ('Z', 1) => "+0".to_string(),
+            ('Z', 2) => "+00:00".to_string(),
+            ('Z', 3) => "+0000".to_string(),
+            ('z', _) => "UTC".to_string(),
+            ('x', 1) => ms.to_string(),
+            ('X', 1) => ms.div_euclid(1000).to_string(),
+            ('f', 4) => format!(
+                "{}, {} {}, {} {:02}:{:02}:{:02}",
+                weekday_name(weekday),
+                month_name(month),
+                day,
+                year,
+                hour,
+                minute,
+                second
+            ),
+            _ => std::iter::repeat_n(ch, count).collect(),
+        };
+        rendered.push_str(&token);
     }
     rendered
 }
@@ -2555,6 +2599,22 @@ mod tests {
             format_date(ms, "YYYY-MM-DD HH:mm:ss"),
             "2025-06-15 14:30:45"
         );
+    }
+
+    #[test]
+    fn format_date_follows_luxon_tokens() {
+        let ms = parse_date_string("2026-01-02 15:04:05").unwrap();
+        assert_eq!(format_date(ms, "yyyy-MM-dd'T'HH:mm"), "2026-01-02T15:04");
+        assert_eq!(
+            format_date(ms, "h:mm a - MMMM dd, yyyy"),
+            "3:04 PM - January 02, 2026"
+        );
+        assert_eq!(format_date(ms, "EEEE, MMM d"), "Friday, Jan 2");
+        assert_eq!(format_date(ms, "EEE E o 'week' W q"), "Fri 5 2 week 1 1");
+        assert_eq!(format_date(ms, "'It''s' T"), "It's 15:04");
+        assert_eq!(format_date(ms, "yy/M/d h:m:s"), "26/1/2 3:4:5");
+        assert_eq!(format_date(ms, "kkkk-'W'WW"), "2026-W01");
+        assert_eq!(format_date(ms, "DDDD"), "Friday, January 2, 2026");
     }
 
     #[test]

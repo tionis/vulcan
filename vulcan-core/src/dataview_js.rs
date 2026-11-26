@@ -10439,7 +10439,6 @@ shell = "allow"
         /// entry once its fix lands: the test fails when a listed path no longer differs.
         const PROBE_KNOWN_DIVERGENCES: &[&str] = &[
             ".behaviour.ctimeKind",
-            ".behaviour.dateParse",
             ".behaviour.duration",
             ".behaviour.evaluateLink",
             ".behaviour.frontmatterDateKind",
@@ -10453,7 +10452,6 @@ shell = "allow"
             ".dvMembers.parse",
             ".fileKeys.ctime",
             ".fileKeys.mtime",
-            ".fileValues.day",
             ".fileValues.etags",
             ".fileValues.tags",
             ".lists[0].keys",

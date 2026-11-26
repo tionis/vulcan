@@ -1135,7 +1135,7 @@ Vulcan must implement the full Dataview function library. Functions automaticall
 
 **Object:** `extract(object, key1, key2, ...)`
 
-**Date/duration:** `dateformat(date, string)`, `durationformat(duration, string)`, `striptime(date)`, `localtime(date)`
+**Date/duration:** `dateformat(date, string)`, `durationformat(duration, string)`, `striptime(date)`, `localtime(date)`. Format strings use Luxon's `toFormat` tokens in English (`yyyy`, `MMMM`, `dd`, `EEEE`, `h`, `a`, `HH`, `mm`, `ss`, `o`, `W`, `kkkk`, `T`, `DDD`, and so on), with text in single quotes taken literally; `YYYY` and `DD` keep their year and day meanings for older Vulcan formats.
 
 **Utility:** `default(field, value)` (null coalescing, vectorizes), `ldefault(list, value)` (non-vectorizing), `choice(bool, left, right)` (ternary), `display(any)`, `hash(seed, [text], [variant])`, `currencyformat(number, [currency])`, `meta(link)` (returns link metadata: `.path`, `.display`, `.embed`, `.type`, `.subpath`)
 
