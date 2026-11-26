@@ -322,7 +322,7 @@ Skill command tools stay tools (§6).
 task-capable tools everywhere) is registered durably before dispatch with an operation id bound
 to the caller, as named remotes do today. On stdio every tool call is recorded in memory for the
 life of the process, which is as long as its one client lives; `operation_get` reads those
-records and is listed where a transport keeps them (stdio now; HTTP with the axum transport).
+records and is listed where a transport keeps them: stdio, and HTTP, where each listener records the calls its hosted ledger does not keep, owned by the caller (connection grant, else credential), and `operation_get` reads the ledger first.
 
 **Tasks** (modern clients that declare `io.modelcontextprotocol/tasks`): the task-capable tools
 (`index_scan`, `sync_refresh`, `changeset_land`, `web_fetch`, and `query`/`search` over a

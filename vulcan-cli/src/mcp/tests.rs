@@ -3370,6 +3370,7 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
             bind_addr: "127.0.0.1:8765".parse().expect("bind"),
             instance_id: Ulid::new(),
             sessions: Arc::new(McpSessionRegistry::new()),
+            operations: Arc::default(),
             oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
             oauth_clients: Arc::new(OAuthClientRegistry::ephemeral()),
             oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
@@ -5185,8 +5186,12 @@ fn timed_out_named_mutation_reports_durable_status_path_and_stale_session() {
         "/mcp/operations/01abcdefghjkmnpqrstvwxyz12"
     );
     assert_eq!(
-        response["result"]["structuredContent"]["outcome"],
+        response["result"]["structuredContent"]["error"]["code"],
         "indeterminate"
+    );
+    assert_eq!(
+        response["result"]["structuredContent"]["operation_id"],
+        "01abcdefghjkmnpqrstvwxyz12"
     );
 }
 

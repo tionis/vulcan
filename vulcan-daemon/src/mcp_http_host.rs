@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use ulid::Ulid;
+use vulcan_app::mcp_operations::McpOperationRegistry;
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthIssuer;
 use vulcan_core::VaultPaths;
@@ -37,6 +38,8 @@ pub struct McpHttpHost<C> {
     pub bind_addr: SocketAddr,
     pub instance_id: Ulid,
     pub sessions: Arc<McpSessionRegistry<C>>,
+    /// Records of tool calls not kept in the hosted ledger, for `operation_get`.
+    pub operations: Arc<McpOperationRegistry>,
     pub request_timeout: Duration,
     #[cfg(feature = "oauth")]
     pub oauth: Option<McpOAuthMode>,
@@ -222,6 +225,7 @@ mod tests {
             bind_addr: "127.0.0.1:4321".parse().unwrap(),
             instance_id: Ulid::new(),
             sessions: Arc::new(McpSessionRegistry::new()),
+            operations: Arc::default(),
             request_timeout: Duration::from_secs(30),
             #[cfg(feature = "oauth")]
             oauth: None,

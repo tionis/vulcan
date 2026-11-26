@@ -32,6 +32,10 @@ pub enum McpOperationState {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct McpOperationRecord {
+    /// Who may look the record up: the caller that made the call. One
+    /// client (stdio) uses the empty owner.
+    #[serde(skip)]
+    pub owner: String,
     pub operation_id: String,
     pub tool: String,
     pub state: McpOperationState,
@@ -43,7 +47,8 @@ pub struct McpOperationRecord {
     pub result: Option<Value>,
 }
 
-/// Operation records held by one server process, for the client it serves.
+/// Operation records held by one server process or listener, each visible
+/// only to the caller that made the call.
 #[derive(Debug, Default)]
 pub struct McpOperationRegistry {
     records: Mutex<VecDeque<McpOperationRecord>>,
@@ -60,6 +65,11 @@ fn now_unix_ms() -> u64 {
 impl McpOperationRegistry {
     /// Record that a call of `tool` started; returns its operation id.
     pub fn begin(&self, tool: &str) -> String {
+        self.begin_owned("", tool)
+    }
+
+    /// [`Self::begin`] for a call made by `owner`.
+    pub fn begin_owned(&self, owner: &str, tool: &str) -> String {
         let operation_id = ulid::Ulid::new().to_string();
         let now = now_unix_ms();
         let mut records = self.records.lock().unwrap_or_else(PoisonError::into_inner);
@@ -73,6 +83,7 @@ impl McpOperationRegistry {
             records.pop_back();
         }
         records.push_front(McpOperationRecord {
+            owner: owner.to_string(),
             operation_id: operation_id.clone(),
             tool: tool.to_string(),
             state: McpOperationState::Running,
@@ -124,13 +135,34 @@ impl McpOperationRegistry {
     }
 }
 
-impl McpOperationLookup for McpOperationRegistry {
-    fn get(&self, operation_id: &str) -> Option<Value> {
+impl McpOperationRegistry {
+    /// The record of `operation_id` if `owner` made the call.
+    #[must_use]
+    pub fn get_owned(&self, owner: &str, operation_id: &str) -> Option<Value> {
         let records = self.records.lock().unwrap_or_else(PoisonError::into_inner);
         records
             .iter()
-            .find(|record| record.operation_id == operation_id)
+            .find(|record| record.operation_id == operation_id && record.owner == owner)
             .and_then(|record| serde_json::to_value(record).ok())
+    }
+}
+
+impl McpOperationLookup for McpOperationRegistry {
+    fn get(&self, operation_id: &str) -> Option<Value> {
+        self.get_owned("", operation_id)
+    }
+}
+
+/// One caller's view of a shared registry.
+#[derive(Debug, Clone)]
+pub struct McpOwnedOperations {
+    pub registry: std::sync::Arc<McpOperationRegistry>,
+    pub owner: String,
+}
+
+impl McpOperationLookup for McpOwnedOperations {
+    fn get(&self, operation_id: &str) -> Option<Value> {
+        self.registry.get_owned(&self.owner, operation_id)
     }
 }
 
@@ -202,6 +234,24 @@ mod tests {
         assert!(registry.get(&ok).is_none());
         let missing = operation_get(&registry, &ok).unwrap_err();
         assert!(matches!(missing, McpMethodError::Tool { .. }));
+    }
+
+    #[test]
+    fn owned_records_are_visible_only_to_their_owner() {
+        let registry = std::sync::Arc::new(McpOperationRegistry::default());
+        let id = registry.begin_owned("alice", "note_get");
+        let alice = McpOwnedOperations {
+            registry: std::sync::Arc::clone(&registry),
+            owner: "alice".to_string(),
+        };
+        let bob = McpOwnedOperations {
+            registry: std::sync::Arc::clone(&registry),
+            owner: "bob".to_string(),
+        };
+        assert_eq!(alice.get(&id).unwrap()["tool"], "note_get");
+        assert!(alice.get(&id).unwrap().get("owner").is_none());
+        assert!(bob.get(&id).is_none());
+        assert!(registry.get(&id).is_none());
     }
 
     #[test]

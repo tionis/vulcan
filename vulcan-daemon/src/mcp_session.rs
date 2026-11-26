@@ -654,6 +654,19 @@ impl McpSessionAuthority {
         self == request
     }
 
+    /// Who owns the operations this caller starts: the connection grant when
+    /// there is one (it survives token refresh), otherwise the credential, on
+    /// this listener and vault.
+    #[must_use]
+    pub fn operation_owner(&self) -> String {
+        let caller = self.grant_id.map_or_else(
+            || self.credential_fingerprint.clone(),
+            |grant| grant.to_string(),
+        );
+        let wiki = self.wiki_id.as_ref().map_or_default(ToString::to_string);
+        format!("{}/{wiki}/{caller}", self.remote_instance_id)
+    }
+
     #[must_use]
     pub fn allows_scope(&self, required: &str) -> bool {
         self.scopes.iter().any(|scope| scope == required)

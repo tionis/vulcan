@@ -840,6 +840,7 @@ fn run_mcp_http_server_inner(
                 None => Ulid::new(),
             },
             sessions: Arc::new(McpSessionRegistry::new()),
+            operations: Arc::default(),
             #[cfg(feature = "oauth")]
             oauth_codes: Arc::new(McpAuthorizationCodeMap::default()),
             #[cfg(feature = "oauth")]
@@ -1273,6 +1274,13 @@ impl vulcan_daemon::mcp_execution::McpRequestCore for McpServerCore {
 
     fn offer_subscriptions(&mut self) {
         self.inner.offer_subscriptions();
+    }
+
+    fn keep_operations(
+        &mut self,
+        operations: Arc<dyn vulcan_app::mcp_operations::McpOperationLookup>,
+    ) {
+        self.inner.keep_operations(operations);
     }
 
     fn list_changes(&mut self) -> Vec<Value> {

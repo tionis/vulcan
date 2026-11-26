@@ -33,6 +33,7 @@ use vulcan_app::mcp_core::{
     subscription_notification, MCP_HEADER_MISMATCH,
 };
 use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id, McpHttpProcessResult};
+use vulcan_app::mcp_operations::{McpOperationLookup, McpOwnedOperations};
 
 pub type McpHttpCoreFactory<C> = fn(McpHttpProtocolConfig) -> Result<C, String>;
 
@@ -578,7 +579,67 @@ pub fn create_mcp_http_core<C: McpRequestCore>(
     let mut core = (context.core_factory)(config)
         .map_err(|error| mcp_http_json_error_response(500, error.clone(), Value::Null))?;
     core.offer_subscriptions();
+    core.keep_operations(Arc::new(McpHttpOperations {
+        owned: McpOwnedOperations {
+            registry: Arc::clone(&context.operations),
+            owner: authority.operation_owner(),
+        },
+        hosted: hosted_operations(context, authority),
+    }));
     Ok(core)
+}
+
+/// `operation_get` for one HTTP caller: a write registered in a named
+/// remote's durable ledger, or a call recorded by this listener, in either
+/// case only one this caller made.
+#[derive(Debug)]
+struct McpHttpOperations {
+    owned: McpOwnedOperations,
+    hosted: Option<HostedOperations>,
+}
+
+#[derive(Debug)]
+struct HostedOperations {
+    ledger: Arc<crate::hosted_jobs::HostedJobLedger>,
+    named: crate::mcp_remote_runtime::NamedMcpRuntime,
+    authority: McpSessionAuthority,
+}
+
+impl McpOperationLookup for McpHttpOperations {
+    fn get(&self, operation_id: &str) -> Option<Value> {
+        self.hosted
+            .as_ref()
+            .and_then(|hosted| {
+                crate::mcp_hosted::named_mcp_operation_status(
+                    &hosted.ledger,
+                    &hosted.named,
+                    &hosted.authority,
+                    operation_id,
+                )
+            })
+            .and_then(|report| serde_json::to_value(report).ok())
+            .or_else(|| self.owned.get(operation_id))
+    }
+}
+
+fn hosted_operations<C: McpRequestCore>(
+    context: &McpHttpDriver<'_, C>,
+    authority: &McpSessionAuthority,
+) -> Option<HostedOperations> {
+    #[cfg(feature = "oauth")]
+    {
+        let (hosted, named) = (context.hosted?, context.named_runtime.as_ref()?);
+        Some(HostedOperations {
+            ledger: hosted.executor.ledger(),
+            named: named.clone(),
+            authority: authority.clone(),
+        })
+    }
+    #[cfg(not(feature = "oauth"))]
+    {
+        let _ = (context, authority);
+        None
+    }
 }
 
 #[must_use]
@@ -763,6 +824,7 @@ mod tests {
             bind_addr: "127.0.0.1:4321".parse().unwrap(),
             instance_id: Ulid::new(),
             sessions: Arc::new(McpSessionRegistry::new()),
+            operations: Arc::default(),
             request_timeout: Duration::from_secs(30),
             #[cfg(feature = "oauth")]
             oauth: None,
@@ -941,6 +1003,26 @@ mod tests {
             .unwrap()
             .iter()
             .any(|tool| tool["name"] == "note_get"));
+        // HTTP keeps operation records, so operation_get is offered.
+        assert!(list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "operation_get"));
+        let missing = handle_mcp_http_post(
+            &driver,
+            &inbound,
+            &authority,
+            &modern(
+                5,
+                "tools/call",
+                json!({"name": "operation_get", "arguments": {"id": "01NOSUCHOPERATION"}}),
+            ),
+        );
+        assert_eq!(
+            body(&missing)["result"]["structuredContent"]["error"]["code"],
+            "not_found"
+        );
         assert!(host.sessions.is_empty());
 
         let unknown = handle_mcp_http_post(

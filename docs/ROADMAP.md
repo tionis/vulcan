@@ -8820,7 +8820,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 - [x] Concurrent stdio: a reader dispatches tool calls to four workers (queue of 64) while other requests are answered in order; one writer; `notifications/cancelled` skips a queued call and suppresses a running call's response; end of input drains for up to 5 s.
 - [x] stdio records every tool call as an operation (in memory, 256 records, an hour after finishing); a call past its deadline keeps running and returns an `indeterminate` tool error with its `operation_id`; `operation_get` reports running, succeeded with the result, or failed. It is listed where the transport keeps records (stdio, and `describe`, which shows the stdio list).
-- [ ] The same on HTTP: `operation_get` over the hosted ledger for named remotes and records for foreground HTTP, with the axum transport (9.43.8).
+- [x] The same on HTTP: every HTTP listener records the tool calls its hosted ledger does not keep (in memory, owned by the caller: the connection grant, else the credential), a call past its deadline answers `indeterminate` with its `operation_id`, and `operation_get` reads the named remote's durable ledger first, then those records, only for operations the caller started. Hosted indeterminate results use the same `{"error": {"code": "indeterminate"}}` shape, keeping `status_path`.
 
 ### 9.43.8 axum HTTP transport
 

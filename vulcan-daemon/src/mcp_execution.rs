@@ -23,6 +23,7 @@ use vulcan_app::mcp_dispatch::{
     jsonrpc_error, request_id, timeout_http_result, timeout_response_for_request,
     McpHttpProcessResult,
 };
+use vulcan_app::mcp_operations::{indeterminate_response, McpOperationLookup};
 use vulcan_app::mcp_session_protocol::McpProtocolCore;
 use vulcan_core::{PermissionGrant, VaultPaths};
 
@@ -36,6 +37,8 @@ pub trait McpRequestCore: Clone + Send + 'static {
     fn list_changed_notifications(&mut self) -> Vec<Value>;
     /// Tell modern clients that `subscriptions/listen` is served.
     fn offer_subscriptions(&mut self);
+    /// Offer `operation_get` over this caller's operation records.
+    fn keep_operations(&mut self, operations: Arc<dyn McpOperationLookup>);
     /// List changes since the core was made or last asked, for a
     /// subscription stream.
     fn list_changes(&mut self) -> Vec<Value>;
@@ -64,6 +67,10 @@ impl McpRequestCore for McpProtocolCore {
 
     fn offer_subscriptions(&mut self) {
         McpProtocolCore::offer_subscriptions(self);
+    }
+
+    fn keep_operations(&mut self, operations: Arc<dyn McpOperationLookup>) {
+        McpProtocolCore::keep_operations(self, operations);
     }
 
     fn list_changes(&mut self) -> Vec<Value> {
@@ -185,11 +192,13 @@ pub fn hosted_mcp_unknown_result(
 ) -> McpHttpProcessResult {
     let response = request_id(payload).map(|id| {
         let structured = serde_json::json!({
-            "error": detail,
+            "error": {
+                "code": "indeterminate",
+                "message": detail,
+                "hint": "call operation_get with operation_id before repeating the call",
+            },
             "operation_id": operation_id,
             "status_path": format!("{}/operations/{operation_id}", endpoint.trim_end_matches('/')),
-            "outcome": "indeterminate",
-            "retry": "check_operation_status_first",
         });
         if payload.get("method").and_then(Value::as_str) == Some("tools/call") {
             tool_error_response(id, detail.to_string(), Some(structured))
@@ -347,6 +356,21 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
         .filter(|_| scheduled_operation(&request) == ScheduledOperation::Mutation)
         .map(|dispatch| dispatch.execution.identity.operation_id.clone());
     let failed_ledger = hosted.as_ref().map(|hosted| hosted.executor.ledger());
+    // Tool calls the hosted ledger does not keep are recorded here, so one
+    // that outlives its deadline can still be looked up with operation_get.
+    let recorded = (operation_id.is_none()
+        && request.get("method").and_then(Value::as_str) == Some("tools/call"))
+    .then(|| {
+        let tool = request
+            .pointer("/params/name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        http_context
+            .operations
+            .begin_owned(&authority.operation_owner(), tool)
+    });
+    let records = Arc::clone(&http_context.operations);
+    let worker_record = recorded.clone();
     #[cfg(feature = "oauth")]
     let named_runtime = http_context.named_runtime.is_some();
     #[cfg(not(feature = "oauth"))]
@@ -382,6 +406,12 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
             } else {
                 worker.process_http_request(&request)
             };
+            if let Some(record) = worker_record.as_deref() {
+                match &result {
+                    Ok(processed) => records.finish(record, processed.response.as_ref()),
+                    Err(error) => records.finish(record, Some(error)),
+                }
+            }
             (worker, result)
         },
     );
@@ -425,9 +455,24 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
                     &http_context.endpoint,
                 ));
             }
+            if let Some(record) = recorded.as_deref() {
+                return Ok(McpHttpProcessResult {
+                    response: Some(indeterminate_response(
+                        request_id(&timeout_request).unwrap_or(Value::Null),
+                        record,
+                        timeout,
+                    )),
+                    notifications: Vec::new(),
+                    accepted_notification: false,
+                    session_stale: true,
+                });
+            }
             Ok(timeout_http_result(&timeout_request, timeout))
         }
         McpWorkerResult::Disconnected => {
+            if let Some(record) = recorded.as_deref() {
+                http_context.operations.finish(record, None);
+            }
             if let Some(operation_id) = operation_id.as_deref() {
                 return Ok(hosted_mcp_unknown_result(
                     &timeout_request,
@@ -522,6 +567,7 @@ mod tests {
             Vec::new()
         }
         fn offer_subscriptions(&mut self) {}
+        fn keep_operations(&mut self, _: Arc<dyn McpOperationLookup>) {}
         fn list_changes(&mut self) -> Vec<Value> {
             Vec::new()
         }
@@ -553,6 +599,7 @@ mod tests {
             bind_addr: "127.0.0.1:4321".parse().unwrap(),
             instance_id: Ulid::new(),
             sessions: Arc::new(McpSessionRegistry::new()),
+            operations: Arc::default(),
             request_timeout: Duration::from_secs(30),
             #[cfg(feature = "oauth")]
             oauth: None,
@@ -686,6 +733,68 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .unwrap();
         assert_eq!(core.calls, 1);
+    }
+
+    #[test]
+    fn a_timed_out_tool_call_is_indeterminate_and_recorded_for_its_caller() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let mut core = CounterCore::new(&paths);
+        let host = host(&paths);
+        let inbound = inbound();
+        let authority = host.authenticate(&inbound.headers).unwrap();
+        let (release, wait) = mpsc::channel();
+        let (entered, observed_entered) = mpsc::channel();
+        let (finished, observed_finished) = mpsc::channel();
+        core.gate = Some(Arc::new(Gate {
+            release: Mutex::new(wait),
+            entered,
+            finished,
+        }));
+        let request = serde_json::json!({
+            "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": {"name": "note_get", "arguments": {}}
+        });
+        let result = process_http_request_with_timeout(
+            &mut core,
+            request,
+            Duration::from_millis(10),
+            &host,
+            &inbound,
+            &authority,
+            &ExecutionCancellationToken::default(),
+            None,
+        )
+        .unwrap();
+        assert!(result.session_stale);
+        let structured = &result.response.unwrap()["result"]["structuredContent"];
+        assert_eq!(structured["error"]["code"], "indeterminate");
+        let operation_id = structured["operation_id"].as_str().unwrap().to_string();
+        let owner = authority.operation_owner();
+        assert_eq!(
+            host.operations.get_owned(&owner, &operation_id).unwrap()["state"],
+            "running"
+        );
+        assert!(host
+            .operations
+            .get_owned("someone-else", &operation_id)
+            .is_none());
+
+        observed_entered
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        release.send(()).unwrap();
+        observed_finished
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut record = host.operations.get_owned(&owner, &operation_id).unwrap();
+        while record["state"] == "running" && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            record = host.operations.get_owned(&owner, &operation_id).unwrap();
+        }
+        assert_eq!(record["state"], "succeeded");
+        assert_eq!(record["tool"], "note_get");
     }
 
     #[cfg(feature = "oauth")]
