@@ -21,18 +21,10 @@ pub struct LocalOAuthIssuerConfig {
     pub client_id: String,
     pub client_secret: String,
     pub signing_key: String,
-    pub approval_token: String,
+    /// The one identity that may sign in: the named remote's `IndieAuth`
+    /// identity.
     pub subject: String,
-    pub email: Option<String>,
-    pub users: Vec<LocalOAuthUserConfig>,
     pub dcr_enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalOAuthUserConfig {
-    pub subject: String,
-    pub email: Option<String>,
-    pub permission_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -177,12 +169,8 @@ fn ip_is_non_public(address: std::net::IpAddr) -> bool {
 pub struct LocalOAuthIssuer {
     public_url: String,
     client_id: String,
-    client_secret: String,
     signing_key: String,
-    approval_token: String,
     subject: String,
-    email: Option<String>,
-    users: Vec<LocalOAuthUserConfig>,
     protected_resource_metadata_url: String,
     authorization_server_metadata: Value,
 }
@@ -252,12 +240,8 @@ impl LocalOAuthIssuer {
         Ok(Self {
             public_url: config.public_url,
             client_id: config.client_id,
-            client_secret: config.client_secret,
             signing_key: config.signing_key,
-            approval_token: config.approval_token,
             subject: config.subject,
-            email: config.email,
-            users: config.users,
             protected_resource_metadata_url,
             authorization_server_metadata,
         })
@@ -277,11 +261,10 @@ impl LocalOAuthIssuer {
             &validation,
         )
         .map_err(|error| OAuthError::Token(format!("invalid local OAuth bearer token: {error}")))?;
-        if let Some(user) = self.user_for_subject(&token.claims.sub) {
+        if self.subject_allowed(&token.claims.sub) {
+            // Authority comes from the connection grant, never from claims.
             Ok(LocalOAuthTokenIdentity {
                 subject: token.claims.sub,
-                email: user.email,
-                permission_profile: user.permission_profile,
                 client_id: token.claims.client_id,
                 scopes: token.claims.scope,
                 grant_id: token.claims.grant_id,
@@ -317,11 +300,11 @@ impl LocalOAuthIssuer {
         scopes: &[String],
         grant_id: Option<String>,
     ) -> Result<String, OAuthError> {
-        let Some(user) = self.user_for_subject(subject) else {
+        if !self.subject_allowed(subject) {
             return Err(OAuthError::Token(
                 "local OAuth token subject is not allowed".to_string(),
             ));
-        };
+        }
         let now = unix_timestamp();
         let claims = LocalOAuthClaims {
             iss: self.public_url.clone(),
@@ -329,8 +312,8 @@ impl LocalOAuthIssuer {
             aud: vec![self.public_url.clone()],
             exp: now + 900,
             iat: now,
-            email: user.email,
-            permission_profile: user.permission_profile,
+            email: None,
+            permission_profile: None,
             client_id: Some(client_id.to_string()),
             scope: scopes.to_vec(),
             grant_id,
@@ -343,38 +326,10 @@ impl LocalOAuthIssuer {
         .map_err(|error| OAuthError::Token(format!("failed to issue OAuth token: {error}")))
     }
 
+    /// Whether `subject` is the identity allowed to sign in.
     #[must_use]
-    pub fn verify_client(&self, client_id: &str, client_secret: &str) -> bool {
-        client_id == self.client_id && client_secret == self.client_secret
-    }
-
-    #[must_use]
-    pub fn verify_approval_token(&self, approval_token: &str) -> bool {
-        approval_token == self.approval_token
-    }
-
-    #[must_use]
-    pub fn user_for_subject(&self, subject: &str) -> Option<LocalOAuthUserConfig> {
-        self.users
-            .iter()
-            .find(|user| subjects_match(&user.subject, subject))
-            .cloned()
-            .or_else(|| {
-                subjects_match(&self.subject, subject).then(|| LocalOAuthUserConfig {
-                    subject: self.subject.clone(),
-                    email: self.email.clone(),
-                    permission_profile: None,
-                })
-            })
-    }
-
-    #[must_use]
-    pub fn default_user(&self) -> LocalOAuthUserConfig {
-        LocalOAuthUserConfig {
-            subject: self.subject.clone(),
-            email: self.email.clone(),
-            permission_profile: None,
-        }
+    pub fn subject_allowed(&self, subject: &str) -> bool {
+        subjects_match(&self.subject, subject)
     }
 
     #[must_use]
@@ -445,8 +400,6 @@ struct LocalOAuthClaims {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalOAuthTokenIdentity {
     pub subject: String,
-    pub email: Option<String>,
-    pub permission_profile: Option<String>,
     pub client_id: Option<String>,
     pub scopes: Vec<String>,
     pub grant_id: Option<String>,
@@ -850,10 +803,7 @@ mod tests {
             client_id: "public-client-id".into(),
             client_secret: "private-client-marker".into(),
             signing_key: "private-signing-marker".into(),
-            approval_token: "private-approval-marker".into(),
             subject: "https://identity.example.test/me".into(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         };
         let config_debug = format!("{config:?}");
@@ -962,15 +912,10 @@ mod tests {
             client_id: "vulcan-mcp".to_string(),
             client_secret: "secret".to_string(),
             signing_key: "server-signing-key".to_string(),
-            approval_token: "approve".to_string(),
             subject: "eric".to_string(),
-            email: Some("eric@example.test".to_string()),
-            users: Vec::new(),
             dcr_enabled: false,
         })
         .unwrap();
-        assert!(issuer.verify_client("vulcan-mcp", "secret"));
-        assert!(issuer.verify_approval_token("approve"));
         let token = issuer.issue_access_token().unwrap();
         let identity = issuer.validate_bearer_token(&token).unwrap();
         assert_eq!(identity.subject, "eric");
@@ -981,20 +926,13 @@ mod tests {
     }
 
     #[test]
-    fn local_oauth_issuer_embeds_bound_permission_profile() {
+    fn local_oauth_issuer_issues_tokens_for_its_identity_only() {
         let issuer = LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: "https://wiki.example.test/mcp".to_string(),
             client_id: "vulcan-mcp".to_string(),
             client_secret: "secret".to_string(),
             signing_key: "server-signing-key".to_string(),
-            approval_token: String::new(),
-            subject: "fallback".to_string(),
-            email: None,
-            users: vec![LocalOAuthUserConfig {
-                subject: "https://tionis.dev/".to_string(),
-                email: Some("eric@example.test".to_string()),
-                permission_profile: Some("daily-wiki-agent".to_string()),
-            }],
+            subject: "https://tionis.dev/".to_string(),
             dcr_enabled: true,
         })
         .unwrap();
@@ -1009,30 +947,22 @@ mod tests {
                 .expect("token auth methods")
                 .contains(&Value::String("none".to_string()))
         );
-        let user = issuer.user_for_subject("https://tionis.dev/").unwrap();
-        let token = issuer.issue_access_token_for(&user.subject).unwrap();
-        let identity = issuer.validate_bearer_token(&token).unwrap();
-        assert_eq!(identity.subject, "https://tionis.dev/");
-        assert_eq!(
-            identity.permission_profile.as_deref(),
-            Some("daily-wiki-agent")
-        );
-        assert_eq!(identity.client_id.as_deref(), Some("vulcan-mcp"));
-        assert_eq!(identity.scopes, ["openid", "email", "profile"]);
-        assert_eq!(identity.grant_id, None);
-
         let token = issuer
             .issue_access_token_for_authorization(
-                &user.subject,
+                "https://tionis.dev/",
                 "dynamic-client",
-                &["mcp:resources".to_string(), "mcp:tools".to_string()],
+                &["mcp".to_string()],
                 Some("01GRANT".to_string()),
             )
             .unwrap();
         let identity = issuer.validate_bearer_token(&token).unwrap();
+        assert_eq!(identity.subject, "https://tionis.dev/");
         assert_eq!(identity.client_id.as_deref(), Some("dynamic-client"));
-        assert_eq!(identity.scopes, ["mcp:resources", "mcp:tools"]);
+        assert_eq!(identity.scopes, ["mcp"]);
         assert_eq!(identity.grant_id.as_deref(), Some("01GRANT"));
+        assert!(issuer
+            .issue_access_token_for("https://someone-else.example/")
+            .is_err());
     }
 
     #[test]
@@ -1042,10 +972,7 @@ mod tests {
             client_id: "vulcan-mcp".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "server-signing-key".to_string(),
-            approval_token: "approve".to_string(),
             subject: "eric".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: false,
         })
         .unwrap();
@@ -1072,34 +999,27 @@ mod tests {
     }
 
     #[test]
-    fn local_oauth_uses_server_side_permission_profile_binding() {
+    fn local_oauth_rejects_tokens_for_another_subject() {
         let issuer = LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: "https://wiki.example.test/mcp".to_string(),
             client_id: "vulcan-mcp".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "server-signing-key".to_string(),
-            approval_token: "approve".to_string(),
-            subject: "fallback".to_string(),
-            email: None,
-            users: vec![LocalOAuthUserConfig {
-                subject: "eric".to_string(),
-                email: Some("eric@example.test".to_string()),
-                permission_profile: Some("readonly".to_string()),
-            }],
+            subject: "eric".to_string(),
             dcr_enabled: false,
         })
         .unwrap();
         let now = unix_timestamp();
-        let forged_claim = encode(
+        let other = encode(
             &Header::new(Algorithm::HS256),
             &LocalOAuthClaims {
                 iss: issuer.public_url.clone(),
-                sub: "eric".to_string(),
+                sub: "mallory".to_string(),
                 aud: vec![issuer.public_url.clone()],
                 exp: now + 3600,
                 iat: now,
-                email: Some("attacker@example.test".to_string()),
-                permission_profile: Some("admin".to_string()),
+                email: None,
+                permission_profile: Some("unrestricted".to_string()),
                 client_id: None,
                 scope: Vec::new(),
                 grant_id: None,
@@ -1107,10 +1027,7 @@ mod tests {
             &EncodingKey::from_secret(b"server-signing-key"),
         )
         .unwrap();
-
-        let identity = issuer.validate_bearer_token(&forged_claim).unwrap();
-        assert_eq!(identity.email.as_deref(), Some("eric@example.test"));
-        assert_eq!(identity.permission_profile.as_deref(), Some("readonly"));
+        assert!(issuer.validate_bearer_token(&other).is_err());
     }
 
     #[test]
@@ -1120,31 +1037,17 @@ mod tests {
             client_id: "vulcan-mcp".to_string(),
             client_secret: "secret".to_string(),
             signing_key: "server-signing-key".to_string(),
-            approval_token: String::new(),
-            subject: "fallback".to_string(),
-            email: None,
-            users: vec![LocalOAuthUserConfig {
-                subject: "https://eric.wendland.dev".to_string(),
-                email: Some("eric@example.test".to_string()),
-                permission_profile: Some("daily-wiki-agent".to_string()),
-            }],
+            subject: "https://eric.wendland.dev".to_string(),
             dcr_enabled: true,
         })
         .unwrap();
 
-        let user = issuer
-            .user_for_subject("https://eric.wendland.dev/")
-            .unwrap();
-        assert_eq!(user.subject, "https://eric.wendland.dev");
+        assert!(issuer.subject_allowed("https://eric.wendland.dev/"));
         let token = issuer
             .issue_access_token_for("https://eric.wendland.dev/")
             .unwrap();
         let identity = issuer.validate_bearer_token(&token).unwrap();
         assert_eq!(identity.subject, "https://eric.wendland.dev/");
-        assert_eq!(
-            identity.permission_profile.as_deref(),
-            Some("daily-wiki-agent")
-        );
     }
 
     #[test]

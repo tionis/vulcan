@@ -57,16 +57,16 @@ impl McpConsentEndpoint<'_> {
                 pending.state.as_deref(),
             );
         }
-        let Some(user) = self.issuer.user_for_subject(&pending.subject) else {
+        if !self.issuer.subject_allowed(&pending.subject) {
             return plain_response(403, "consent subject is no longer authorized");
-        };
+        }
         let code = match issue_mcp_authorization_code(
             self.codes,
             McpAuthorizationCode {
                 client_id: pending.client_id.clone(),
                 redirect_uri: pending.redirect_uri.clone(),
                 code_challenge: pending.code_challenge.clone(),
-                subject: user.subject,
+                subject: pending.subject.clone(),
                 scopes: pending.scopes.clone(),
                 resource: pending.resource.clone(),
                 grant_id: None,
@@ -169,10 +169,7 @@ mod tests {
             client_id: "static-client".into(),
             client_secret: "client-secret".into(),
             signing_key: "signing-key".into(),
-            approval_token: String::new(),
             subject: "https://identity.example/alice".into(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer")

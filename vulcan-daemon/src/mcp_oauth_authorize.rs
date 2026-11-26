@@ -8,14 +8,12 @@ use vulcan_core::{exchange_indieauth_code, pkce_s256_challenge, LocalOAuthIssuer
 
 use crate::mcp_http_codec::McpHttpResponse;
 use crate::mcp_oauth_browser::{
-    begin_consent, begin_indieauth, client_redirect, html_escape, percent_encode,
-    redirect_to_indieauth, take_indieauth, BeginError, ConsentPage, IndieAuthConfig,
-    PendingConsent, PendingConsentMap, PendingIndieAuth, PendingIndieAuthMap, TakeError,
+    begin_consent, begin_indieauth, redirect_to_indieauth, take_indieauth, BeginError, ConsentPage,
+    IndieAuthConfig, PendingConsent, PendingConsentMap, PendingIndieAuth, PendingIndieAuthMap,
+    TakeError,
 };
 use crate::mcp_oauth_clients::OAuthClientRegistry;
-use crate::mcp_oauth_codes::{
-    issue_mcp_authorization_code, McpAuthorizationCode, McpAuthorizationCodeMap, McpCodeIssueError,
-};
+use crate::mcp_oauth_codes::McpAuthorizationCodeMap;
 use crate::mcp_oauth_policy::{
     validate_mcp_authorize_request, McpAuthorizeRequest, McpOAuthPolicyError,
 };
@@ -35,7 +33,6 @@ pub struct McpAuthorizeEndpoint<'a> {
     pub named_runtime: Option<&'a NamedMcpRuntime>,
     pub requested_profile: Option<String>,
     pub fallback_vault_root: String,
-    pub local_redirect_uris: &'a [String],
     pub allowed_redirect_hosts: &'a [String],
     pub exchange: IndieAuthExchange,
 }
@@ -85,42 +82,8 @@ impl McpAuthorizeEndpoint<'_> {
             };
             return redirect_to_indieauth(indieauth, &state, &challenge);
         }
-        let approval_token = params.get("approval_token").map_or("", String::as_str);
-        if !self.issuer.verify_approval_token(approval_token) {
-            return approval_form(params);
-        }
-        let user = self.issuer.default_user();
-        let code = match issue_mcp_authorization_code(
-            self.codes,
-            McpAuthorizationCode {
-                client_id,
-                redirect_uri: redirect_uri.clone(),
-                code_challenge,
-                subject: user.subject,
-                scopes,
-                resource,
-                grant_id: None,
-                grant_required: false,
-                expires_at: Instant::now(),
-            },
-        ) {
-            Ok(code) => code,
-            Err(McpCodeIssueError::Capacity) => {
-                return json_error(
-                    503,
-                    "temporarily_unavailable",
-                    "too many pending authorization codes",
-                );
-            }
-            Err(McpCodeIssueError::Random) => {
-                return json_error(500, "server_error", "could not generate authorization code");
-            }
-        };
-        client_redirect(
-            &redirect_uri,
-            &format!("code={}", percent_encode(&code)),
-            client_state.as_deref(),
-        )
+        // Every listener with OAuth signs its user in with IndieAuth.
+        plain_response(503, "sign-in is not configured for this listener")
     }
 
     #[must_use]
@@ -155,10 +118,10 @@ impl McpAuthorizeEndpoint<'_> {
             Ok(subject) => subject,
             Err(error) => return plain_response(400, &error.to_string()),
         };
-        let Some(user) = self.issuer.user_for_subject(&subject) else {
+        if !self.issuer.subject_allowed(&subject) {
             return subject_not_allowed_response(&subject);
-        };
-        self.begin_consent(pending, user.subject)
+        }
+        self.begin_consent(pending, subject)
     }
 
     fn begin_consent(&self, pending: PendingIndieAuth, subject: String) -> McpHttpResponse {
@@ -189,12 +152,7 @@ impl McpAuthorizeEndpoint<'_> {
         let profile = self
             .requested_profile
             .clone()
-            .or_else(|| {
-                self.issuer
-                    .user_for_subject(&pending.subject)
-                    .and_then(|user| user.permission_profile)
-            })
-            .unwrap_or_else(|| "unrestricted".to_string());
+            .unwrap_or_else(|| "readonly".to_string());
         let client_name = self
             .clients
             .get(&pending.client_id)
@@ -215,12 +173,6 @@ impl McpAuthorizeEndpoint<'_> {
 
     #[must_use]
     pub fn client_redirect_allowed(&self, client_id: &str, redirect_uri: &str) -> bool {
-        if client_id == self.issuer.client_id() {
-            return self
-                .local_redirect_uris
-                .iter()
-                .any(|uri| uri == redirect_uri);
-        }
         self.clients
             .get(client_id)
             .ok()
@@ -288,44 +240,11 @@ pub fn subject_not_allowed_response(subject: &str) -> McpHttpResponse {
     plain_response(
         403,
         &format!(
-            "IndieAuth returned subject {subject:?}, but it is not authorized. For a \
-             single-user server, use --oauth-indieauth-me {subject:?} with --permissions \
-             <profile>. For per-user access, add --oauth-local-user \
-             {subject:?}=<profile>."
+            "IndieAuth returned subject {subject:?}, but this remote accepts only its own \
+             identity. If {subject:?} is the right identity, set it with \
+             `vulcan mcp remote set <name> --identity {subject:?}`."
         ),
     )
-}
-
-fn approval_form(params: &BTreeMap<String, String>) -> McpHttpResponse {
-    let mut action = "/oauth/authorize?".to_string();
-    let mut first = true;
-    for (key, value) in params
-        .iter()
-        .filter(|(key, _)| key.as_str() != "approval_token")
-    {
-        if !first {
-            action.push('&');
-        }
-        first = false;
-        action.push_str(&percent_encode(key));
-        action.push('=');
-        action.push_str(&percent_encode(value));
-    }
-    let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
-         <body><main><h1>Authorize Vulcan MCP</h1>\
-         <form method=\"get\" action=\"{}\">\
-         <label>Approval token <input name=\"approval_token\" type=\"password\" autocomplete=\"one-time-code\" autofocus></label>\
-         <button type=\"submit\">Authorize</button>\
-         </form></main></body></html>",
-        html_escape(&action)
-    );
-    McpHttpResponse {
-        status: 200,
-        content_type: Some("text/html; charset=utf-8"),
-        body: html.into_bytes(),
-        extra_headers: Vec::new(),
-    }
 }
 
 fn current_unix_seconds() -> u64 {
@@ -345,10 +264,7 @@ mod tests {
             client_id: "static-client".into(),
             client_secret: "client-secret".into(),
             signing_key: "signing-key".into(),
-            approval_token: "approval-secret".into(),
             subject: "https://identity.example/alice".into(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer")
@@ -357,7 +273,7 @@ mod tests {
     fn authorize_params() -> BTreeMap<String, String> {
         BTreeMap::from([
             ("response_type".into(), "code".into()),
-            ("client_id".into(), "static-client".into()),
+            ("client_id".into(), "registered-client".into()),
             (
                 "redirect_uri".into(),
                 "https://client.example/callback".into(),
@@ -369,6 +285,21 @@ mod tests {
         ])
     }
 
+    fn clients() -> OAuthClientRegistry {
+        let clients = OAuthClientRegistry::ephemeral();
+        clients
+            .register(crate::mcp_oauth_clients::RegisteredOAuthClient {
+                client_id: "registered-client".into(),
+                client_secret: String::new(),
+                redirect_uris: vec!["https://client.example/callback".into()],
+                client_name: None,
+                token_endpoint_auth_method: "none".into(),
+                client_id_issued_at: 0,
+            })
+            .expect("register client");
+        clients
+    }
+
     fn fake_exchange(_: &str, code: &str, _: &str, _: &str, _: &str) -> Result<String, OAuthError> {
         if code == "reject" {
             Err(OAuthError::Token("upstream denied code".into()))
@@ -378,9 +309,9 @@ mod tests {
     }
 
     #[test]
-    fn direct_authorization_checks_redirect_before_approval_and_issues_code_once() {
+    fn authorization_checks_the_redirect_and_needs_sign_in() {
         let issuer = issuer();
-        let clients = OAuthClientRegistry::ephemeral();
+        let clients = clients();
         let codes = McpAuthorizationCodeMap::default();
         let pending_indieauth = PendingIndieAuthMap::default();
         let pending_consent = PendingConsentMap::default();
@@ -394,7 +325,6 @@ mod tests {
             named_runtime: None,
             requested_profile: Some("readonly".into()),
             fallback_vault_root: "/vault".into(),
-            local_redirect_uris: &["https://client.example/callback".into()],
             allowed_redirect_hosts: &[],
             exchange: fake_exchange,
         };
@@ -405,22 +335,17 @@ mod tests {
         );
         assert_eq!(endpoint.authorize("GET", &params).status, 400);
         assert!(codes.lock().unwrap().is_empty());
+        // There is no approval-token form: without IndieAuth nothing is issued.
         let mut params = authorize_params();
-        assert_eq!(endpoint.authorize("GET", &params).status, 200);
         params.insert("approval_token".into(), "approval-secret".into());
-        let response = endpoint.authorize("GET", &params);
-        assert_eq!(response.status, 302);
-        assert_eq!(codes.lock().unwrap().len(), 1);
-        assert!(response
-            .extra_headers
-            .iter()
-            .any(|(name, value)| name == "Location" && value.contains("state=original-state")));
+        assert_eq!(endpoint.authorize("GET", &params).status, 503);
+        assert!(codes.lock().unwrap().is_empty());
     }
 
     #[test]
     fn indieauth_callback_preserves_client_state_and_requires_known_upstream_state() {
         let issuer = issuer();
-        let clients = OAuthClientRegistry::ephemeral();
+        let clients = clients();
         let codes = McpAuthorizationCodeMap::default();
         let pending_indieauth = PendingIndieAuthMap::default();
         let pending_consent = PendingConsentMap::default();
@@ -441,7 +366,6 @@ mod tests {
             named_runtime: None,
             requested_profile: Some("readonly".into()),
             fallback_vault_root: "/vault".into(),
-            local_redirect_uris: &["https://client.example/callback".into()],
             allowed_redirect_hosts: &[],
             exchange: fake_exchange,
         };

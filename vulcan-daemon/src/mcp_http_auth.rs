@@ -86,9 +86,6 @@ pub fn authenticate_mcp_http_request(
         client_id = identity.client_id;
         scopes = identity.scopes;
         grant_id = identity.grant_id;
-        if permission_profile.is_none() {
-            permission_profile = identity.permission_profile;
-        }
         credential = token;
     }
     if let Some(expected) = options.auth_token {
@@ -215,10 +212,7 @@ mod tests {
                 client_id: "static-client".into(),
                 client_secret: "static-secret".into(),
                 signing_key: "test-signing-key".into(),
-                approval_token: String::new(),
                 subject: subject.into(),
-                email: None,
-                users: Vec::new(),
                 dcr_enabled: true,
             })
             .unwrap(),

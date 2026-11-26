@@ -1609,10 +1609,7 @@ fn named_listener_test_token(
             .clone()
             .expect("client secret"),
         signing_key: load_or_create_local_oauth_signing_key(paths, options).expect("signing key"),
-        approval_token: String::new(),
         subject: subject.to_string(),
-        email: None,
-        users: Vec::new(),
         dcr_enabled: false,
     })
     .expect("issuer")
@@ -2663,52 +2660,6 @@ fn named_listener_auth_challenge(address: SocketAddr, name: &str) -> String {
 
 #[cfg(feature = "oauth")]
 #[test]
-fn direct_local_oauth_preserves_registered_redirect_query() {
-    let temporary = tempfile::tempdir().expect("temporary vault");
-    let paths = VaultPaths::new(temporary.path());
-    let issuer = Arc::new(
-        LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
-            public_url: "https://mcp.example.test/personal".to_string(),
-            client_id: "static-client".to_string(),
-            client_secret: "client-secret".to_string(),
-            signing_key: "distinct-signing-key".to_string(),
-            approval_token: "approval".to_string(),
-            subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
-            dcr_enabled: false,
-        })
-        .expect("issuer"),
-    );
-    let mut context = consent_test_context(&paths, Arc::clone(&issuer));
-    context.oauth_local_redirect_uris =
-        vec!["https://client.example.test/callback?source=vulcan".to_string()];
-    let request = McpHttpRequest {
-        method: "GET".to_string(),
-        path: "/oauth/authorize".to_string(),
-        query: format!(
-            "client_id=static-client&redirect_uri={}&response_type=code&code_challenge=challenge&code_challenge_method=S256&approval_token=approval&state=client-state",
-            percent_encode(&context.oauth_local_redirect_uris[0]),
-        ),
-        headers: BTreeMap::new(),
-        body: Vec::new(),
-    };
-    let response = handle_local_oauth_authorize(&context, &issuer, &request);
-    assert_eq!(response.status, 302);
-    let location = response
-        .extra_headers
-        .iter()
-        .find_map(|(name, value)| (name == "Location").then_some(value))
-        .expect("redirect Location");
-    assert!(
-        location.starts_with("https://client.example.test/callback?source=vulcan&code="),
-        "{location}"
-    );
-    assert!(location.ends_with("&state=client-state"), "{location}");
-}
-
-#[cfg(feature = "oauth")]
-#[test]
 fn dynamic_registration_rejects_invalid_metadata_before_persisting_clients() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let context = dcr_test_context(&VaultPaths::new(temporary.path()));
@@ -2883,10 +2834,7 @@ fn token_endpoint_enforces_registered_client_authentication_method() {
             client_id: "static-client".to_string(),
             client_secret: "static-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -2970,10 +2918,7 @@ fn client_id_metadata_documents_require_exact_public_client_metadata() {
             client_id: "static-client".to_string(),
             client_secret: "secret".to_string(),
             signing_key: "signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -3031,10 +2976,7 @@ fn oauth_client_registry_is_atomic_owner_only_and_rejects_loose_permissions() {
             client_id: "static-client".to_string(),
             client_secret: "secret".to_string(),
             signing_key: "signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -3164,9 +3106,8 @@ fn indieauth_subject_mismatch_error_is_actionable() {
 
     assert_eq!(response.status, 403);
     assert!(body.contains("https://other.example/"));
-    assert!(body.contains("--oauth-indieauth-me"));
-    assert!(body.contains("--permissions <profile>"));
-    assert!(body.contains("--oauth-local-user"));
+    assert!(body.contains("vulcan mcp remote set <name> --identity"));
+    assert!(!body.contains("--oauth-"));
 }
 
 #[cfg(feature = "oauth")]
@@ -3210,7 +3151,6 @@ fn consent_test_context(paths: &VaultPaths, issuer: Arc<LocalOAuthIssuer>) -> Mc
             oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
             oauth_dcr_enabled: true,
             oauth_dcr_allowed_redirect_hosts: vec!["client.example.test".to_string()],
-            oauth_local_redirect_uris: Vec::new(),
             oauth_indieauth: None,
             named_runtime: None,
             request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
@@ -3226,10 +3166,7 @@ fn dcr_test_context(paths: &VaultPaths) -> McpHttpServerContext {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -3248,10 +3185,7 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -3539,10 +3473,7 @@ fn mcp_http_session_limit_rejects_new_sessions_and_reclaims_expired_ones() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -3611,10 +3542,7 @@ fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -3716,10 +3644,7 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -3873,15 +3798,23 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
     );
     let mut context = consent_test_context(&paths, Arc::clone(&issuer));
+    context
+        .oauth_clients
+        .register(vulcan_daemon::mcp_oauth_clients::RegisteredOAuthClient {
+            client_id: "static-client".to_string(),
+            client_secret: "client-secret".to_string(),
+            redirect_uris: vec!["https://client.example.test/callback".to_string()],
+            client_name: None,
+            token_endpoint_auth_method: "client_secret_post".to_string(),
+            client_id_issued_at: 0,
+        })
+        .expect("register client");
     let store = McpAuthorizationStore::at(temporary.path().join("state"));
     context.named_runtime = Some(NamedMcpRuntime {
         remote_id: vulcan_daemon::mcp_remote::McpRemoteId::parse("personal-chatgpt")
@@ -4046,10 +3979,7 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("other issuer"),
@@ -4138,10 +4068,7 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "shared-remote-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -4605,10 +4532,7 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -4732,10 +4656,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),
@@ -4878,10 +4799,7 @@ fn named_mcp_operation_status_is_bound_to_grant_subject_and_audience() {
             client_id: "static-client".to_string(),
             client_secret: "client-secret".to_string(),
             signing_key: "distinct-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/alice".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer"),

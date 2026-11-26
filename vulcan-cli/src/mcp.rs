@@ -837,8 +837,6 @@ fn run_mcp_http_server_inner(
             // Empty means any valid redirect; consent shows where it goes.
             oauth_dcr_allowed_redirect_hosts: options.oauth_dcr_allowed_redirect_host.clone(),
             #[cfg(feature = "oauth")]
-            oauth_local_redirect_uris: Vec::new(),
-            #[cfg(feature = "oauth")]
             oauth_indieauth: build_indieauth_config(options)?,
             #[cfg(feature = "oauth")]
             named_runtime,
@@ -1319,14 +1317,11 @@ fn build_mcp_oauth_validator(
         client_id: "vulcan-mcp".to_string(),
         client_secret,
         signing_key: load_or_create_local_oauth_signing_key(paths, options)?,
-        approval_token: String::new(),
         subject: options
             .oauth_local_subject
             .as_deref()
             .unwrap_or(identity)
             .to_string(),
-        email: None,
-        users: Vec::new(),
         dcr_enabled: true,
     })
     .map(Arc::new)
@@ -1375,15 +1370,6 @@ fn handle_local_oauth_register(
     request: &McpHttpRequest,
 ) -> McpHttpResponse {
     handle_mcp_oauth_route(context, request, McpHttpRoute::LocalOAuthRegister)
-}
-
-#[cfg(all(test, feature = "oauth"))]
-fn handle_local_oauth_authorize(
-    context: &McpHttpServerContext,
-    _issuer: &LocalOAuthIssuer,
-    request: &McpHttpRequest,
-) -> McpHttpResponse {
-    handle_mcp_oauth_route(context, request, McpHttpRoute::LocalOAuthAuthorize)
 }
 
 #[cfg(all(test, feature = "oauth"))]

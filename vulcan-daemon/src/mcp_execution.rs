@@ -616,8 +616,6 @@ mod tests {
             #[cfg(feature = "oauth")]
             oauth_dcr_allowed_redirect_hosts: vec!["client.example.test".into()],
             #[cfg(feature = "oauth")]
-            oauth_local_redirect_uris: Vec::new(),
-            #[cfg(feature = "oauth")]
             oauth_indieauth: None,
             #[cfg(feature = "oauth")]
             named_runtime: None,

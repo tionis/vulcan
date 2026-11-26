@@ -56,8 +56,6 @@ pub struct McpHttpHost<C> {
     #[cfg(feature = "oauth")]
     pub oauth_dcr_allowed_redirect_hosts: Vec<String>,
     #[cfg(feature = "oauth")]
-    pub oauth_local_redirect_uris: Vec<String>,
-    #[cfg(feature = "oauth")]
     pub oauth_indieauth: Option<IndieAuthConfig>,
     #[cfg(feature = "oauth")]
     pub named_runtime: Option<NamedMcpRuntime>,
@@ -177,7 +175,6 @@ impl<C> McpHttpHost<C> {
             named_runtime: self.named_runtime.as_ref(),
             requested_profile: self.requested_profile.clone(),
             fallback_vault_root: self.paths.vault_root().display().to_string(),
-            local_redirect_uris: &self.oauth_local_redirect_uris,
             allowed_redirect_hosts: &self.oauth_dcr_allowed_redirect_hosts,
             exchange,
         }
@@ -238,8 +235,6 @@ mod tests {
             oauth_dcr_enabled: true,
             #[cfg(feature = "oauth")]
             oauth_dcr_allowed_redirect_hosts: vec!["client.example.test".into()],
-            #[cfg(feature = "oauth")]
-            oauth_local_redirect_uris: Vec::new(),
             #[cfg(feature = "oauth")]
             oauth_indieauth: None,
             #[cfg(feature = "oauth")]
@@ -374,10 +369,7 @@ mod tests {
                 client_id: "static-client".into(),
                 client_secret: "static-secret".into(),
                 signing_key: "test-signing-key".into(),
-                approval_token: String::new(),
                 subject: "https://identity.example.test/me".into(),
-                email: None,
-                users: Vec::new(),
                 dcr_enabled: true,
             })
             .unwrap(),

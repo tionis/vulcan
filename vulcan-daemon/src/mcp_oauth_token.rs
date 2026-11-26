@@ -175,22 +175,17 @@ impl McpLocalTokenEndpoint<'_> {
 
     #[must_use]
     pub fn client_valid(&self, credentials: &McpTokenClientCredentials) -> bool {
-        (credentials.method != McpTokenAuthMethod::None
-            && self
-                .issuer
-                .verify_client(&credentials.client_id, &credentials.client_secret))
-            || self
-                .clients
-                .get(&credentials.client_id)
-                .ok()
-                .flatten()
-                .is_some_and(|client| {
-                    registered_mcp_client_credentials_valid(
-                        credentials,
-                        &client.token_endpoint_auth_method,
-                        &client.client_secret,
-                    )
-                })
+        self.clients
+            .get(&credentials.client_id)
+            .ok()
+            .flatten()
+            .is_some_and(|client| {
+                registered_mcp_client_credentials_valid(
+                    credentials,
+                    &client.token_endpoint_auth_method,
+                    &client.client_secret,
+                )
+            })
             || (credentials.method == McpTokenAuthMethod::None
                 && client_id_metadata_valid(
                     &credentials.client_id,
@@ -272,10 +267,7 @@ mod tests {
             client_id: "static-client".to_string(),
             client_secret: "static-secret".to_string(),
             signing_key: "test-signing-key".to_string(),
-            approval_token: String::new(),
             subject: "https://identity.example.test/me".to_string(),
-            email: None,
-            users: Vec::new(),
             dcr_enabled: true,
         })
         .expect("issuer")
@@ -295,6 +287,16 @@ mod tests {
     fn code_exchange_is_one_time_and_keeps_scope_resource_response() {
         let issuer = issuer();
         let clients = OAuthClientRegistry::ephemeral();
+        clients
+            .register(crate::mcp_oauth_clients::RegisteredOAuthClient {
+                client_id: "static-client".to_string(),
+                client_secret: "static-secret".to_string(),
+                redirect_uris: vec!["https://client.example.test/callback".to_string()],
+                client_name: None,
+                token_endpoint_auth_method: "client_secret_post".to_string(),
+                client_id_issued_at: 0,
+            })
+            .expect("register client");
         let codes = McpAuthorizationCodeMap::default();
         let endpoint = McpLocalTokenEndpoint {
             issuer: &issuer,
