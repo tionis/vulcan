@@ -16,6 +16,9 @@ pub struct McpHttpRequest {
     pub query: String,
     pub headers: BTreeMap<String, String>,
     pub body: Vec<u8>,
+    /// Cancelled when the client goes away before its response is
+    /// delivered, so work done for it can stop.
+    pub cancellation: vulcan_app::execution::ExecutionCancellationToken,
 }
 
 #[derive(Debug)]
@@ -109,6 +112,7 @@ mod tests {
     #[test]
     fn post_and_sse_preflight_preserve_http_error_contract() {
         let mut request = McpHttpRequest {
+            cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
             method: "POST".to_string(),
             path: "/mcp".to_string(),
             query: String::new(),

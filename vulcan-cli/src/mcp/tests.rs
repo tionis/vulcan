@@ -2701,6 +2701,7 @@ fn dynamic_registration_rejects_invalid_metadata_before_persisting_clients() {
         "https://user@client.example.test/callback",
     ] {
         let request = McpHttpRequest {
+            cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
             method: "POST".to_string(),
             path: "/oauth/register".to_string(),
             query: String::new(),
@@ -2731,6 +2732,7 @@ fn dynamic_registration_rejects_invalid_metadata_before_persisting_clients() {
         ),
     ] {
         let request = McpHttpRequest {
+            cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
             method: "POST".to_string(),
             path: "/oauth/register".to_string(),
             query: String::new(),
@@ -2836,6 +2838,7 @@ fn separate_http_contexts_use_fresh_durable_client_registration() {
 #[cfg(feature = "oauth")]
 fn dcr_test_request(client_name: &str) -> McpHttpRequest {
     McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/oauth/register".to_string(),
         query: String::new(),
@@ -2888,6 +2891,7 @@ fn token_endpoint_enforces_registered_client_authentication_method() {
     let post_basic = format!("Basic {}", BASE64_STANDARD.encode("client-post:secret"));
     let post = |authorization: Option<&str>, body: &str| {
         let request = McpHttpRequest {
+            cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
             method: "POST".to_string(),
             path: "/oauth/token".to_string(),
             query: String::new(),
@@ -3245,6 +3249,7 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
     let server = thread::spawn(move || {
         listener.serve(Some(&server_stop), move |_inbound, stream| {
             let request = McpHttpRequest {
+                cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
                 method: "GET".to_string(),
                 path: "/mcp".to_string(),
                 query: String::new(),
@@ -3464,6 +3469,7 @@ fn malformed_initialize_requests_do_not_admit_http_sessions() {
     let paths = VaultPaths::new(temporary.path());
     let context = dcr_test_context(&paths);
     let request = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/mcp".to_string(),
         query: String::new(),
@@ -3604,6 +3610,7 @@ fn cancellation_notification_authenticates_and_bypasses_busy_session_core() {
     let cancellation = ExecutionCancellationToken::default();
     assert!(session.register_request(&serde_json::json!(17), cancellation.clone()));
     let request = |params: serde_json::Value| McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/mcp".to_string(),
         query: String::new(),
@@ -3723,6 +3730,7 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
         .any(|(name, value)| name == "Content-Security-Policy" && value.contains("form-action")));
 
     let invalid = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/oauth/consent".to_string(),
         query: String::new(),
@@ -3740,6 +3748,7 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
         .contains_key(transaction));
 
     let approve = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/oauth/consent".to_string(),
         query: String::new(),
@@ -3788,6 +3797,7 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
             },
         );
     let deny = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/oauth/consent".to_string(),
         query: String::new(),
@@ -3879,6 +3889,7 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         .expect("consent lock")
         .insert("named-transaction".to_string(), pending_consent.clone());
     let approval = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/oauth/consent".to_string(),
         query: String::new(),
@@ -3935,6 +3946,7 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         .expect("code")
         .clone();
     let token_request = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/oauth/token".to_string(),
         query: String::new(),
@@ -3982,6 +3994,7 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         .to_string();
     let access_token = tokens["access_token"].as_str().expect("access token");
     let request = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/mcp".to_string(),
         query: String::new(),
@@ -4027,6 +4040,7 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
 
     let refresh = |token: &str| {
         McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/oauth/token".to_string(),
         query: String::new(),
@@ -4178,6 +4192,7 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
         )
         .expect("access token");
     let request = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/mcp".to_string(),
         query: String::new(),
@@ -4573,6 +4588,7 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
     http.oauth = None;
     http.requested_profile = Some("unrestricted".to_string());
     let inbound = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/mcp".to_string(),
         query: String::new(),
@@ -4734,6 +4750,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
     let ledger = hosted.executor.ledger();
     http.hosted = Some(hosted);
     let authority_request = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/mcp".to_string(),
         query: String::new(),
@@ -4748,6 +4765,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
         .admit(session_id.clone(), session)
         .expect("register direct session");
     let request = |payload: serde_json::Value| McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "POST".to_string(),
         path: "/mcp".to_string(),
         query: String::new(),
@@ -4936,6 +4954,7 @@ fn named_mcp_operation_status_is_bound_to_grant_subject_and_audience() {
         200
     );
     let request = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "GET".to_string(),
         path: format!("/mcp/operations/{operation_id}"),
         query: String::new(),

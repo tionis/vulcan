@@ -303,6 +303,7 @@ async fn read_request(
         query: parts.uri.query().unwrap_or_default().to_string(),
         headers,
         body: body.to_vec(),
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
     })
 }
 

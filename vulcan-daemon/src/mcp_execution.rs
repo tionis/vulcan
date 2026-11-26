@@ -680,6 +680,7 @@ mod tests {
 
     fn inbound() -> McpHttpRequest {
         McpHttpRequest {
+            cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
             method: "POST".into(),
             path: "/mcp".into(),
             query: String::new(),

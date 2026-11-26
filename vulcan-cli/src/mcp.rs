@@ -1358,6 +1358,7 @@ fn oauth_authorization_server_metadata(
     _oauth: &McpOAuthMode,
 ) -> Value {
     let request = McpHttpRequest {
+        cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
         method: "GET".to_string(),
         path: "/.well-known/oauth-authorization-server".to_string(),
         query: String::new(),

@@ -10,7 +10,8 @@ use crate::mcp_http_codec::{write_mcp_http_sse_event, write_mcp_http_sse_keepali
 use crate::mcp_http_codec::{McpHttpRequest, McpHttpResponse};
 use crate::mcp_http_host::{McpHttpHost, McpHttpProtocolConfig};
 use crate::mcp_http_routes::{
-    dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
+    accepts_event_stream, dispatch_mcp_http_request, modern_payload, McpHttpRoute,
+    McpHttpRouteHandler, McpHttpRouteOptions,
 };
 #[cfg(feature = "oauth")]
 use crate::mcp_oauth_authorize::IndieAuthExchange;
@@ -27,8 +28,7 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
-use vulcan_app::execution::ExecutionCancellationToken;
+use std::time::{Duration, Instant};
 use vulcan_app::mcp_core::{
     listen_request, requested_modern_version, subscription_acknowledged, subscription_closed,
     subscription_notification, MCP_HEADER_MISMATCH,
@@ -357,7 +357,9 @@ fn serve_modern_mcp_http_post<C: McpRequestCore>(
         context.inner,
         request,
         authority,
-        &ExecutionCancellationToken::default(),
+        // A modern request has no session to cancel it through: closing its
+        // stream before the response arrives is the cancellation.
+        &request.cancellation,
         context.hosted,
         notifier,
     );
@@ -366,6 +368,11 @@ fn serve_modern_mcp_http_post<C: McpRequestCore>(
 
 /// How often the connection thread looks for progress while a call runs.
 const PROGRESS_RELAY_INTERVAL: Duration = Duration::from_millis(50);
+/// A modern call still running after this is answered with an event stream,
+/// whose keepalive comments find a client that has gone.
+const DEPARTURE_PROBE_AFTER: Duration = Duration::from_secs(1);
+/// How often a call's event stream carries a keepalive comment.
+const DEPARTURE_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A tool call that asked for progress. The call runs on its own thread
 /// while this one relays its progress: the first notification turns the
@@ -394,6 +401,11 @@ pub fn handle_mcp_http_post_with_progress<C: McpRequestCore>(
         }))
     };
     let mut streaming = false;
+    // A modern call has no session to be cancelled through: a client that
+    // leaves is noticed when a write to its stream fails, and cancels it.
+    let probe = modern_payload(payload) && accepts_event_stream(request);
+    let started = Instant::now();
+    let mut last_write = started;
     let response = thread::scope(|scope| -> io::Result<McpHttpResponse> {
         let call = scope.spawn(|| {
             let response =
@@ -401,26 +413,55 @@ pub fn handle_mcp_http_post_with_progress<C: McpRequestCore>(
             open.store(false, Ordering::Release);
             response
         });
-        loop {
-            match receiver.recv_timeout(PROGRESS_RELAY_INTERVAL) {
-                Ok(message) => {
-                    if !streaming {
-                        stream.start_event_stream()?;
-                        streaming = true;
+        let relayed = (|| -> io::Result<()> {
+            loop {
+                match receiver.recv_timeout(PROGRESS_RELAY_INTERVAL) {
+                    Ok(message) => {
+                        if !streaming {
+                            stream.start_event_stream()?;
+                            streaming = true;
+                        }
+                        write_mcp_http_sse_event(stream, &message)?;
+                        last_write = Instant::now();
                     }
-                    write_mcp_http_sse_event(stream, &message)?;
+                    Err(error) if !call.is_finished() => {
+                        // A core that does not keep the notifier closes the
+                        // channel at once; the call still runs.
+                        if error == mpsc::RecvTimeoutError::Disconnected {
+                            thread::sleep(PROGRESS_RELAY_INTERVAL);
+                        }
+                        let due = if streaming {
+                            last_write.elapsed() >= DEPARTURE_PROBE_INTERVAL
+                        } else {
+                            started.elapsed() >= DEPARTURE_PROBE_AFTER
+                        };
+                        if probe && due {
+                            if !streaming {
+                                stream.start_event_stream()?;
+                                streaming = true;
+                            }
+                            std::io::Write::write_all(stream, b": keepalive\n\n")?;
+                            last_write = Instant::now();
+                        }
+                    }
+                    Err(_) => break,
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) if !call.is_finished() => {}
-                Err(_) => break,
             }
-        }
-        // What the call reported before it was answered still goes out.
-        while let Ok(message) = receiver.try_recv() {
-            if !streaming {
-                stream.start_event_stream()?;
-                streaming = true;
+            // What the call reported before it was answered still goes out.
+            while let Ok(message) = receiver.try_recv() {
+                if !streaming {
+                    stream.start_event_stream()?;
+                    streaming = true;
+                }
+                write_mcp_http_sse_event(stream, &message)?;
             }
-            write_mcp_http_sse_event(stream, &message)?;
+            Ok(())
+        })();
+        if let Err(error) = relayed {
+            // The client has gone: stop the call where it can stop.
+            request.cancellation.cancel();
+            let _ = call.join();
+            return Err(error);
         }
         Ok(call.join().expect("MCP progress call should not panic"))
     })?;
@@ -965,7 +1006,7 @@ mod tests {
         .map_err(|error| error.to_string())
     }
 
-    fn host(paths: &VaultPaths) -> McpHttpHost<McpProtocolCore> {
+    fn host<C: McpRequestCore>(paths: &VaultPaths) -> McpHttpHost<C> {
         McpHttpHost {
             paths: paths.clone(),
             requested_profile: Some("readonly".into()),
@@ -1009,6 +1050,7 @@ mod tests {
 
     fn request(session: Option<&str>) -> McpHttpRequest {
         McpHttpRequest {
+            cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
             method: "POST".into(),
             path: "/mcp".into(),
             query: String::new(),
@@ -1121,6 +1163,116 @@ mod tests {
 
     fn body(response: &McpHttpResponse) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    /// The request token the slow core waits on, set by the test's handler.
+    static SLOW_TOKEN: std::sync::Mutex<Option<vulcan_app::execution::ExecutionCancellationToken>> =
+        std::sync::Mutex::new(None);
+
+    /// A core whose every request waits (up to ten seconds) for its request
+    /// to be cancelled, and reports whether it was.
+    #[derive(Clone)]
+    struct SlowCore(VaultPaths);
+
+    impl McpRequestCore for SlowCore {
+        fn vault_paths(&self) -> &VaultPaths {
+            &self.0
+        }
+        fn permission_grant(&self) -> vulcan_core::PermissionGrant {
+            vulcan_core::PermissionGrant::from_profile(&vulcan_core::PermissionProfile::default())
+        }
+        fn attenuate_profile(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn process_request(&mut self, _: Value) -> Vec<Value> {
+            Vec::new()
+        }
+        fn process_http_request(
+            &mut self,
+            request: &Value,
+        ) -> Result<vulcan_app::mcp_dispatch::McpHttpProcessResult, Value> {
+            let token = SLOW_TOKEN.lock().unwrap().clone().unwrap();
+            let cancelled = (0..1000).any(|_| {
+                std::thread::sleep(Duration::from_millis(10));
+                token.is_cancelled()
+            });
+            Ok(vulcan_app::mcp_dispatch::McpHttpProcessResult {
+                response: Some(
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": {"cancelled": cancelled}}),
+                ),
+                notifications: Vec::new(),
+                accepted_notification: false,
+                session_stale: false,
+            })
+        }
+        fn list_changed_notifications(&mut self) -> Vec<Value> {
+            Vec::new()
+        }
+        fn offer_subscriptions(&mut self) {}
+        fn keep_operations(&mut self, _: Arc<dyn McpOperationLookup>) {}
+        fn list_changes(&mut self) -> Vec<Value> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_departed_modern_client_cancels_its_call_through_failed_keepalives() {
+        use std::io::{Read, Write};
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let host: &'static McpHttpHost<SlowCore> = Box::leak(Box::new(host(&paths)));
+        let (seen_sender, seen_receiver) = std::sync::mpsc::channel();
+        let seen_sender = std::sync::Mutex::new(seen_sender);
+        let listener =
+            crate::mcp_transport::McpHttpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = listener.local_addr();
+        let stop = Arc::new(crate::shutdown::ShutdownSignal::new(false));
+        let runner_stop = Arc::clone(&stop);
+        let runner = std::thread::spawn(move || {
+            listener.serve(Some(&runner_stop), move |request, connection| {
+                *SLOW_TOKEN.lock().unwrap() = Some(request.cancellation.clone());
+                let driver = McpHttpDriver {
+                    inner: host,
+                    hosted: None,
+                    core_factory: |config| Ok(SlowCore(config.paths)),
+                    #[cfg(feature = "oauth")]
+                    indieauth_exchange: crate::mcp_oauth_authorize::default_indieauth_exchange,
+                };
+                let authority = authenticate_mcp_http_request(&driver, request).unwrap();
+                let payload: Value = serde_json::from_slice(&request.body).unwrap();
+                let _ = handle_mcp_http_post_with_progress(
+                    &driver, request, &authority, &payload, connection,
+                );
+                seen_sender
+                    .lock()
+                    .unwrap()
+                    .send(request.cancellation.is_cancelled())
+                    .unwrap();
+            })
+        });
+        let body = modern(1, "tools/call", json!({"name": "slow", "arguments": {}})).to_string();
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        write!(
+            client,
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/call\r\nMcp-Name: slow\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        // The call outlasts the probe delay: the response becomes an event
+        // stream carrying keepalive comments.
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut head = [0_u8; 256];
+        let read = client.read(&mut head).unwrap();
+        assert!(String::from_utf8_lossy(&head[..read])
+            .to_ascii_lowercase()
+            .contains("text/event-stream"));
+        drop(client);
+        // Writes to the departed client fail, which cancels the call.
+        assert!(seen_receiver.recv_timeout(Duration::from_secs(15)).unwrap());
+        stop.cancel();
+        runner.join().unwrap().unwrap();
     }
 
     #[test]

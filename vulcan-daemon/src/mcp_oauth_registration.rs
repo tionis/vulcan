@@ -116,6 +116,7 @@ mod tests {
 
     fn request(method: &str, auth_method: &str) -> McpHttpRequest {
         McpHttpRequest {
+            cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
             method: method.to_string(),
             path: "/oauth/register".to_string(),
             query: String::new(),

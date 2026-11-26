@@ -376,7 +376,13 @@ is answered with plain JSON.
 - One endpoint path per listener; POST for every request and notification. Responses are
   `application/json`, or `text/event-stream` when the request has progress or input to stream.
 - Modern: no session header. `subscriptions/listen` is a long-lived POST stream with keepalive
-  comments every 15 seconds and `X-Accel-Buffering: no`. Closing a request's stream cancels it.
+  comments every 15 seconds and `X-Accel-Buffering: no`. Closing a request's stream cancels it:
+  a modern `tools/call` from a client that accepts `text/event-stream` and still runs after one
+  second is answered with an event stream carrying a keepalive comment every two seconds (and its
+  progress, if asked), its response the last event. When a write fails because the client has
+  gone, the request's token is cancelled. A plain end of input is not taken as leaving, since the
+  listener allows half-close; a call that became a task is not cancelled by the end of its
+  response.
 - Legacy: `initialize` creates a legacy session (`Mcp-Session-Id`, idle expiry 30 minutes, at
   most 256), GET opens its notification stream, DELETE ends it, `notifications/cancelled`
   cancels by request id. A refreshed token on the same session is accepted when it resolves to

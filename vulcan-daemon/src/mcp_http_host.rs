@@ -397,6 +397,7 @@ mod tests {
         assert!(std::ptr::eq(local.authorize.clients, local.token.clients));
         let response = routes.handle(
             &McpHttpRequest {
+                cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
                 method: "GET".into(),
                 path: "/.well-known/oauth-authorization-server".into(),
                 query: String::new(),

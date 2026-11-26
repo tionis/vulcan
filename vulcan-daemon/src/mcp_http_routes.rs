@@ -80,10 +80,28 @@ pub trait McpHttpRouteHandler {
     }
 }
 
-/// Whether a request is a tool call that asked for progress notifications.
-fn wants_progress(payload: &Value) -> bool {
+/// Whether a tool call may be answered with an event stream: it asked for
+/// progress notifications, or it is a 2026-07-28 call from a client that
+/// accepts event streams, whose stream is how a departed client is noticed.
+fn wants_progress(request: &McpHttpRequest, payload: &Value) -> bool {
     payload.get("method").and_then(Value::as_str) == Some("tools/call")
-        && payload.pointer("/params/_meta/progressToken").is_some()
+        && (payload.pointer("/params/_meta/progressToken").is_some()
+            || (modern_payload(payload) && accepts_event_stream(request)))
+}
+
+/// Whether a request is a 2026-07-28 one, which names its version in `_meta`.
+pub(crate) fn modern_payload(payload: &Value) -> bool {
+    payload
+        .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+        .is_some()
+}
+
+/// Whether the client accepts `text/event-stream` responses.
+pub(crate) fn accepts_event_stream(request: &McpHttpRequest) -> bool {
+    request
+        .headers
+        .get("accept")
+        .is_some_and(|accept| accept.to_ascii_lowercase().contains("text/event-stream"))
 }
 
 /// Route one already-decoded request. Endpoint authentication precedes method
@@ -131,7 +149,7 @@ pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
                     {
                         return handler.listen(request, &authority, &payload, stream);
                     }
-                    Ok(payload) if wants_progress(&payload) => {
+                    Ok(payload) if wants_progress(request, &payload) => {
                         return handler.post_with_progress(request, &authority, &payload, stream);
                     }
                     Ok(payload) => handler.post(request, &authority, &payload),
@@ -265,6 +283,7 @@ mod tests {
 
     fn request(method: &str, path: &str) -> McpHttpRequest {
         McpHttpRequest {
+            cancellation: vulcan_app::execution::ExecutionCancellationToken::default(),
             method: method.to_string(),
             path: path.to_string(),
             query: String::new(),
