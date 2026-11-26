@@ -168,6 +168,17 @@ and run directly. In `daemon` mode they say so instead of silently running direc
   `note get` and `note outline` read the note file itself, skip that proof, and take about 8 ms
   directly, so they are not routed. Without a note name the CLI may pick one interactively, so
   those invocations run directly.
+- `numerals eval` and `metabind list` of a note inside the vault are routed through the same
+  operation (`NoteReadRequest::Numerals`/`Metabind` with the vault-relative path the client
+  resolved, so a note outside the vault runs directly). Their retained state is the daemon's warm
+  JavaScript: the per-thread Numerals engine cache (mathjs loaded once per blocking thread) and
+  the trust store and configuration already read. The answer is the report the CLI prints, and
+  the parity test compares human and JSON output. On a one-note vault with a `math` block and a
+  `VIEW[{level} * {price}]` field (release build, best of seven), `numerals eval` takes 582 ms
+  directly and 50 ms routed, and `metabind list` 753 ms and 50 ms; nearly all of the direct time
+  is starting a QuickJS engine and loading mathjs, which the daemon has already done. (`note info`
+  on the same vault takes 59 ms directly and 85 ms routed: routing pays off there only for large
+  vaults.)
 
 ### Freshness
 

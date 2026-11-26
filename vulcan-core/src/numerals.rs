@@ -72,7 +72,7 @@ pub struct NumeralsBlockOutput {
 }
 
 /// What one Numerals region of a note evaluated to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NumeralsOutcome {
     Block {
@@ -92,7 +92,7 @@ pub enum NumeralsOutcome {
 }
 
 /// A block's render style, as its fence language or the config picks it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NumeralsStyle {
     Plain,
@@ -101,7 +101,7 @@ pub enum NumeralsStyle {
 }
 
 /// One evaluated region, in document order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NumeralsRegion {
     pub byte_range: Range<usize>,
     pub line_number: usize,

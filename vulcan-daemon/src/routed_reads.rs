@@ -245,8 +245,13 @@ pub fn routed_note_read(
     read: &RoutedNoteRead,
 ) -> Result<vulcan_app::routed::note::NoteReadAnswer, RoutedReadError> {
     let guard = prepare_read(vault, read.permissions.as_deref(), read.refresh)?;
-    vulcan_app::routed::note::run_note_read(&vault.paths, &read.request, &guard)
-        .map_err(|error| RoutedReadError::Failed(error.to_string()))
+    vulcan_app::routed::note::run_note_read(
+        &vault.paths,
+        &read.request,
+        &guard,
+        read.permissions.as_deref(),
+    )
+    .map_err(|error| RoutedReadError::Failed(error.to_string()))
 }
 
 /// The checks every routed read passes before it runs: the registration's

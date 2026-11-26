@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use vulcan_core::metabind::{
     fields_in_source, inputs_bound_to, resolve_target_note, view_write_backs,
@@ -25,7 +25,7 @@ pub use press::{
 pub use vulcan_core::metabind::buttons::ButtonSelector;
 
 /// A note's fields.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetaBindReport {
     pub path: String,
     pub enabled: bool,

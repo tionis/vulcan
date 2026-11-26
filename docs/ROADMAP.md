@@ -8774,6 +8774,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 - [x] Rendering in Markdown, HTML, and editor regions; `vulcan numerals eval` and `vulcan numerals apply` for `@[name]` insertion lines with `--dry-run`.
 - [x] `[numerals]` config (off by default) and settings import; `docs/guide/live-documents.md`, skills, tests.
 - [x] Engine cost: build-time QuickJS bytecode for mathjs and the prelude, a checked typed-function sort patch, and per-thread engine reuse that discards engines an expression changed (`createUnit`, `config`, `import`).
+- [x] `numerals eval` and `metabind list` route to a resident daemon (`--route daemon|auto`), whose warm engines answer in about 50 ms instead of 0.6 to 0.8 s.
 
 ---
 

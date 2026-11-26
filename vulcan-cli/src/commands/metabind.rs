@@ -7,6 +7,7 @@ use vulcan_app::metabind::{
     ButtonSelector, MetaBindChange, MetaBindFileWrite, MetaBindPressOptions, MetaBindPressReport,
     MetaBindWritePlan, MetaBindWriter,
 };
+use vulcan_app::routed::note::{NoteReadAnswer, NoteReadRequest};
 use vulcan_app::AppError;
 use vulcan_core::metabind::{field_markdown, MetaBindLevel, MetaBindOutcome};
 use vulcan_core::VaultPaths;
@@ -38,6 +39,7 @@ pub(crate) fn handle_metabind_command(
     };
     let source = read_existing_markdown_source(paths, note)?;
     let Some(path) = source.target.vault_relative_path.clone() else {
+        crate::routing::refresh_if_deferred(cli, paths)?;
         return Err(CliError::operation(
             "`vulcan metabind` works on notes inside the vault",
         ));
@@ -45,8 +47,17 @@ pub(crate) fn handle_metabind_command(
     let config = &source.target.config;
     let (plan, dry_run) = match command {
         MetabindCommand::List { .. } => {
-            let report = list_metabind_fields(paths, config, &path, &source.source, profile)
-                .map_err(CliError::operation)?;
+            let routed = crate::routing::route_note_read(
+                cli,
+                paths,
+                NoteReadRequest::Metabind { path: path.clone() },
+            )?;
+            let report = if let Some(NoteReadAnswer::Metabind(report)) = routed {
+                report
+            } else {
+                list_metabind_fields(paths, config, &path, &source.source, profile)
+                    .map_err(CliError::operation)?
+            };
             return print_field_list(cli, &report);
         }
         MetabindCommand::Set {

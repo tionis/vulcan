@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 use vulcan_app::numerals::{evaluate_numerals_note, plan_numerals_apply, NumeralsChange};
+use vulcan_app::routed::note::{NoteReadAnswer, NoteReadRequest};
 use vulcan_core::numerals::outcome_markdown;
 use vulcan_core::VaultPaths;
 
@@ -27,19 +28,27 @@ pub(crate) fn handle_numerals_command(
     match command {
         NumeralsCommand::Eval { note } => {
             let target = read_existing_markdown_source(paths, note)?;
+            let routed = if let Some(path) = &target.target.vault_relative_path {
+                crate::routing::route_note_read(
+                    cli,
+                    paths,
+                    NoteReadRequest::Numerals { path: path.clone() },
+                )?
+            } else {
+                crate::routing::refresh_if_deferred(cli, paths)?;
+                None
+            };
             let path = target
                 .target
                 .vault_relative_path
                 .clone()
                 .unwrap_or_else(|| target.target.display_path.clone());
-            let report = evaluate_numerals_note(
-                paths,
-                &target.target.config,
-                &path,
-                &target.source,
-                profile,
-            )
-            .map_err(CliError::operation)?;
+            let report = if let Some(NoteReadAnswer::Numerals(report)) = routed {
+                report
+            } else {
+                evaluate_numerals_note(paths, &target.target.config, &path, &target.source, profile)
+                    .map_err(CliError::operation)?
+            };
             match cli.output {
                 OutputFormat::Json => print_json(&report),
                 OutputFormat::Human | OutputFormat::Markdown => {

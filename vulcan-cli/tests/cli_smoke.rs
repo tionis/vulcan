@@ -8180,6 +8180,17 @@ fn routed_queries_print_what_direct_queries_print() {
         "# Todo\n\n- [ ] Write the report 📅 2026-10-20\n- [x] File the receipts\n- [ ] Call Bob #people\n",
     )
     .expect("task note");
+    fs::write(
+        vault_root.join("Live.md"),
+        "---\nlevel: 2\n---\n`INPUT[slider(maxValue(5)):level]` `VIEW[{level} * 2]`\n\n```math\nprice = 3 USD\nprice * 4\n```\n",
+    )
+    .expect("live note");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[numerals]\nenabled = true\n",
+    )
+    .expect("config");
     run_scan(&vault_root);
     let vault = vault_root.to_str().expect("utf-8");
     let vulcan = |arguments: &[&str]| {
@@ -8219,7 +8230,7 @@ fn routed_queries_print_what_direct_queries_print() {
         thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let cases: [&[&str]; 33] = [
+    let cases: [&[&str]; 37] = [
         &[
             "--output",
             "json",
@@ -8334,6 +8345,10 @@ fn routed_queries_print_what_direct_queries_print() {
         &["note", "links", "Home"],
         &["--output", "json", "backlinks", "Projects/Alpha"],
         &["links", "Home"],
+        &["--output", "json", "numerals", "eval", "Live"],
+        &["numerals", "eval", "Live"],
+        &["--output", "json", "metabind", "list", "Live"],
+        &["metabind", "list", "Live"],
     ];
     for case in cases {
         let direct = vulcan(&[&["--route", "direct"], case].concat());

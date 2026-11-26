@@ -26,7 +26,10 @@ use vulcan_daemon::routed_reads::{
     RoutedDql, RoutedGraph, RoutedLs, RoutedQuery, RoutedSearch, RoutedTasksQuery,
 };
 
-use crate::cli::{Command, GraphCommand, NoteCommand, RouteMode, SearchMode, TasksCommand};
+use crate::cli::{
+    Command, GraphCommand, MetabindCommand, NoteCommand, NumeralsCommand, RouteMode, SearchMode,
+    TasksCommand,
+};
 use crate::{Cli, CliError};
 
 /// The route for a routable command: `--route` or `VULCAN_ROUTE`, else the
@@ -92,6 +95,13 @@ fn is_routable(command: &Command) -> bool {
         }
         | Command::Note {
             command: NoteCommand::Info { .. },
+        }
+        // Live fields: the daemon's JavaScript engines are already warm.
+        | Command::Numerals {
+            command: NumeralsCommand::Eval { .. },
+        }
+        | Command::Metabind {
+            command: MetabindCommand::List { .. },
         } => true,
         // One named note; without a name the CLI may pick one interactively.
         Command::Links { note, .. }
@@ -249,13 +259,26 @@ pub(crate) fn route_note_read(
         )
     })?;
     if answer.is_none() {
-        let use_stderr_color = crate::resolve_use_color(
-            cli.color,
-            std::io::IsTerminal::is_terminal(&std::io::stderr()),
-        );
-        crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+        run_deferred_refresh(paths, cli)?;
     }
     Ok(answer)
+}
+
+/// Runs the cache refresh routing deferred, for a routable command that
+/// turns out to run here without asking the daemon.
+pub(crate) fn refresh_if_deferred(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
+    if defers_refresh(cli) {
+        run_deferred_refresh(paths, cli)?;
+    }
+    Ok(())
+}
+
+fn run_deferred_refresh(paths: &VaultPaths, cli: &Cli) -> Result<(), CliError> {
+    let use_stderr_color = crate::resolve_use_color(
+        cli.color,
+        std::io::IsTerminal::is_terminal(&std::io::stderr()),
+    );
+    crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)
 }
 
 /// Ask the daemon with `ask` (given whether the caller wants a fresh

@@ -3,7 +3,7 @@
 //! `vulcan numerals apply` writes. Rendering never writes these values; see
 //! `vulcan_core::numerals` and `docs/specs/live-documents.md` (9.42.4).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use vulcan_core::numerals::{
     evaluate_numerals_in_source, numerals_insertion_edits, NumeralsRegion,
 };
@@ -14,7 +14,7 @@ use vulcan_core::{
 use crate::AppError;
 
 /// A note's evaluated Numerals regions.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NumeralsReport {
     pub path: String,
     pub enabled: bool,

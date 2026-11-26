@@ -11,7 +11,7 @@
 use crate::config::{MetaBindConfig, VaultConfig};
 use crate::parser::types::{MetaBindSourceKind, ParsedDocument};
 use crate::{NoteRecord, VaultPaths};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -920,7 +920,7 @@ fn input_type(name: &str) -> Option<InputType> {
 const MULTI_ARGUMENTS: &[&str] = &["class", "option", "optionQuery", "optionSource"];
 
 /// A diagnostic's level, as Meta Bind distinguishes them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MetaBindLevel {
     Error,
@@ -928,7 +928,7 @@ pub enum MetaBindLevel {
     Info,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaBindDiagnostic {
     pub level: MetaBindLevel,
     pub message: String,
@@ -958,7 +958,7 @@ impl MetaBindDiagnostic {
 }
 
 /// An input's validated settings.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InputSettings {
     pub input_type: String,
     pub options: Vec<MetaBindOption>,
@@ -978,7 +978,7 @@ pub struct InputSettings {
 }
 
 /// A selectable value and its label.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetaBindOption {
     pub value: Value,
     pub label: String,
@@ -1562,7 +1562,7 @@ fn memory_path(scope: &str, target: &BindTarget) -> Vec<PathSegment> {
 // ------------------------------------------------------------- rendering
 
 /// What a field renders as.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MetaBindOutcome {
     Input {
@@ -1597,7 +1597,7 @@ pub enum MetaBindOutcome {
 }
 
 /// One rendered field.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetaBindField {
     pub byte_range: Range<usize>,
     /// One-based line of the field.
