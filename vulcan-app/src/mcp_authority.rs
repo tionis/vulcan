@@ -142,7 +142,7 @@ impl McpAuthority {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        self.call_tool_with(client, None, name, arguments)
+        self.call_tool_with(client, None, None, name, arguments)
     }
 
     /// Call a tool where the transport keeps operation records.
@@ -150,6 +150,7 @@ impl McpAuthority {
         &self,
         client: &McpClientAttribution,
         operations: Option<&dyn McpOperationLookup>,
+        progress: Option<&crate::mcp_progress::McpProgress>,
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
@@ -160,6 +161,7 @@ impl McpAuthority {
             profile: &self.selection.profile,
             client,
             operations,
+            progress,
         }
         .call_tool(name, arguments)
     }

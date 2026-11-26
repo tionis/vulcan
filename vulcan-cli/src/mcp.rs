@@ -1211,6 +1211,7 @@ impl McpServerCore {
             authority,
             &cancellation,
             hosted,
+            None,
         )
     }
 }
@@ -1259,6 +1260,10 @@ impl vulcan_daemon::mcp_execution::McpRequestCore for McpServerCore {
 
     fn list_changes(&mut self) -> Vec<Value> {
         self.inner.list_changes()
+    }
+
+    fn set_notifier(&mut self, notifier: Option<vulcan_app::mcp_progress::McpNotifier>) {
+        self.inner.set_notifier(notifier);
     }
 
     fn process_request(&mut self, request: Value) -> Vec<Value> {

@@ -86,6 +86,7 @@ pub mod mcp_input;
 pub mod mcp_notes;
 pub mod mcp_operations;
 pub mod mcp_paging;
+pub mod mcp_progress;
 pub mod mcp_protocol;
 pub mod mcp_read_tools;
 pub mod mcp_scan;

@@ -352,8 +352,14 @@ argument; a declined or cancelled one, or a client without form elicitation, get
 tool error. Destructive operations do not elicit by default (client approval prompts already
 cover them); `mcp.confirm_destructive = true` is to turn that on (not implemented yet).
 
-**Progress:** `index_scan`, `sync_refresh` and `changeset_land` report progress on the
-request's stream when the client sent a progress token.
+**Progress:** a tool call whose `_meta` carries a `progressToken` (either era) gets
+`notifications/progress` for it while it runs, at most every 250 ms, always increasing, and
+never after its response (nor once it has become a task). `index_scan` reports files scanned of
+files found, then its finishing phases, ending at the total; `sync_refresh` and
+`changeset_land` report one start notification, since sync and landing have no finer progress
+yet. On stdio the notifications are lines before the response; on HTTP the first one turns the
+response into an event stream whose last event is the response, and a call that reports nothing
+is answered with plain JSON.
 
 ## 11. Transports
 

@@ -24,7 +24,8 @@ use crate::mcp_transport::McpHttpConnection;
 use serde_json::Value;
 use std::io;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 use vulcan_app::execution::ExecutionCancellationToken;
@@ -34,6 +35,7 @@ use vulcan_app::mcp_core::{
 };
 use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id, McpHttpProcessResult};
 use vulcan_app::mcp_operations::{McpOperationLookup, McpOwnedOperations};
+use vulcan_app::mcp_progress::McpNotifier;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::MCP_OAUTH_SCOPE;
 
@@ -212,6 +214,16 @@ impl<C: McpRequestCore> McpHttpRouteHandler for McpHttpDriver<'_, C> {
     fn delete(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse {
         handle_mcp_http_delete(self, request, authority)
     }
+
+    fn post_with_progress(
+        &self,
+        request: &McpHttpRequest,
+        authority: &Self::Authority,
+        payload: &Value,
+        stream: &mut McpHttpConnection,
+    ) -> io::Result<()> {
+        handle_mcp_http_post_with_progress(self, request, authority, payload, stream)
+    }
 }
 #[cfg(feature = "oauth")]
 #[must_use]
@@ -247,14 +259,26 @@ pub fn handle_named_mcp_operation_status<C: McpRequestCore>(
     }
 }
 
+#[must_use]
 pub fn handle_mcp_http_post<C: McpRequestCore>(
     context: &McpHttpDriver<'_, C>,
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
     payload: &Value,
 ) -> McpHttpResponse {
+    serve_mcp_http_post(context, request, authority, payload, None)
+}
+
+/// A POST, with progress delivered through `notifier` while it is served.
+fn serve_mcp_http_post<C: McpRequestCore>(
+    context: &McpHttpDriver<'_, C>,
+    request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
+    payload: &Value,
+    notifier: Option<McpNotifier>,
+) -> McpHttpResponse {
     if requested_modern_version(payload).is_some() {
-        return handle_modern_mcp_http_post(context, request, authority, payload);
+        return serve_modern_mcp_http_post(context, request, authority, payload, notifier);
     }
     let resolved = match resolve_mcp_http_session(context, request, payload, authority) {
         Ok(resolved) => resolved,
@@ -288,6 +312,7 @@ pub fn handle_mcp_http_post<C: McpRequestCore>(
             authority,
             &active_request.cancellation(),
             context.hosted,
+            notifier,
         )
     };
 
@@ -303,6 +328,16 @@ pub fn handle_modern_mcp_http_post<C: McpRequestCore>(
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
     payload: &Value,
+) -> McpHttpResponse {
+    serve_modern_mcp_http_post(context, request, authority, payload, None)
+}
+
+fn serve_modern_mcp_http_post<C: McpRequestCore>(
+    context: &McpHttpDriver<'_, C>,
+    request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
+    payload: &Value,
+    notifier: Option<McpNotifier>,
 ) -> McpHttpResponse {
     if let Some(mismatch) = modern_header_mismatch(request, payload) {
         let id = request_id(payload).unwrap_or(Value::Null);
@@ -324,8 +359,78 @@ pub fn handle_modern_mcp_http_post<C: McpRequestCore>(
         authority,
         &ExecutionCancellationToken::default(),
         context.hosted,
+        notifier,
     );
     modern_http_response(result)
+}
+
+/// How often the connection thread looks for progress while a call runs.
+const PROGRESS_RELAY_INTERVAL: Duration = Duration::from_millis(50);
+
+/// A tool call that asked for progress. The call runs on its own thread
+/// while this one relays its progress: the first notification turns the
+/// response into an event stream, and the response is its last event. A
+/// call that reports nothing is answered as an ordinary POST. Progress ends
+/// with the call's response, also when the call becomes a task.
+pub fn handle_mcp_http_post_with_progress<C: McpRequestCore>(
+    context: &McpHttpDriver<'_, C>,
+    request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
+    payload: &Value,
+    stream: &mut McpHttpConnection,
+) -> io::Result<()> {
+    let (sender, receiver) = mpsc::channel::<Value>();
+    let open = Arc::new(AtomicBool::new(true));
+    let notifier = {
+        let open = Arc::clone(&open);
+        let sender = Mutex::new(sender);
+        McpNotifier(Arc::new(move |message| {
+            if open.load(Ordering::Acquire) {
+                let _ = sender
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .send(message);
+            }
+        }))
+    };
+    let mut streaming = false;
+    let response = thread::scope(|scope| -> io::Result<McpHttpResponse> {
+        let call = scope.spawn(|| {
+            let response =
+                serve_mcp_http_post(context, request, authority, payload, Some(notifier));
+            open.store(false, Ordering::Release);
+            response
+        });
+        loop {
+            match receiver.recv_timeout(PROGRESS_RELAY_INTERVAL) {
+                Ok(message) => {
+                    if !streaming {
+                        stream.start_event_stream()?;
+                        streaming = true;
+                    }
+                    write_mcp_http_sse_event(stream, &message)?;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) if !call.is_finished() => {}
+                Err(_) => break,
+            }
+        }
+        // What the call reported before it was answered still goes out.
+        while let Ok(message) = receiver.try_recv() {
+            if !streaming {
+                stream.start_event_stream()?;
+                streaming = true;
+            }
+            write_mcp_http_sse_event(stream, &message)?;
+        }
+        Ok(call.join().expect("MCP progress call should not panic"))
+    })?;
+    if !streaming {
+        return stream.respond(response);
+    }
+    match serde_json::from_slice::<Value>(&response.body) {
+        Ok(message) => write_mcp_http_sse_event(stream, &message),
+        Err(_) => Ok(()),
+    }
 }
 
 /// How often a subscription stream looks for list changes.

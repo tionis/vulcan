@@ -24,6 +24,7 @@ use vulcan_app::mcp_dispatch::{
     McpHttpProcessResult,
 };
 use vulcan_app::mcp_operations::{indeterminate_response, McpOperationLookup};
+use vulcan_app::mcp_progress::McpNotifier;
 use vulcan_app::mcp_session_protocol::McpProtocolCore;
 use vulcan_app::mcp_task_ext::{task_after, task_created_response, task_eligible};
 use vulcan_core::{PermissionGrant, VaultPaths};
@@ -43,6 +44,8 @@ pub trait McpRequestCore: Clone + Send + 'static {
     /// List changes since the core was made or last asked, for a
     /// subscription stream.
     fn list_changes(&mut self) -> Vec<Value>;
+    /// Deliver progress for the requests this core serves next.
+    fn set_notifier(&mut self, _notifier: Option<McpNotifier>) {}
 }
 
 impl McpRequestCore for McpProtocolCore {
@@ -76,6 +79,10 @@ impl McpRequestCore for McpProtocolCore {
 
     fn list_changes(&mut self) -> Vec<Value> {
         McpProtocolCore::list_changes(self)
+    }
+
+    fn set_notifier(&mut self, notifier: Option<McpNotifier>) {
+        McpProtocolCore::set_notifier(self, notifier);
     }
 }
 
@@ -317,6 +324,7 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
     authority: &McpSessionAuthority,
     cancellation: &ExecutionCancellationToken,
     hosted: Option<&HostedMcpExecution>,
+    notifier: Option<McpNotifier>,
 ) -> Result<McpHttpProcessResult, Value> {
     if cancellation.is_cancelled() {
         return Err(jsonrpc_error(
@@ -331,6 +339,9 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
     }
     let timeout_request = request.clone();
     let mut worker = core.clone();
+    // Progress reaches this call only: the copy carries the notifier, and it
+    // is taken off again before the copy replaces the caller's core.
+    worker.set_notifier(notifier);
     let hosted = hosted.cloned();
     // One deadline shared by the scheduler and this response wait, so a queued mutation whose
     // pre-dispatch deadline fires before the worker wait still gets the durable status response.
@@ -458,7 +469,8 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
         ));
     }
     match worker_result {
-        McpWorkerResult::Completed((next, result)) => {
+        McpWorkerResult::Completed((mut next, result)) => {
+            next.set_notifier(None);
             *core = next;
             if let (Err(_), Some(operation_id)) = (&result, operation_id.as_deref()) {
                 if dispatch_deadline.is_expired_at(SystemTime::now()) {
@@ -726,6 +738,7 @@ mod tests {
             &authority,
             &cancellation,
             None,
+            None,
         )
         .unwrap_err();
         assert_eq!(denied["error"]["code"], -32800);
@@ -738,6 +751,7 @@ mod tests {
             &inbound,
             &authority,
             &ExecutionCancellationToken::default(),
+            None,
             None,
         )
         .unwrap();
@@ -761,6 +775,7 @@ mod tests {
             &inbound,
             &authority,
             &cancellation,
+            None,
             None,
         )
         .unwrap();
@@ -805,6 +820,7 @@ mod tests {
             &inbound,
             &authority,
             &ExecutionCancellationToken::default(),
+            None,
             None,
         )
         .unwrap();
@@ -886,6 +902,7 @@ mod tests {
                 &authority,
                 &ExecutionCancellationToken::default(),
                 Some(&hosted),
+                None,
             );
             (core, result)
         });
@@ -987,6 +1004,7 @@ mod tests {
                 &authority,
                 &ExecutionCancellationToken::default(),
                 Some(&hosted),
+                None,
             )
         });
         observed_entered

@@ -29,6 +29,8 @@ pub struct McpToolExecution<'a> {
     pub client: &'a crate::mcp_authority::McpClientAttribution,
     /// Operation records, where the transport keeps them.
     pub operations: Option<&'a dyn crate::mcp_operations::McpOperationLookup>,
+    /// Progress for this call, when the client asked for it.
+    pub progress: Option<&'a crate::mcp_progress::McpProgress>,
 }
 
 impl McpToolExecution<'_> {
@@ -288,6 +290,9 @@ impl McpToolExecution<'_> {
                 )
             }
             McpToolId::SyncRefresh => {
+                if let Some(progress) = self.progress {
+                    progress.report(0.0, None, Some("Synchronizing with the remote"));
+                }
                 self.value(tool.name, mcp_sync::sync_refresh(self.paths, self.guard)?)
             }
             McpToolId::SyncResume => {
@@ -341,6 +346,9 @@ impl McpToolExecution<'_> {
             }
             McpToolId::ChangesetLand => {
                 let args: mcp_protocol::McpChangesetLandArgs = parse(arguments)?;
+                if let Some(progress) = self.progress {
+                    progress.report(0.0, None, Some("Landing the changeset"));
+                }
                 let report = mcp_changesets::changeset_land(
                     self.paths,
                     self.guard,
@@ -393,7 +401,13 @@ impl McpToolExecution<'_> {
                 let args: McpIndexScanArgs = parse(arguments)?;
                 self.report(
                     tool.name,
-                    &mcp_scan::index_scan(self.paths, self.guard, self.profile_name, &args)?,
+                    &mcp_scan::index_scan(
+                        self.paths,
+                        self.guard,
+                        self.profile_name,
+                        &args,
+                        self.progress,
+                    )?,
                 )
             }
         });
@@ -566,6 +580,7 @@ mod tests {
             profile: &selection.profile,
             client: &crate::mcp_authority::McpClientAttribution::default(),
             operations: None,
+            progress: None,
         };
         let status = executor.call_tool("status", &Map::new()).unwrap();
         assert_eq!(
@@ -634,6 +649,7 @@ mod tests {
                 profile: &selection.profile,
                 client: &crate::mcp_authority::McpClientAttribution::default(),
                 operations: None,
+                progress: None,
             };
             let result = executor
                 .call_tool(name, arguments.as_object().unwrap())
@@ -691,6 +707,7 @@ mod tests {
             profile: &selection.profile,
             client: &crate::mcp_authority::McpClientAttribution::default(),
             operations: None,
+            progress: None,
         };
         let arguments = Map::from_iter([
             ("note".to_string(), json!("Home.md")),
@@ -715,6 +732,7 @@ mod tests {
             profile: &selection.profile,
             client: &crate::mcp_authority::McpClientAttribution::default(),
             operations: None,
+            progress: None,
         };
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         executor

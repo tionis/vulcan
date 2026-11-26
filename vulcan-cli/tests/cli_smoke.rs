@@ -35568,6 +35568,77 @@ fn mcp_ambiguous_notes_ask_clients_that_can_answer() {
     session.finish();
 }
 
+/// A tool call that sends a progress token gets progress notifications for
+/// it before its response: as lines on stdio, and on HTTP as an event stream
+/// whose last event is the response.
+#[test]
+fn mcp_index_scan_reports_progress_before_its_response() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let call = |id: u64| {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {
+                "name": "index_scan", "arguments": {"full": true},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "progressToken": format!("scan-{id}"),
+                }
+            }
+        })
+    };
+    let check = |transport: &str, id: u64, messages: &[Value]| {
+        let (response, progress) = messages.split_last().expect("messages");
+        assert_eq!(response["id"], id, "{transport}: {messages:?}");
+        assert_eq!(
+            response["result"]["isError"], false,
+            "{transport}: {response}"
+        );
+        assert!(!progress.is_empty(), "{transport}: no progress");
+        for message in progress {
+            assert_eq!(message["method"], "notifications/progress", "{transport}");
+            assert_eq!(message["params"]["progressToken"], format!("scan-{id}"));
+        }
+        let last = &progress.last().expect("progress")["params"];
+        assert_eq!(last["progress"], last["total"], "{transport}: {last}");
+    };
+
+    let args = ["--permissions", "unrestricted"];
+    let mut stdio = McpSession::start(&vault_root, &args);
+    let messages = stdio.send(call(1));
+    check("stdio", 1, &messages);
+    stdio.finish();
+
+    let http = McpHttpSession::start(&vault_root, "/mcp", None, &args);
+    let response = http.post(&call(2), None);
+    assert_eq!(response.status_line, "HTTP/1.1 200 OK");
+    assert_eq!(
+        response.headers.get("content-type").map(String::as_str),
+        Some("text/event-stream")
+    );
+    let messages = String::from_utf8_lossy(&response.body)
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|data| serde_json::from_str::<Value>(data).expect("event JSON"))
+        .collect::<Vec<_>>();
+    check("HTTP", 2, &messages);
+
+    // Without a token the response is plain JSON.
+    let mut plain = call(3);
+    plain["params"]["_meta"]
+        .as_object_mut()
+        .expect("meta")
+        .remove("progressToken");
+    let response = http.post(&plain, None);
+    assert_eq!(
+        response.headers.get("content-type").map(String::as_str),
+        Some("application/json")
+    );
+}
+
 #[test]
 fn mcp_server_serves_modern_requests_without_a_handshake() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

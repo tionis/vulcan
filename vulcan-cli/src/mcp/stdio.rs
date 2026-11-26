@@ -24,6 +24,7 @@ use vulcan_app::mcp_dispatch::jsonrpc_error;
 use vulcan_app::mcp_operations::{
     indeterminate_response, McpOperationLookup, McpOperationRegistry,
 };
+use vulcan_app::mcp_progress::McpNotifier;
 use vulcan_app::mcp_session_protocol::McpProtocolCore;
 use vulcan_app::mcp_task_ext::{task_after, task_created_response, task_eligible};
 use vulcan_daemon::mcp_worker::{run_mcp_worker_or_background, McpWorkerResult};
@@ -48,6 +49,53 @@ fn send(output: &Output, message: &Value) {
         serde_json::to_string(message).unwrap_or_default()
     );
     let _ = output.flush();
+}
+
+/// Run one queued tool call and send what it answers, with its progress
+/// before the answer and none after.
+fn run_job(
+    core: &Arc<Mutex<McpServerCore>>,
+    output: &Output,
+    tracker: &Tracker,
+    operations: &Arc<McpOperationRegistry>,
+    key: &str,
+    request: Value,
+    request_timeout: Duration,
+) {
+    // The core keeps no per-call state: each call runs on a copy, and the
+    // shared core stays free for the reader.
+    let mut worker = core.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    // Progress goes out while the call is being answered, and never after:
+    // not once it has its response, nor once it has become a task.
+    let active = Arc::new(AtomicBool::new(true));
+    let (sink, open) = (Arc::clone(output), Arc::clone(&active));
+    worker.set_notifier(Some(McpNotifier(Arc::new(move |message| {
+        send_while(&sink, &open, &message);
+    }))));
+    let messages = run_call(worker, request, request_timeout, operations);
+    {
+        let _quiet = output.lock().unwrap_or_else(PoisonError::into_inner);
+        active.store(false, Ordering::Release);
+    }
+    // A cancelled call gets no response.
+    if !tracker.is_cancelled(key) {
+        for message in &messages {
+            send(output, message);
+        }
+    }
+}
+
+/// [`send`], as long as `open` holds, checked under the output lock.
+fn send_while(output: &Output, open: &AtomicBool, message: &Value) {
+    let mut output = output.lock().unwrap_or_else(PoisonError::into_inner);
+    if open.load(Ordering::Acquire) {
+        let _ = writeln!(
+            output,
+            "{}",
+            serde_json::to_string(message).unwrap_or_default()
+        );
+        let _ = output.flush();
+    }
 }
 
 /// Tool calls waiting or running, and which of them the client cancelled.
@@ -155,16 +203,15 @@ pub(super) fn serve(
                     let job = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
                     let Ok((key, request)) = job else { return };
                     if !tracker.is_cancelled(&key) {
-                        // The core keeps no per-call state: each call runs on
-                        // a copy, and the shared core stays free for the reader.
-                        let worker = core.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                        let messages = run_call(worker, request, request_timeout, &operations);
-                        // A cancelled call gets no response.
-                        if !tracker.is_cancelled(&key) {
-                            for message in &messages {
-                                send(&output, message);
-                            }
-                        }
+                        run_job(
+                            &core,
+                            &output,
+                            &tracker,
+                            &operations,
+                            &key,
+                            request,
+                            request_timeout,
+                        );
                     }
                     tracker.finish(&key);
                 })

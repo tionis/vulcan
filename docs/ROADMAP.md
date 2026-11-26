@@ -8850,7 +8850,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 - [x] Tasks extension over the operation records (stdio, and HTTP calls the hosted ledger does not keep): task-capable calls from declaring modern clients become tasks after 5 s; `tasks/get`, `tasks/update` (no input on tasks), `tasks/cancel` (cooperative); -32021 without the extension, -32602 for unknown tasks. Hosted mutations on named remotes become tasks too, under their durable ledger id (the in-memory record carries the result; the ledger keeps `status_path`).
 - [x] `input_required` for ambiguous notes: a form of candidate paths for modern clients that declare form elicitation, applied on retry without server state; reads now report ambiguity instead of "note not found".
 - [ ] Destructive confirmation when configured (`mcp.confirm_destructive`).
-- [ ] Progress for scan, sync and land.
+- [x] Progress for scan, sync and land: `notifications/progress` for calls with a `progressToken` over stdio and HTTP (an event stream once progress starts), rate-limited and never after the response; scan reports files and phases, sync and land one start notification until they have finer hooks.
 
 ### 9.43.13 Documentation and acceptance
 

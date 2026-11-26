@@ -14,6 +14,7 @@ use crate::mcp_dispatch::{
     process_stdio_request, request_id, McpHttpProcessResult, McpMethodHandler,
 };
 use crate::mcp_operations::McpOperationLookup;
+use crate::mcp_progress::{McpNotifier, McpProgress};
 use crate::mcp_protocol::{McpMethodError, McpMethodOutcome};
 
 /// One client of one vault: the authority it acts under, the authenticated
@@ -34,6 +35,8 @@ pub struct McpProtocolCore {
     operations: Option<Arc<dyn McpOperationLookup>>,
     /// Whether the host serves `subscriptions/listen`.
     subscriptions: bool,
+    /// Delivers progress on the stream of the request being served.
+    notifier: Option<McpNotifier>,
 }
 
 impl McpProtocolCore {
@@ -52,6 +55,7 @@ impl McpProtocolCore {
             list_changes_on_responses: true,
             operations: None,
             subscriptions: false,
+            notifier: None,
         })
     }
 
@@ -73,6 +77,12 @@ impl McpProtocolCore {
     /// Re-read the profile; it may narrow, never widen.
     pub fn attenuate_profile(&mut self) -> Result<(), String> {
         self.authority.attenuate_profile()
+    }
+
+    /// Deliver progress notifications for the next requests through
+    /// `notifier`, which writes to the stream of the request being served.
+    pub fn set_notifier(&mut self, notifier: Option<McpNotifier>) {
+        self.notifier = notifier;
     }
 
     /// Attribute requests to an authenticated remote client.
@@ -167,6 +177,7 @@ impl McpMethodHandler for McpProtocolCore {
         method: &str,
         params: Option<&Value>,
     ) -> Result<McpMethodOutcome, McpMethodError> {
+        let progress = McpProgress::for_request(params, self.notifier.as_ref());
         if let Some(meta) = modern_meta(params)? {
             let mut reported = McpClientAttribution::default();
             reported.record_implementation(meta.client_info.as_ref());
@@ -179,6 +190,7 @@ impl McpMethodHandler for McpProtocolCore {
                     host: &self.host,
                     operations: self.operations.as_deref(),
                     subscriptions: self.subscriptions,
+                    progress: progress.as_ref(),
                 },
                 method,
                 params,
@@ -204,6 +216,7 @@ impl McpMethodHandler for McpProtocolCore {
                         host: &self.host,
                         operations: self.operations.as_deref(),
                         subscriptions: self.subscriptions,
+                        progress: progress.as_ref(),
                     },
                     method,
                     params,

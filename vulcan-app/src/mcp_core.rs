@@ -18,6 +18,7 @@ use crate::mcp_discovery::McpDiscovery;
 use crate::mcp_help::HelpTopicReport;
 use crate::mcp_input::{ambiguity_input, apply_input_responses, declares_form_elicitation};
 use crate::mcp_operations::McpOperationLookup;
+use crate::mcp_progress::McpProgress;
 use crate::mcp_protocol::{
     server_instructions, tool_error_structured, McpCompletionParams, McpListParams,
     McpListSnapshot, McpMethodError, McpPromptGetParams, McpResourceReadParams, McpToolCallParams,
@@ -95,6 +96,8 @@ pub struct McpRequestContext<'a> {
     pub operations: Option<&'a dyn McpOperationLookup>,
     /// Whether the transport serves `subscriptions/listen`.
     pub subscriptions: bool,
+    /// Progress for this request, when it asked and the host can deliver.
+    pub progress: Option<&'a McpProgress>,
 }
 
 /// The `_meta` of a modern request, once validated.
@@ -380,7 +383,13 @@ fn dispatch(
         )?,
         "tools/call" => {
             let params: McpToolCallParams = parse(params)?;
-            authority.call_tool_with(ctx.client, ctx.operations, &params.name, &params.arguments)?
+            authority.call_tool_with(
+                ctx.client,
+                ctx.operations,
+                ctx.progress,
+                &params.name,
+                &params.arguments,
+            )?
         }
         "prompts/list" => paginated(
             "prompts",
@@ -738,6 +747,7 @@ mod tests {
             host: &host,
             operations: None,
             subscriptions: false,
+            progress: None,
         };
         let discover = handle(&ctx, "server/discover", None).unwrap().unwrap();
         assert_eq!(discover["resultType"], "complete");
@@ -802,6 +812,7 @@ mod tests {
             host: &host,
             operations: None,
             subscriptions: false,
+            progress: None,
         };
         let modern = context(McpEra::Modern);
         let discover = handle(&modern, "server/discover", None).unwrap().unwrap();

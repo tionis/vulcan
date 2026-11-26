@@ -66,6 +66,24 @@ pub trait McpHttpRouteHandler {
         stream: &mut McpHttpConnection,
     ) -> io::Result<()>;
     fn delete(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse;
+    /// A tool call that asked for progress, which may stream progress
+    /// notifications before its response. Without streaming support it is
+    /// an ordinary POST.
+    fn post_with_progress(
+        &self,
+        request: &McpHttpRequest,
+        authority: &Self::Authority,
+        payload: &Value,
+        stream: &mut McpHttpConnection,
+    ) -> io::Result<()> {
+        stream.respond(self.post(request, authority, payload))
+    }
+}
+
+/// Whether a request is a tool call that asked for progress notifications.
+fn wants_progress(payload: &Value) -> bool {
+    payload.get("method").and_then(Value::as_str) == Some("tools/call")
+        && payload.pointer("/params/_meta/progressToken").is_some()
 }
 
 /// Route one already-decoded request. Endpoint authentication precedes method
@@ -112,6 +130,9 @@ pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
                             == Some("subscriptions/listen") =>
                     {
                         return handler.listen(request, &authority, &payload, stream);
+                    }
+                    Ok(payload) if wants_progress(&payload) => {
+                        return handler.post_with_progress(request, &authority, &payload, stream);
                     }
                     Ok(payload) => handler.post(request, &authority, &payload),
                     Err(response) => response,
