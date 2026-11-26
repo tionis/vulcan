@@ -128,13 +128,19 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_events_are_scope_filtered_and_idle_streams_keep_alive() {
-        let session = session(&["mcp:tools"]);
-        let receiver = session.register_subscriber();
-        session.broadcast(&[
+    fn broadcast_events_need_the_mcp_scope_and_idle_streams_keep_alive() {
+        let changes = [
             serde_json::json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
             serde_json::json!({"jsonrpc":"2.0","method":"notifications/resources/list_changed"}),
-        ]);
+        ];
+        let unscoped = session(&["openid"]);
+        let unscoped_receiver = unscoped.register_subscriber();
+        unscoped.broadcast(&changes);
+        assert!(unscoped_receiver.try_recv().is_err());
+
+        let session = session(&["mcp"]);
+        let receiver = session.register_subscriber();
+        session.broadcast(&changes);
         let mut output = Vec::new();
         let mut checks = 0;
         let end = run_mcp_sse(
@@ -152,7 +158,7 @@ mod tests {
         assert_eq!(end, McpSseEnd::RetireSession);
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("notifications/tools/list_changed"));
-        assert!(!output.contains("notifications/resources/list_changed"));
+        assert!(output.contains("notifications/resources/list_changed"));
         assert!(output.contains(": keepalive"));
     }
 

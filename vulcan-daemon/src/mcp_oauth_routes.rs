@@ -64,6 +64,7 @@ impl McpOAuthRoutes<'_> {
         let public_url = self.issuer.public_url();
         json_response(&serde_json::json!({
             "resource": public_url,
+            "resource_name": "Vulcan",
             "authorization_servers": [public_url],
             "bearer_methods_supported": ["header"],
             "scopes_supported": SUPPORTED_MCP_OAUTH_SCOPES,

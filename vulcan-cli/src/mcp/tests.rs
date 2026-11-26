@@ -910,6 +910,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     assert!(foreground_write_tools.contains("\"name\":\"task_create\""));
     // The grant's profile decides the list: it can read as well as write.
     assert!(foreground_write_tools.contains("\"name\":\"note_get\""));
+    // One scope reaches every method; the profile decides what is listed.
     assert!(named_listener_method(
         address,
         "parity",
@@ -917,7 +918,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &foreground_write_session,
         "resources/list"
     )
-    .starts_with("HTTP/1.1 403"));
+    .starts_with("HTTP/1.1 200"));
     named_listener_append_and_patch_note(
         address,
         &write_token,
@@ -1874,19 +1875,9 @@ fn assert_named_listener_prompt_change_notifications(
     .expect("new prompt");
     assert_named_listener_prompt_resource_events(&mut owner_sse);
     assert_named_listener_prompt_resource_events(&mut peer_sse);
-    tools_only_sse
-        .get_mut()
-        .set_read_timeout(Some(Duration::from_millis(800)))
-        .expect("tools-only SSE timeout");
-    let mut unexpected = String::new();
-    let no_event = tools_only_sse.read_line(&mut unexpected);
-    assert!(
-        no_event.is_err_and(|error| matches!(
-            error.kind(),
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-        )),
-        "tools-only grant received a prompt/resource event: {unexpected}"
-    );
+    // A grant approved for the former `mcp:tools` scope alone now holds the
+    // one `mcp` scope, so it sees prompt and resource changes too.
+    assert_named_listener_prompt_resource_events(&mut tools_only_sse);
 
     let mut delete = TcpStream::connect(address).expect("named listener active");
     delete
@@ -2573,7 +2564,7 @@ fn named_listener_complete_browser_consent(
     let payload: Value = serde_json::from_str(token.split_once("\r\n\r\n").expect("token").1)
         .expect("OAuth token response");
     assert!(payload["refresh_token"].as_str().is_some());
-    assert_eq!(payload["scope"], "mcp:tools");
+    assert_eq!(payload["scope"], "mcp");
     (
         payload["access_token"]
             .as_str()
@@ -2625,9 +2616,21 @@ fn named_listener_assert_consented_tools(address: SocketAddr, token: &str) {
 
 #[cfg(feature = "oauth")]
 fn assert_named_listener_identity(address: SocketAddr, name: &str) {
+    let metadata = named_listener_resource_metadata(address, name);
     assert_eq!(
-        named_listener_resource_metadata(address, name)["resource"],
+        metadata["resource"],
         format!("https://mcp.example.test/{name}")
+    );
+    assert_eq!(metadata["resource_name"], "Vulcan");
+    assert_eq!(metadata["scopes_supported"], serde_json::json!(["mcp"]));
+    let server = named_listener_json_get(
+        address,
+        &format!("/.well-known/oauth-authorization-server/{name}"),
+    );
+    assert_eq!(server["scopes_supported"], serde_json::json!(["mcp"]));
+    assert_eq!(
+        server["authorization_response_iss_parameter_supported"],
+        true
     );
     assert_named_listener_auth_challenge(address, name);
 }
@@ -2640,6 +2643,9 @@ fn assert_named_listener_auth_challenge(address: SocketAddr, name: &str) {
     assert!(headers.contains(&format!(
         "resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/{name}\""
     )));
+    // No token was sent: the challenge names the scope, not an error.
+    assert!(headers.contains("scope=\"mcp\""), "{headers}");
+    assert!(!headers.contains("error="), "{headers}");
 }
 
 #[cfg(feature = "oauth")]
@@ -3010,12 +3016,11 @@ fn oauth_client_registry_is_atomic_owner_only_and_rejects_loose_permissions() {
 fn oauth_scope_parser_defaults_deduplicates_and_rejects_widening() {
     assert_eq!(
         parse_mcp_oauth_scopes(None).expect("default scopes"),
-        ["mcp:prompts", "mcp:resources", "mcp:tools"]
+        ["mcp"]
     );
     assert_eq!(
-        parse_mcp_oauth_scopes(Some("mcp:tools mcp:resources mcp:tools"))
-            .expect("supported scopes"),
-        ["mcp:resources", "mcp:tools"]
+        parse_mcp_oauth_scopes(Some("mcp:tools mcp:resources mcp:tools")).expect("legacy scopes"),
+        ["mcp"]
     );
     let error = parse_mcp_oauth_scopes(Some("mcp:tools vault:admin"))
         .expect_err("unsupported scope must fail");
@@ -3359,7 +3364,7 @@ fn list_change_notifications_ignore_files_outside_the_read_grant() {
 }
 
 #[test]
-fn mcp_http_broadcast_filters_list_changes_by_connection_scopes() {
+fn mcp_http_broadcast_delivers_every_list_change_under_the_mcp_scope() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
@@ -3381,10 +3386,14 @@ fn mcp_http_broadcast_filters_list_changes_by_connection_scopes() {
         serde_json::json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
         serde_json::json!({"jsonrpc":"2.0","method":"notifications/resources/list_changed"}),
     ]);
-    assert_eq!(
-        receiver.try_recv().expect("visible tool notification")["method"],
-        "notifications/tools/list_changed"
-    );
+    // A legacy per-family scope now means the one `mcp` scope.
+    for method in [
+        "notifications/prompts/list_changed",
+        "notifications/tools/list_changed",
+        "notifications/resources/list_changed",
+    ] {
+        assert_eq!(receiver.try_recv().expect("notification")["method"], method);
+    }
     assert!(receiver.try_recv().is_err());
 }
 
@@ -3724,7 +3733,8 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
         .find_map(|(name, value)| (name == "Location").then_some(value))
         .expect("redirect");
     assert!(location.starts_with("https://client.example.test/callback?code="));
-    assert!(location.ends_with("&state=original-client-state"));
+    assert!(location
+        .ends_with("&state=original-client-state&iss=https%3A%2F%2Fmcp.example.test%2Fpersonal"));
     let codes = context.oauth_codes.lock().expect("codes lock");
     assert_eq!(codes.len(), 1);
     assert_eq!(
@@ -3770,7 +3780,8 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
         .find_map(|(name, value)| (name == "Location").then_some(value))
         .expect("denial redirect");
     assert!(denied_location.contains("error=access_denied"));
-    assert!(denied_location.ends_with("&state=denied-state"));
+    assert!(denied_location
+        .ends_with("&state=denied-state&iss=https%3A%2F%2Fmcp.example.test%2Fpersonal"));
     assert_eq!(context.oauth_codes.lock().expect("codes lock").len(), 1);
 }
 

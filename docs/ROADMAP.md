@@ -8833,7 +8833,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 - [x] Static MCP tokens only as `Authorization: Bearer` (`X-Vulcan-Token` no longer read by MCP; `vulcan serve` and the vault REST API keep it), compared in constant time.
 - [x] Remove external resource-server mode (`OAuthResourceServer` and its OIDC discovery and JWKS fetching) and the direct OAuth surface of `vulcan mcp`: `--public-url` and every `--oauth-*` flag are parsed hidden and refused with a pointer to `vulcan mcp remote`; a listener runs Vulcan's issuer only for a named remote's identity.
 - [x] Remove the issuer features only direct mode reached: the approval-token form (authorization without IndieAuth now answers 503), the static client (its credentials and redirect URIs are no longer accepted at authorize or token), and per-user bindings; the issuer admits exactly its named remote's identity, and tokens no longer carry authority in claims (profile and email are not read back).
-- [ ] Single `mcp` scope; PRM `resource_name`; challenges with `scope` (no `error` without a token); RFC 9207 `iss`.
+- [x] Single `mcp` scope (required by every request; authorize, refresh and stored grants read the former `mcp:tools`/`mcp:resources`/`mcp:prompts` as `mcp`; identity scopes are accepted but grant nothing); PRM `resource_name` and `scopes_supported: ["mcp"]`; 401 challenges with `resource_metadata` and `scope="mcp"`, naming `error="invalid_token"` only when a token was sent; RFC 9207 `iss` on authorization responses and `authorization_response_iss_parameter_supported` in the metadata.
 - [ ] CIMD streaming cap, cache and address normalization.
 
 ### 9.43.10 Protocol 2026-07-28

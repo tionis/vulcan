@@ -18418,9 +18418,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("set `dry_run: true` for a read-only calculation"));
     assert!(mcp_skill.contains("targets an in-flight request ID in the same MCP session"));
     assert!(mcp_skill.contains("durable operation ID with `dispatched: false`"));
-    assert!(
-        mcp_skill.contains("a tools-only grant does not receive prompt or resource list changes")
-    );
+    assert!(mcp_skill.contains("Vulcan has one OAuth scope, `mcp`"));
     assert!(mcp_skill.contains("prompt/resource change hints do not reveal edits outside"));
     assert!(mcp_skill.contains("An HTTP 503 with `Retry-After: 1`"));
     assert!(mcp_skill.contains("reconnect and relist the catalogs"));
@@ -18857,7 +18855,7 @@ fn skill_list_and_get_surface_bundled_skills() {
             && body.contains("ChatGPT remote connector")
             && body.contains("explicitly approve Vulcan's separate consent page")
             && body.contains("IndieAuth login authenticates the person")
-            && body.contains("advertised OAuth scopes")
+            && body.contains("one OAuth scope, `mcp`")
     }));
 
     let installed_skills = vault_root.join(".agents/skills");

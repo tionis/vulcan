@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use ulid::Ulid;
+use vulcan_app::mcp_protocol::normalize_mcp_scopes;
 use vulcan_core::{resolve_device_permission_profile, resolve_permission_profile, VaultPaths};
 
 use crate::mcp_grant_expiry::{resolve_grant_expiry, GrantClock};
@@ -14,6 +15,15 @@ use crate::registry::WikiId;
 
 /// Why a connection approved under tool packs stopped working.
 const LEGACY_PACKS_REVOKED: &str = "this connection was approved with tool packs, which Vulcan no longer has, and its permission profile now reaches tools that approval left out; reconnect to approve it again";
+
+/// Whether `requested` asks for nothing beyond `granted`, reading the former
+/// per-family scopes on either side as the one `mcp` scope.
+fn scopes_within(requested: &[String], granted: &[String]) -> bool {
+    let granted = normalize_mcp_scopes(granted.to_vec());
+    normalize_mcp_scopes(requested.to_vec())
+        .iter()
+        .all(|scope| granted.contains(scope))
+}
 
 #[derive(Debug, Clone)]
 pub struct NamedMcpRuntime {
@@ -147,10 +157,7 @@ impl NamedMcpRuntime {
             .ok_or("grant vault is no longer exposed")?;
         if grant.remote_id != self.remote_id
             || grant.subject != request.subject
-            || !request
-                .scopes
-                .iter()
-                .all(|scope| grant.scopes.contains(scope))
+            || !scopes_within(request.scopes, &grant.scopes)
         {
             return Err("authorization code does not match the connection grant".to_string());
         }
@@ -244,8 +251,8 @@ impl NamedMcpRuntime {
             return Err(NamedRefreshError::invalid_grant(LEGACY_PACKS_REVOKED));
         }
         let scopes = match request.requested_scopes {
-            Some(scopes) if scopes.iter().all(|scope| grant.scopes.contains(scope)) => {
-                scopes.to_vec()
+            Some(scopes) if scopes_within(scopes, &grant.scopes) => {
+                normalize_mcp_scopes(scopes.to_vec())
             }
             Some(_) => {
                 return Err(NamedRefreshError {
@@ -253,7 +260,7 @@ impl NamedMcpRuntime {
                     message: "refresh request widens the granted scopes".to_string(),
                 })
             }
-            None => grant.scopes.clone(),
+            None => normalize_mcp_scopes(grant.scopes.clone()),
         };
         self.authorization_store
             .attenuate_grant_permissions(grant.id, &current_profile.grant, request.now)
@@ -323,10 +330,7 @@ impl NamedMcpRuntime {
             .ok_or("connection grant vault is no longer exposed")?;
         if grant.remote_id != self.remote_id
             || request.subject != Some(grant.subject.as_str())
-            || !request
-                .scopes
-                .iter()
-                .all(|scope| grant.scopes.contains(scope))
+            || !scopes_within(request.scopes, &grant.scopes)
         {
             return Err("connection grant does not match this token authority".to_string());
         }
@@ -569,7 +573,8 @@ mod tests {
         };
         let authority = runtime.authorize_token(&token).expect("bound authority");
         assert_eq!(authority.grant_id, Some(grant_id));
-        assert_eq!(authority.scopes, scopes);
+        // A grant from before the single scope still reaches the endpoint.
+        assert_eq!(authority.scopes, ["mcp"]);
         assert_eq!(authority.permission_profile.as_deref(), Some("readonly"));
 
         token.subject = Some("https://identity.example/bob");
@@ -581,7 +586,8 @@ mod tests {
         token.resource = "https://other.example/mcp";
         assert!(runtime.authorize_token(&token).is_err());
         token.resource = "https://mcp.example/personal";
-        let widened = vec!["mcp:tools".to_string(), "mcp:prompts".to_string()];
+        // Former per-family scopes are all `mcp`; asking beyond it widens.
+        let widened = vec!["mcp:tools".to_string(), "openid".to_string()];
         token.scopes = &widened;
         assert!(runtime.authorize_token(&token).is_err());
         token.scopes = &scopes;
@@ -638,7 +644,7 @@ mod tests {
             "invalid_target"
         );
         refresh.requested_resource = None;
-        let widened = vec!["mcp:tools".to_string(), "mcp:resources".to_string()];
+        let widened = vec!["mcp:tools".to_string(), "openid".to_string()];
         refresh.requested_scopes = Some(&widened);
         assert_eq!(
             runtime.refresh_connection(&refresh).unwrap_err().code,
@@ -648,7 +654,8 @@ mod tests {
 
         let rotated = runtime.refresh_connection(&refresh).expect("valid refresh");
         assert_eq!(rotated.grant_id, grant_id);
-        assert_eq!(rotated.scopes, scopes);
+        // A grant stored with a former per-family scope refreshes as `mcp`.
+        assert_eq!(rotated.scopes, ["mcp"]);
         assert_eq!(rotated.audience, "https://mcp.example/personal");
         assert_ne!(
             rotated.refresh_token.secret.expose(),
@@ -681,7 +688,7 @@ mod tests {
         redemption.subject = "https://identity.example/bob";
         assert!(runtime.issue_initial_refresh_token(&redemption).is_err());
         redemption.subject = "https://identity.example/alice";
-        let widened = vec!["mcp:tools".to_string(), "mcp:resources".to_string()];
+        let widened = vec!["mcp:tools".to_string(), "openid".to_string()];
         redemption.scopes = &widened;
         assert!(runtime.issue_initial_refresh_token(&redemption).is_err());
         redemption.scopes = &scopes;

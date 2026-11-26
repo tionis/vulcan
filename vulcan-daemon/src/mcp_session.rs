@@ -14,6 +14,7 @@ use ulid::Ulid;
 use vulcan_app::execution::ExecutionCancellationToken;
 use vulcan_app::mcp_dispatch::http_initialize_request;
 use vulcan_app::mcp_dispatch::McpHttpProcessResult;
+use vulcan_app::mcp_protocol::{normalize_mcp_scopes, MCP_OAUTH_SCOPE};
 
 use crate::mcp_http_codec::McpHttpResponse;
 use crate::mcp_remote::McpRemoteId;
@@ -538,9 +539,9 @@ pub fn mcp_request_key(id: &Value) -> Option<String> {
 #[must_use]
 pub fn mcp_notification_scope(message: &Value) -> Option<&'static str> {
     match message.get("method")?.as_str()? {
-        "notifications/tools/list_changed" => Some("mcp:tools"),
-        "notifications/resources/list_changed" => Some("mcp:resources"),
-        "notifications/prompts/list_changed" => Some("mcp:prompts"),
+        "notifications/tools/list_changed"
+        | "notifications/resources/list_changed"
+        | "notifications/prompts/list_changed" => Some(MCP_OAUTH_SCOPE),
         _ => None,
     }
 }
@@ -616,7 +617,7 @@ impl McpSessionAuthority {
             wiki_id: None,
             audience: None,
             permission_profile,
-            scopes,
+            scopes: normalize_mcp_scopes(scopes),
             credential_fingerprint: fingerprint(credential),
         }
     }
@@ -644,7 +645,7 @@ impl McpSessionAuthority {
             wiki_id: Some(wiki_id),
             audience: Some(audience),
             permission_profile: Some(permission_profile),
-            scopes,
+            scopes: normalize_mcp_scopes(scopes),
             credential_fingerprint: fingerprint(credential),
         }
     }
@@ -767,9 +768,14 @@ mod tests {
             serde_json::json!({"method": "notifications/tools/list_changed"}),
             serde_json::json!({"method": "notifications/resources/list_changed"}),
         ]);
+        // One scope covers every list.
         assert_eq!(
             receiver.try_recv().expect("tool notification")["method"],
             "notifications/tools/list_changed"
+        );
+        assert_eq!(
+            receiver.try_recv().expect("resource notification")["method"],
+            "notifications/resources/list_changed"
         );
         assert!(receiver.try_recv().is_err());
 

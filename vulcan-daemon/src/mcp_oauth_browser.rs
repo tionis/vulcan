@@ -55,10 +55,13 @@ pub struct IndieAuthConfig {
 }
 
 #[must_use]
+/// Redirect to the client with an authorization response: its result,
+/// `state` passed through, and `iss` naming the issuer (RFC 9207).
 pub fn client_redirect(
     redirect_uri: &str,
     result_query: &str,
     state: Option<&str>,
+    issuer: &str,
 ) -> McpHttpResponse {
     let separator = if redirect_uri.contains('?') { '&' } else { '?' };
     let mut location = format!("{redirect_uri}{separator}{result_query}");
@@ -66,6 +69,8 @@ pub fn client_redirect(
         location.push_str("&state=");
         location.push_str(&percent_encode(state));
     }
+    location.push_str("&iss=");
+    location.push_str(&percent_encode(issuer));
     McpHttpResponse {
         status: 302,
         content_type: None,
@@ -685,8 +690,9 @@ mod tests {
             "https://client.example/callback?existing=one",
             "code=issued-code",
             Some("a&b c"),
+            "https://mcp.example/vault",
         );
-        assert!(client.extra_headers.iter().any(|(name, value)| name == "Location" && value == "https://client.example/callback?existing=one&code=issued-code&state=a%26b%20c"));
+        assert!(client.extra_headers.iter().any(|(name, value)| name == "Location" && value == "https://client.example/callback?existing=one&code=issued-code&state=a%26b%20c&iss=https%3A%2F%2Fmcp.example%2Fvault"));
         assert!(client
             .extra_headers
             .iter()

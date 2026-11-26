@@ -14,20 +14,36 @@ pub const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
 pub const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
 const MCP_DAILY_LIST_DEFAULT_LIMIT: usize = 20;
 
-/// Coarse OAuth scope required for a protocol method. Fine-grained vault
-/// permissions are checked separately by the selected application workflow.
+/// The one OAuth scope: access to the MCP endpoint. What a caller may do
+/// comes from its permission profile, not from scopes.
+pub const MCP_OAUTH_SCOPE: &str = "mcp";
+/// Scopes granted before there was one scope; each now means [`MCP_OAUTH_SCOPE`].
+pub const LEGACY_MCP_OAUTH_SCOPES: &[&str] = &["mcp:tools", "mcp:resources", "mcp:prompts"];
+
+/// `scopes` with the legacy per-family scopes read as [`MCP_OAUTH_SCOPE`],
+/// sorted and without duplicates.
+#[must_use]
+pub fn normalize_mcp_scopes(scopes: Vec<String>) -> Vec<String> {
+    scopes
+        .into_iter()
+        .map(|scope| {
+            if LEGACY_MCP_OAUTH_SCOPES.contains(&scope.as_str()) {
+                MCP_OAUTH_SCOPE.to_string()
+            } else {
+                scope
+            }
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The OAuth scope a request needs: [`MCP_OAUTH_SCOPE`] for every method.
+/// Fine-grained vault permissions are checked by the permission profile.
 #[must_use]
 pub fn required_scope_for_request(payload: &Value) -> Option<&'static str> {
-    let method = payload.get("method")?.as_str()?;
-    if method.starts_with("tools/") {
-        Some("mcp:tools")
-    } else if method.starts_with("resources/") {
-        Some("mcp:resources")
-    } else if method.starts_with("prompts/") {
-        Some("mcp:prompts")
-    } else {
-        None
-    }
+    payload.get("method")?.as_str()?;
+    Some(MCP_OAUTH_SCOPE)
 }
 
 /// Tool families the instructions describe, each shown when the caller has
@@ -980,22 +996,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn request_scopes_cover_all_protocol_namespaces_without_granting_unknown_methods() {
-        for (method, scope) in [
-            ("tools/call", Some("mcp:tools")),
-            ("tools/list", Some("mcp:tools")),
-            ("resources/read", Some("mcp:resources")),
-            ("resources/templates/list", Some("mcp:resources")),
-            ("prompts/get", Some("mcp:prompts")),
-            ("initialize", None),
-            ("notifications/cancelled", None),
+    fn every_request_needs_the_one_mcp_scope_and_legacy_scopes_mean_it() {
+        for method in [
+            "tools/call",
+            "resources/read",
+            "initialize",
+            "server/discover",
         ] {
             assert_eq!(
                 required_scope_for_request(&json!({"method": method})),
-                scope
+                Some(MCP_OAUTH_SCOPE)
             );
         }
         assert_eq!(required_scope_for_request(&json!({"method": 4})), None);
+        assert_eq!(
+            normalize_mcp_scopes(vec![
+                "mcp:tools".into(),
+                "mcp:prompts".into(),
+                "openid".into()
+            ]),
+            ["mcp", "openid"]
+        );
     }
 
     #[test]

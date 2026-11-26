@@ -367,7 +367,7 @@ mod tests {
         }
 
         fn authorize_scope(&self, (): &(), required: &str) -> Result<(), McpHttpResponse> {
-            assert_eq!(required, "mcp:tools");
+            assert_eq!(required, "mcp");
             self.calls.borrow_mut().push("scope");
             if self.deny_scope {
                 Err(route_error(403, "insufficient_scope"))
@@ -516,7 +516,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(capture.response().0, 200);
-        assert_eq!(*handler.calls.borrow(), ["authenticate", "listen"]);
+        assert_eq!(*handler.calls.borrow(), ["authenticate", "scope", "listen"]);
     }
 
     #[test]

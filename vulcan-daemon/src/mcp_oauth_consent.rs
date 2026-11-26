@@ -55,6 +55,7 @@ impl McpConsentEndpoint<'_> {
                 &pending.redirect_uri,
                 "error=access_denied",
                 pending.state.as_deref(),
+                self.issuer.public_url(),
             );
         }
         if !self.issuer.subject_allowed(&pending.subject) {
@@ -112,6 +113,7 @@ impl McpConsentEndpoint<'_> {
             &pending.redirect_uri,
             &format!("code={}", percent_encode(&code)),
             pending.state.as_deref(),
+            self.issuer.public_url(),
         )
     }
 

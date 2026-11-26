@@ -38,7 +38,7 @@ pub fn named_mcp_operation_status(
     authority: &McpSessionAuthority,
     operation_id: &str,
 ) -> Option<McpOperationStatusReport> {
-    if !authority.allows_scope("mcp:tools")
+    if !authority.allows_scope(vulcan_app::mcp_protocol::MCP_OAUTH_SCOPE)
         || authority.remote_id.as_ref() != Some(&named.remote_id)
     {
         return None;

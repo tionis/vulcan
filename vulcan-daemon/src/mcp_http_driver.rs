@@ -34,6 +34,8 @@ use vulcan_app::mcp_core::{
 };
 use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id, McpHttpProcessResult};
 use vulcan_app::mcp_operations::{McpOperationLookup, McpOwnedOperations};
+#[cfg(feature = "oauth")]
+use vulcan_app::mcp_protocol::MCP_OAUTH_SCOPE;
 
 pub type McpHttpCoreFactory<C> = fn(McpHttpProtocolConfig) -> Result<C, String>;
 
@@ -218,8 +220,8 @@ pub fn handle_named_mcp_operation_status<C: McpRequestCore>(
     authority: &McpSessionAuthority,
     operation_id: &str,
 ) -> McpHttpResponse {
-    if !authority.allows_scope("mcp:tools") {
-        return insufficient_scope_response(context, "mcp:tools");
+    if !authority.allows_scope(MCP_OAUTH_SCOPE) {
+        return insufficient_scope_response(context, MCP_OAUTH_SCOPE);
     }
     let not_found = || mcp_http_json_error_response(404, "Not Found", Value::Null);
     let (Some(hosted), Some(named)) = (context.hosted.as_ref(), context.named_runtime.as_ref())
@@ -519,17 +521,8 @@ pub fn insufficient_scope_response<C: McpRequestCore>(
     let message = format!("OAuth token does not grant required scope `{required}`");
     #[cfg(feature = "oauth")]
     if let Some(oauth) = context.oauth.as_ref() {
-        let mut response = oauth_error_response(oauth, &message, "insufficient_scope");
+        let mut response = oauth_error_response(oauth, &message, Some("insufficient_scope"));
         response.status = 403;
-        if let Some((_, challenge)) = response
-            .extra_headers
-            .iter_mut()
-            .find(|(name, _)| name == "WWW-Authenticate")
-        {
-            challenge.push_str(", scope=\"");
-            challenge.push_str(required);
-            challenge.push('"');
-        }
         return response;
     }
     #[cfg(not(feature = "oauth"))]
@@ -715,6 +708,7 @@ pub fn authenticate_mcp_http_request<C: McpRequestCore>(
             McpHttpAuthError::OAuth {
                 message,
                 rejected_bearer,
+                missing_token,
             } => {
                 if rejected_bearer {
                     eprintln!("MCP OAuth bearer token rejected: {message}");
@@ -725,7 +719,7 @@ pub fn authenticate_mcp_http_request<C: McpRequestCore>(
                         .as_ref()
                         .expect("OAuth rejection has an issuer"),
                     message,
-                    "invalid_token",
+                    (!missing_token).then_some("invalid_token"),
                 )
             }
         })
@@ -744,22 +738,28 @@ pub fn handle_mcp_oauth_route<C: McpRequestCore>(
         .handle(request, route)
 }
 #[cfg(feature = "oauth")]
+/// A 401 with the bearer challenge: where the resource metadata is and the
+/// scope to ask for, and the error only when a token was sent (RFC 6750).
 fn oauth_error_response(
     oauth: &McpOAuthMode,
     message: impl Into<String>,
-    error: &str,
+    error: Option<&str>,
 ) -> McpHttpResponse {
     let message = message.into();
-    let error_description = escape_www_authenticate_value(&message);
-    let mut response = mcp_http_json_error_response(401, message, Value::Null);
-    response.extra_headers.push((
-        "WWW-Authenticate".to_string(),
+    let error = error.map_or_else(String::new, |error| {
         format!(
-            "Bearer error=\"{error}\", error_description=\"{}\", resource_metadata=\"{}\"",
-            error_description,
-            oauth_protected_resource_metadata_url(oauth),
-        ),
-    ));
+            "error=\"{error}\", error_description=\"{}\", ",
+            escape_www_authenticate_value(&message)
+        )
+    });
+    let challenge = format!(
+        "Bearer {error}resource_metadata=\"{}\", scope=\"{MCP_OAUTH_SCOPE}\"",
+        oauth_protected_resource_metadata_url(oauth),
+    );
+    let mut response = mcp_http_json_error_response(401, message, Value::Null);
+    response
+        .extra_headers
+        .push(("WWW-Authenticate".to_string(), challenge));
     response
 }
 

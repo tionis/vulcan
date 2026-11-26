@@ -44,6 +44,8 @@ pub enum McpHttpAuthError {
     OAuth {
         message: String,
         rejected_bearer: bool,
+        /// No bearer token was sent: the challenge then names no error.
+        missing_token: bool,
     },
 }
 
@@ -52,6 +54,7 @@ fn oauth_error(message: impl Into<String>, rejected_bearer: bool) -> McpHttpAuth
     McpHttpAuthError::OAuth {
         message: message.into(),
         rejected_bearer,
+        missing_token: false,
     }
 }
 
@@ -77,8 +80,11 @@ pub fn authenticate_mcp_http_request(
         .collect();
     #[cfg(feature = "oauth")]
     if let Some(oauth) = options.oauth {
-        let token = bearer_token(headers)
-            .ok_or_else(|| oauth_error("missing OAuth bearer token", false))?;
+        let token = bearer_token(headers).ok_or_else(|| McpHttpAuthError::OAuth {
+            message: "missing OAuth bearer token".to_string(),
+            rejected_bearer: false,
+            missing_token: true,
+        })?;
         let identity = oauth
             .validate_bearer_token(&token)
             .map_err(|error| oauth_error(error.to_string(), true))?;
@@ -239,7 +245,8 @@ mod tests {
         let authority = authenticate(&headers).unwrap();
         assert_eq!(authority.subject.as_deref(), Some(subject));
         assert_eq!(authority.client_id.as_deref(), Some("client"));
-        assert_eq!(authority.scopes, scopes);
+        // Legacy per-family scopes are read as the one `mcp` scope.
+        assert_eq!(authority.scopes, ["mcp"]);
         assert_eq!(authority.permission_profile.as_deref(), Some("readonly"));
         assert!(!format!("{authority:?}").contains(&token));
         let invalid = BTreeMap::from([("authorization".into(), "Bearer invalid".into())]);

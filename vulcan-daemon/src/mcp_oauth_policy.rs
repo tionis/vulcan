@@ -5,8 +5,13 @@ use base64::prelude::{Engine, BASE64_STANDARD};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const DEFAULT_MCP_OAUTH_SCOPES: &[&str] = &["mcp:prompts", "mcp:resources", "mcp:tools"];
-pub const SUPPORTED_MCP_OAUTH_SCOPES: &[&str] = &[
+pub const DEFAULT_MCP_OAUTH_SCOPES: &[&str] = &["mcp"];
+/// Scopes the server advertises: one, for the MCP endpoint.
+pub const SUPPORTED_MCP_OAUTH_SCOPES: &[&str] = &["mcp"];
+/// Scopes a client may also ask for without being refused: identity scopes,
+/// which grant nothing, and the former per-family MCP scopes, read as `mcp`.
+const ACCEPTED_MCP_OAUTH_SCOPES: &[&str] = &[
+    "mcp",
     "openid",
     "email",
     "profile",
@@ -235,10 +240,11 @@ pub fn parse_mcp_oauth_scopes(scope: Option<&str>) -> Result<Vec<String>, McpOAu
         || values.len() > 16
         || values
             .iter()
-            .any(|scope| !SUPPORTED_MCP_OAUTH_SCOPES.contains(&scope.as_str()))
+            .any(|scope| !ACCEPTED_MCP_OAUTH_SCOPES.contains(&scope.as_str()))
     {
         return Err(McpOAuthPolicyError::InvalidScope);
     }
+    let values = vulcan_app::mcp_protocol::normalize_mcp_scopes(values);
     Ok(values
         .into_iter()
         .collect::<BTreeSet<_>>()
@@ -472,14 +478,11 @@ mod tests {
 
     #[test]
     fn scopes_have_a_bounded_supported_catalog_and_stable_defaults() {
+        assert_eq!(parse_mcp_oauth_scopes(None).expect("defaults"), vec!["mcp"]);
         assert_eq!(
-            parse_mcp_oauth_scopes(None).expect("defaults"),
-            vec!["mcp:prompts", "mcp:resources", "mcp:tools"]
-        );
-        assert_eq!(
-            parse_mcp_oauth_scopes(Some("mcp:tools mcp:resources mcp:tools"))
-                .expect("deduplicated scopes"),
-            vec!["mcp:resources", "mcp:tools"]
+            parse_mcp_oauth_scopes(Some("mcp:tools mcp:resources mcp openid"))
+                .expect("legacy scopes read as mcp"),
+            vec!["mcp", "openid"]
         );
         assert_eq!(
             parse_mcp_oauth_scopes(Some("mcp:tools vault:admin")),

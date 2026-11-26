@@ -227,7 +227,9 @@ impl LocalOAuthIssuer {
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
             "code_challenge_methods_supported": ["S256"],
-            "scopes_supported": ["openid", "email", "profile", "mcp:tools", "mcp:resources", "mcp:prompts"],
+            "scopes_supported": ["mcp"],
+            // RFC 9207: the authorization response names its issuer.
+            "authorization_response_iss_parameter_supported": true,
         });
         if config.dcr_enabled {
             authorization_server_metadata["registration_endpoint"] =
