@@ -22,6 +22,9 @@ use crate::mcp_protocol::{
     McpListSnapshot, McpMethodError, McpPromptGetParams, McpResourceReadParams, McpToolCallParams,
     MCP_PAGE_SIZE, MCP_RESOURCE_NOT_FOUND,
 };
+use crate::mcp_skills::{
+    get_skill, read_skill_directory, skill_entries, MCP_SKILLS_EXTENSION, SKILL_TTL_MS,
+};
 
 /// The stateless protocol revision.
 pub const MCP_MODERN_VERSION: &str = "2026-07-28";
@@ -173,14 +176,24 @@ fn server_info(host: &McpProtocolHost) -> Value {
 /// The server capabilities. Legacy connections are told about list changes
 /// on their own stream; modern clients subscribe with `subscriptions/listen`
 /// where the transport serves it.
+///
+/// The skills extension is a 2026-07-28 feature: modern clients are offered
+/// `skills/list`, `skills/get` and `resources/directory/read`; legacy clients
+/// find the same `skill://` files through `resources/list`.
 fn capabilities(era: McpEra, subscriptions: bool) -> Value {
     let list_changed = era == McpEra::Legacy || subscriptions;
-    json!({
+    let mut capabilities = json!({
         "tools": { "listChanged": list_changed },
         "resources": { "listChanged": list_changed },
         "prompts": { "listChanged": list_changed },
         "completions": {},
-    })
+    });
+    if era == McpEra::Modern {
+        capabilities["extensions"] = json!({
+            MCP_SKILLS_EXTENSION: { "directoryRead": true },
+        });
+    }
+    capabilities
 }
 
 const META_SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId";
@@ -370,6 +383,28 @@ fn dispatch(
                 .discovery()
                 .read_resource(&params.uri, ctx.host.command_help)?
         }
+        "skills/list" | "skills/get" | "resources/directory/read" if ctx.era == McpEra::Legacy => {
+            return Err(McpMethodError::method_not_found(format!(
+                "`{method}` belongs to the {MCP_SKILLS_EXTENSION} extension, offered to {MCP_MODERN_VERSION} clients; read skills through resources/list"
+            )));
+        }
+        "skills/list" => paginated(
+            "skills",
+            skill_entries(&authority.discovery().visible_skills()?),
+            parse::<McpListParams>(params)?.cursor,
+        )?,
+        "skills/get" => {
+            let params: McpResourceReadParams = parse(params)?;
+            get_skill(&authority.discovery().visible_skills()?, &params.uri)?
+        }
+        "resources/directory/read" => {
+            let params: McpDirectoryReadParams = parse(params)?;
+            paginated(
+                "resources",
+                read_skill_directory(&authority.discovery().visible_skills()?, &params.uri)?,
+                params.cursor,
+            )?
+        }
         "completion/complete" => {
             let params: McpCompletionParams = parse(params)?;
             authority
@@ -382,6 +417,15 @@ fn dispatch(
             )))
         }
     }))
+}
+
+/// `resources/directory/read` parameters.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpDirectoryReadParams {
+    uri: String,
+    #[serde(default)]
+    cursor: Option<String>,
 }
 
 fn discover_result(ctx: &McpRequestContext<'_>) -> Value {
@@ -416,6 +460,7 @@ fn decorate_modern(ctx: &McpRequestContext<'_>, method: &str, mut value: Value) 
             Some(LIST_TTL_MS)
         }
         "resources/read" => Some(0),
+        "skills/list" | "skills/get" | "resources/directory/read" => Some(SKILL_TTL_MS),
         _ => None,
     };
     if let Some(ttl) = ttl {
@@ -706,6 +751,82 @@ mod tests {
             handle(&ctx, "ping", None),
             Err(McpMethodError::JsonRpc { code: -32601, .. })
         ));
+    }
+
+    #[test]
+    fn the_skills_extension_is_offered_to_modern_clients_only() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
+        let authority = McpAuthority::new(&paths, Some("readonly")).unwrap();
+        let client = McpClientAttribution::default();
+        let host = host();
+        let context = |era| McpRequestContext {
+            authority: &authority,
+            client: &client,
+            era,
+            host: &host,
+            operations: None,
+            subscriptions: false,
+        };
+        let modern = context(McpEra::Modern);
+        let discover = handle(&modern, "server/discover", None).unwrap().unwrap();
+        assert_eq!(
+            discover["capabilities"]["extensions"][MCP_SKILLS_EXTENSION],
+            json!({"directoryRead": true})
+        );
+        let listed = handle(&modern, "skills/list", Some(&modern_params(&json!({}))))
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed["ttlMs"], SKILL_TTL_MS);
+        assert_eq!(listed["cacheScope"], "private");
+        let note = listed["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|skill| skill["uri"] == "skill://note-operations/SKILL.md")
+            .expect("read-only callers get the note skill")
+            .clone();
+        let got = handle(
+            &modern,
+            "skills/get",
+            Some(&modern_params(
+                &json!({"uri": "skill://note-operations/SKILL.md"}),
+            )),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(got["skill"], note);
+        let directory = handle(
+            &modern,
+            "resources/directory/read",
+            Some(&modern_params(&json!({"uri": "skill://note-operations"}))),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(directory["ttlMs"], SKILL_TTL_MS);
+        assert!(directory["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource["name"] == "SKILL.md"));
+
+        let legacy = context(McpEra::Legacy);
+        let discover = handle(&legacy, "server/discover", None).unwrap().unwrap();
+        assert!(discover["capabilities"].get("extensions").is_none());
+        for method in ["skills/list", "skills/get", "resources/directory/read"] {
+            assert!(
+                matches!(
+                    handle(
+                        &legacy,
+                        method,
+                        Some(&json!({"uri": "skill://note-operations"}))
+                    ),
+                    Err(McpMethodError::JsonRpc { code: -32601, .. })
+                ),
+                "{method}"
+            );
+        }
     }
 
     #[test]

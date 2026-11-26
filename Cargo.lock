@@ -5217,6 +5217,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "ssh-key",
  "tempfile",
  "tokio",

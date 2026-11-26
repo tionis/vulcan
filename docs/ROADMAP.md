@@ -8843,7 +8843,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.11 Skills extension
 
-- [ ] `skills/list`, `skills/get`, `resources/directory/read`, digests over rendered bytes.
+- [x] `skills/list`, `skills/get`, `resources/directory/read`, digests over rendered bytes: the `io.modelcontextprotocol/skills` extension (`directoryRead: true`) is declared to 2026-07-28 clients only (legacy clients get -32601 and keep `resources/list`); entries carry `SKILL.md`'s URI, the frontmatter as written (with the served `name` and a `description`), and a complete manifest with `sha256:` digests and sizes of the bytes served; unknown skills and non-directories are -32602; `ttlMs` 300000, `cacheScope` `private`. The era suite checks manifests against `resources/read` over stdio and HTTP.
 
 ### 9.43.12 Tasks, input requests and progress
 

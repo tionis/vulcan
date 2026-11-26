@@ -515,6 +515,22 @@ pub fn parse_assistant_skill_source(
     Ok(skill)
 }
 
+/// A skill file's YAML frontmatter as JSON, every field as written; an
+/// empty object when the file has none.
+pub fn skill_frontmatter_json(source: &str, relative: &str) -> Result<JsonValue, AssistantError> {
+    let (frontmatter, _) = split_markdown_frontmatter(source, Path::new(relative))?;
+    match frontmatter {
+        None => Ok(JsonValue::Object(serde_json::Map::new())),
+        Some(frontmatter) => match parse_yaml_frontmatter::<JsonValue>(frontmatter)? {
+            JsonValue::Null => Ok(JsonValue::Object(serde_json::Map::new())),
+            value @ JsonValue::Object(_) => Ok(value),
+            _ => Err(AssistantError::parse(
+                "assistant frontmatter must be a mapping".to_string(),
+            )),
+        },
+    }
+}
+
 fn normalize_skill_commands(
     metadata: &YamlValue,
 ) -> Result<Vec<AssistantSkillCommandSummary>, AssistantError> {

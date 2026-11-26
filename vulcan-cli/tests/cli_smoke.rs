@@ -35038,13 +35038,33 @@ impl EraClient {
     }
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
 /// Remove what only the 2026-07-28 era adds to a result, checking it on
 /// the way: every modern result names its `resultType`, lists and reads
 /// carry cache hints, and server info rides in `_meta`.
-fn strip_modern_result_fields(method: &str, response: &mut Value) {
+fn strip_modern_result_fields(method: &str, modern: bool, response: &mut Value) {
     let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) else {
         return;
     };
+    // Only modern clients are offered the skills extension.
+    if let Some(Value::Object(capabilities)) = result.get_mut("capabilities") {
+        let extensions = capabilities.remove("extensions");
+        if modern {
+            assert_eq!(
+                extensions,
+                Some(
+                    serde_json::json!({"io.modelcontextprotocol/skills": {"directoryRead": true}})
+                ),
+                "{method}"
+            );
+        } else {
+            assert!(extensions.is_none(), "{method}");
+        }
+    }
     assert_eq!(
         result.remove("resultType"),
         Some(Value::from("complete")),
@@ -35149,7 +35169,7 @@ fn mcp_eras_answer_the_same_scenarios_alike() {
             // `server/discover` is a 2026-07-28 method and answers in that
             // shape in both eras.
             if client.modern() || *method == "server/discover" {
-                strip_modern_result_fields(method, &mut response);
+                strip_modern_result_fields(method, client.modern(), &mut response);
             }
             answers.push(response);
         }
@@ -35173,6 +35193,42 @@ fn mcp_eras_answer_the_same_scenarios_alike() {
             );
         } else {
             assert_eq!(ping["result"], serde_json::json!({}), "{name}: {ping}");
+        }
+
+        // Skills: modern clients get the extension, whose manifests match
+        // the bytes `resources/read` serves; legacy clients find the same
+        // files through `resources/list`.
+        let skills = client.call(202, "skills/list", serde_json::json!({}));
+        if client.modern() {
+            let note = skills["result"]["skills"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{name}: {skills}"))
+                .iter()
+                .find(|skill| skill["uri"] == "skill://note-operations/SKILL.md")
+                .unwrap_or_else(|| panic!("{name}: {skills}"))
+                .clone();
+            let manifest = &note["resources"].as_array().expect("manifest")[0];
+            let read = client.call(
+                203,
+                "resources/read",
+                serde_json::json!({"uri": manifest["uri"]}),
+            );
+            let text = read["result"]["contents"][0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name}: {read}"));
+            assert_eq!(manifest["size"], text.len(), "{name}");
+            assert_eq!(
+                manifest["digest"],
+                format!("sha256:{}", sha256_hex(text.as_bytes())),
+                "{name}"
+            );
+        } else {
+            assert_eq!(skills["error"]["code"], -32601, "{name}: {skills}");
+            assert!(answers[6]["result"]["resources"]
+                .as_array()
+                .expect("resources")
+                .iter()
+                .any(|resource| resource["uri"] == "skill://note-operations/SKILL.md"));
         }
 
         // Spot checks that the shared answers are the right ones.

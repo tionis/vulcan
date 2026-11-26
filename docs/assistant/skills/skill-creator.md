@@ -1,7 +1,7 @@
 ---
 name: skill-creator
 description: Create, modify, and improve Agent Skills-compatible skills for Vulcan vaults. Use this whenever the user wants to create a new skill, turn a repeated workflow into a skill, add callable skill commands, write or review skill command scripts, validate skills, or improve when a skill should trigger.
-version: 2
+version: 3
 tools:
   - skill_list
   - skill_get
@@ -52,8 +52,8 @@ require_confirmation: false
 Make `description` specific and trigger-oriented. Include both what the skill does and when to use
 it. Keep detailed workflow instructions in the body.
 
-The vault's skills are also served to MCP clients as `skill://{name}/SKILL.md`, exactly as written,
-and listed for a connection only when it can call a tool named in `tools:` (or none is named). An
+The vault's skills are also served to MCP clients as `skill://{name}/SKILL.md`, exactly as written
+(every file in the skill's folder, through the skills extension to 2026-07-28 clients), and listed for a connection only when it can call a tool named in `tools:` (or none is named). An
 MCP agent has the tools, not a shell: name MCP tools (`note_get`, `search`) in a skill meant for
 both, and describe the CLI form separately if the skill also serves shell agents.
 

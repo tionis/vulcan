@@ -112,7 +112,9 @@ impl McpDiscovery<'_> {
         Ok(resources)
     }
 
-    fn visible_skills(&self) -> Result<Vec<crate::mcp_skills::McpSkill>, McpMethodError> {
+    pub(crate) fn visible_skills(
+        &self,
+    ) -> Result<Vec<crate::mcp_skills::McpSkill>, McpMethodError> {
         crate::mcp_skills::visible_skills(self.paths, self.guard, self.profile)
     }
 

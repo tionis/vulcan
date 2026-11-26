@@ -130,12 +130,12 @@ pub use assistant::{
     assistant_config_summary, assistant_prompts_root, assistant_skills_root,
     default_assistant_tool_reserved_names, list_assistant_prompts, list_assistant_skills,
     load_assistant_prompt, load_assistant_skill, parse_assistant_skill_source,
-    read_vault_agents_file, render_assistant_prompt, skill_source_is_vulcan_managed,
-    AssistantConfigSummary, AssistantError, AssistantPrompt, AssistantPromptArgument,
-    AssistantPromptSummary, AssistantSkill, AssistantSkillCommandCli, AssistantSkillCommandCliArg,
-    AssistantSkillCommandCliArgAction, AssistantSkillCommandExample, AssistantSkillCommandSummary,
-    AssistantSkillSummary, AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec,
-    AssistantToolSummary,
+    read_vault_agents_file, render_assistant_prompt, skill_frontmatter_json,
+    skill_source_is_vulcan_managed, AssistantConfigSummary, AssistantError, AssistantPrompt,
+    AssistantPromptArgument, AssistantPromptSummary, AssistantSkill, AssistantSkillCommandCli,
+    AssistantSkillCommandCliArg, AssistantSkillCommandCliArgAction, AssistantSkillCommandExample,
+    AssistantSkillCommandSummary, AssistantSkillSummary, AssistantTool, AssistantToolRuntime,
+    AssistantToolSecretSpec, AssistantToolSummary,
 };
 pub use bases::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,
