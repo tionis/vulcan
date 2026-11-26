@@ -8838,7 +8838,8 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.10 Protocol 2026-07-28
 
-- [ ] Per-request `_meta`, `server/discover`, `resultType`, `ttlMs`/`cacheScope`, headers, version errors, `subscriptions/listen`, -32602 not found; dual-era scenario suite.
+- [x] Per-request `_meta`, `server/discover`, `resultType`, `ttlMs`/`cacheScope`, headers, version errors, `subscriptions/listen`, -32602 not found (landed with 9.43.6 and 9.43.8); dual-era scenario suite (`mcp_eras_answer_the_same_scenarios_alike`: the same fourteen requests over legacy stdio, modern stdio, legacy HTTP and modern HTTP give identical answers once the 2026-07-28 fields are checked and set aside, with the eras' designed differences for not-found reads and `ping` asserted); golden `tools/list` per built-in profile (`mcp_tools_by_profile.json`).
+- [x] A legacy HTTP session bound to a grant accepts a refreshed access token for that grant, and a GET stream whose token lapses ends without retiring it.
 
 ### 9.43.11 Skills extension
 

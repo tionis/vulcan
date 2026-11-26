@@ -1,0 +1,2444 @@
+{
+  "daily-wiki-agent": {
+    "changeset_argument": false,
+    "tools": [
+      "note_get",
+      "note_outline",
+      "search",
+      "query",
+      "status",
+      "daily",
+      "graph_communities",
+      "link_suggestions",
+      "link_suggestion_resolve",
+      "task_query",
+      "task_create",
+      "task_complete",
+      "task_reschedule",
+      "task_reminder_add",
+      "note_create",
+      "note_append",
+      "note_patch",
+      "note_info",
+      "config_get",
+      "index_scan",
+      "file_get",
+      "file_put",
+      "operation_get"
+    ]
+  },
+  "maintainer": {
+    "changeset_argument": true,
+    "tools": [
+      "note_get",
+      "note_outline",
+      "search",
+      "query",
+      "status",
+      "daily",
+      "graph_communities",
+      "link_suggestions",
+      "link_suggestion_resolve",
+      "task_query",
+      "task_create",
+      "task_complete",
+      "task_reschedule",
+      "task_reminder_add",
+      "task_reminder_remove",
+      "note_create",
+      "note_append",
+      "note_patch",
+      "note_info",
+      "note_set",
+      "note_delete",
+      "web_search",
+      "web_fetch",
+      "config_get",
+      "config_set",
+      "index_scan",
+      "sync_status",
+      "sync_doctor",
+      "sync_conflicts",
+      "file_get",
+      "file_put",
+      "sync_refresh",
+      "sync_resume",
+      "note_move",
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_blame",
+      "git_commit",
+      "changeset_begin",
+      "changeset_list",
+      "changeset_land",
+      "changeset_abandon",
+      "operation_get"
+    ]
+  },
+  "readonly": {
+    "changeset_argument": false,
+    "tools": [
+      "note_get",
+      "note_outline",
+      "search",
+      "query",
+      "status",
+      "daily",
+      "graph_communities",
+      "link_suggestions",
+      "task_query",
+      "note_info",
+      "config_get",
+      "file_get",
+      "operation_get"
+    ]
+  },
+  "researcher": {
+    "changeset_argument": false,
+    "tools": [
+      "note_get",
+      "note_outline",
+      "search",
+      "query",
+      "status",
+      "daily",
+      "graph_communities",
+      "link_suggestions",
+      "task_query",
+      "note_info",
+      "web_search",
+      "web_fetch",
+      "config_get",
+      "file_get",
+      "operation_get"
+    ]
+  },
+  "unrestricted": [
+    {
+      "_meta": {
+        "anthropic/alwaysLoad": true
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read one note or markdown file, optionally selecting a section, heading, block, or line range.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "block_ref": {
+            "description": "Block reference id without the leading `^`.",
+            "type": "string"
+          },
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "context": {
+            "description": "Surrounding line count to include around each match.",
+            "type": "integer"
+          },
+          "dataview_js": {
+            "description": "How evaluation treats dataviewjs blocks: `off` leaves a notice, `static` runs them deterministically in the strict sandbox, `on` uses the configured sandbox tier and needs the vault to be trusted (`vulcan trust`), else it runs as `static`. Defaults to `on` in trusted vaults and `static` elsewhere, or the vault's `dataview.render_dataview_js`.",
+            "enum": [
+              "off",
+              "static",
+              "on"
+            ],
+            "type": "string"
+          },
+          "evaluate": {
+            "description": "In markdown mode, replace Dataview, Tasks, and Bases embeds with their evaluated results. HTML mode always evaluates.",
+            "type": "boolean"
+          },
+          "heading": {
+            "description": "Heading text to scope the read.",
+            "type": "string"
+          },
+          "lines": {
+            "description": "Optional 1-based line range inside the current selection.",
+            "type": "string"
+          },
+          "match": {
+            "description": "Optional regex used to keep matching lines only.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "Render selected content as markdown or HTML.",
+            "enum": [
+              "markdown",
+              "html"
+            ],
+            "type": "string"
+          },
+          "no_frontmatter": {
+            "description": "Strip leading YAML frontmatter from the output.",
+            "type": "boolean"
+          },
+          "note": {
+            "description": "Note path or note identifier to read.",
+            "type": "string"
+          },
+          "raw": {
+            "description": "Return only the selected content without line numbers in human output.",
+            "type": "boolean"
+          },
+          "section_id": {
+            "description": "Semantic section id from `note_outline`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "type": "object"
+      },
+      "name": "note_get",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "content": {
+            "description": "Rendered selected content.",
+            "type": "string"
+          },
+          "content_hash": {
+            "description": "Hash of the whole note as read; pass it as `expected_hash` to guard a later write.",
+            "type": "string"
+          },
+          "frontmatter": {
+            "description": "Parsed frontmatter object when present."
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "path": {
+            "description": "Resolved path that was read.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content",
+          "content_hash",
+          "metadata"
+        ],
+        "type": "object"
+      },
+      "title": "Read Note Content"
+    },
+    {
+      "_meta": {
+        "anthropic/alwaysLoad": true
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Inspect a note's semantic sections and block references for scoped follow-up reads and patches.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "depth": {
+            "description": "Optional relative depth limit for descendant sections.",
+            "type": "integer"
+          },
+          "note": {
+            "description": "Note path or note identifier to outline.",
+            "type": "string"
+          },
+          "section_id": {
+            "description": "Optional semantic section id to focus the outline.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "type": "object"
+      },
+      "name": "note_outline",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "path": {
+            "description": "Vault-relative note path.",
+            "type": "string"
+          },
+          "sections": {
+            "description": "Sections with ids, levels, headings, and line spans.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "total_lines": {
+            "description": "Lines in the note.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "sections"
+        ],
+        "type": "object"
+      },
+      "title": "Inspect Note Outline"
+    },
+    {
+      "_meta": {
+        "anthropic/alwaysLoad": true
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Run full-text or hybrid search across the vault and return structured hits with snippets and section metadata.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "context_size": {
+            "description": "Context line count to include in snippets.",
+            "type": "integer"
+          },
+          "cursor": {
+            "description": "Opaque `page.next_cursor` from the previous page; omit for the first page.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "`concise` (default): path, section, heading, snippet. `full`: every hit field, including chunk ids, line spans, and rank.",
+            "enum": [
+              "concise",
+              "full"
+            ],
+            "type": "string"
+          },
+          "explain": {
+            "description": "Include search explanation details per hit.",
+            "type": "boolean"
+          },
+          "filters": {
+            "description": "Additional typed `--where` filters.",
+            "items": {
+              "description": "Typed property filter.",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "fuzzy": {
+            "description": "Allow fuzzy expansion fallback.",
+            "type": "boolean"
+          },
+          "has_property": {
+            "description": "Optional property-presence filter.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Hits per page (default 20, at most 100).",
+            "type": "integer"
+          },
+          "match_case": {
+            "description": "Treat the query as case-sensitive.",
+            "type": "boolean"
+          },
+          "mode": {
+            "description": "Search mode.",
+            "enum": [
+              "keyword",
+              "hybrid"
+            ],
+            "type": "string"
+          },
+          "path_prefix": {
+            "description": "Optional vault-relative path prefix filter.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Search query string or regex literal.",
+            "type": "string"
+          },
+          "raw_query": {
+            "description": "Disable search query rewriting.",
+            "type": "boolean"
+          },
+          "sort": {
+            "description": "Search result sort order.",
+            "enum": [
+              "relevance",
+              "path_asc",
+              "path_desc",
+              "modified_newest",
+              "modified_oldest",
+              "created_newest",
+              "created_oldest"
+            ],
+            "type": "string"
+          },
+          "tag": {
+            "description": "Optional tag filter.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "hits": {
+            "description": "Structured search hits.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "query": {
+            "description": "Effective query string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "hits"
+        ],
+        "type": "object"
+      },
+      "title": "Search Vault"
+    },
+    {
+      "_meta": {
+        "anthropic/alwaysLoad": true
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Run the structured Vulcan query surface. Use this for property, tag, path, and DQL-style note queries instead of raw full-text search.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_large_results": {
+            "description": "Explicitly opt in to limits above 200, up to the hard maximum of 1000.",
+            "type": "boolean"
+          },
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Opaque `page.next_cursor` from the previous page; omit for the first page.",
+            "type": "string"
+          },
+          "desc": {
+            "description": "Sort descending.",
+            "type": "boolean"
+          },
+          "engine": {
+            "description": "Query parser.",
+            "enum": [
+              "auto",
+              "dsl",
+              "dql"
+            ],
+            "type": "string"
+          },
+          "fields": {
+            "description": "Fields to include in each note row.",
+            "items": {
+              "description": "Projected result field.",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "filename_pattern": {
+            "description": "Glob matched against the filename including extension, for example `????-??-??.md`.",
+            "type": "string"
+          },
+          "filters": {
+            "description": "Typed `--where` filters for note-property queries.",
+            "items": {
+              "description": "Typed note filter.",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "include_properties": {
+            "description": "Include the complete properties object; false by default.",
+            "type": "boolean"
+          },
+          "json": {
+            "description": "Optional JSON-encoded Vulcan QueryAst payload.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum rows to return; defaults to 50 and is capped at 200 unless allow_large_results is true.",
+            "type": "integer"
+          },
+          "path_prefix": {
+            "description": "Restrict notes to this vault-relative path prefix.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Optional Vulcan query DSL or Dataview DQL source.",
+            "type": "string"
+          },
+          "sort": {
+            "description": "Optional note field to sort by.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "query",
+      "title": "Query Vault"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return a vault overview with note counts, cache size, last scan time, and git status.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "status",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "attachment_count": {
+            "description": "Indexed attachment count.",
+            "type": "integer"
+          },
+          "cache_bytes": {
+            "description": "Cache file size in bytes.",
+            "type": "integer"
+          },
+          "git_dirty": {
+            "description": "Whether the git working tree is dirty.",
+            "type": "boolean"
+          },
+          "graph_confidence": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "note_count": {
+            "description": "Indexed note count.",
+            "type": "integer"
+          },
+          "vault_root": {
+            "description": "Vault root path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vault_root",
+          "note_count",
+          "attachment_count",
+          "cache_bytes",
+          "git_dirty"
+        ],
+        "type": "object"
+      },
+      "title": "Read Vault Status"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read structurally known daily notes. Use operation=latest for the newest existing daily note, operation=today only for today's date, show for a known date, and list/range for windows. Prefer this over search or generic query for journal requests.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Opaque `page.next_cursor` from the previous page; omit for the first page.",
+            "type": "string"
+          },
+          "date": {
+            "description": "Date required by `show` (YYYY-MM-DD or a supported date expression).",
+            "type": "string"
+          },
+          "from": {
+            "description": "Start date for list/range.",
+            "type": "string"
+          },
+          "include_content": {
+            "description": "Include Markdown content for latest/today/show; defaults to true.",
+            "type": "boolean"
+          },
+          "include_events": {
+            "description": "Include full extracted event objects for list/range; false by default.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Maximum list/range items; defaults to 20 and cannot exceed 200.",
+            "type": "integer"
+          },
+          "month": {
+            "description": "Use the current configured month window.",
+            "type": "boolean"
+          },
+          "operation": {
+            "description": "Daily-note read operation. `latest` means the newest existing note; `today` never substitutes another date.",
+            "enum": [
+              "latest",
+              "today",
+              "show",
+              "list",
+              "range"
+            ],
+            "type": "string"
+          },
+          "order": {
+            "description": "List/range date order.",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "type": "string"
+          },
+          "to": {
+            "description": "End date for list/range.",
+            "type": "string"
+          },
+          "week": {
+            "description": "Use the current configured week window.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "name": "daily",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "page": {
+            "type": "object"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "title": "Read Daily Notes"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Compute note-graph communities, orphan placement hints, and bridge notes.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bridges": {
+            "description": "Include bridge-note rankings.",
+            "type": "boolean"
+          },
+          "community": {
+            "description": "Optional community id to focus in client displays.",
+            "type": "integer"
+          },
+          "orphans": {
+            "description": "Include orphan placement hints.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "graph_communities",
+      "title": "Inspect Graph Communities"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List ranked suggestions for links between notes that are not linked yet, optionally for one note or one feedback status.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Maximum number of suggestions to return.",
+            "type": "integer"
+          },
+          "min_score": {
+            "description": "Minimum composite score to include.",
+            "type": "number"
+          },
+          "note": {
+            "description": "Optional note identifier to scope suggestions.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Feedback status filter.",
+            "enum": [
+              "pending",
+              "accepted",
+              "rejected"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "link_suggestions",
+      "title": "List Link Suggestions"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Accept or reject one link suggestion by its id from `link_suggestions`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "Accept or reject the suggestion.",
+            "enum": [
+              "accept",
+              "reject"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "Suggestion id from `link_suggestions`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "link_suggestion_resolve",
+      "title": "Accept Or Reject A Link Suggestion"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Run a Tasks plugin query source and return shaped task results. Use this when the user gives task-query semantics directly.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "context": {
+            "description": "Filter by context.",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Opaque `page.next_cursor` from the previous page; omit for the first page.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "`concise` (default): path, line, text, status, dates, priority, tags. `full`: every task field.",
+            "enum": [
+              "concise",
+              "full"
+            ],
+            "type": "string"
+          },
+          "due_after": {
+            "description": "Filter tasks due after this date.",
+            "type": "string"
+          },
+          "due_before": {
+            "description": "Filter tasks due before this date.",
+            "type": "string"
+          },
+          "filter": {
+            "description": "Optional Tasks query or DQL fallback filter.",
+            "type": "string"
+          },
+          "group_by": {
+            "description": "Group result rows by task field.",
+            "type": "string"
+          },
+          "include_archived": {
+            "description": "Include archived TaskNotes tasks.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Tasks per page (default 50, at most 500).",
+            "type": "integer"
+          },
+          "priority": {
+            "description": "Filter by priority.",
+            "type": "string"
+          },
+          "project": {
+            "description": "Filter by project.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Tasks plugin query source such as `not done` or `due before tomorrow`. Leave the structured filters unset when using it.",
+            "type": "string"
+          },
+          "sort_by": {
+            "description": "Sort result rows by task field.",
+            "type": "string"
+          },
+          "source": {
+            "description": "Task source model.",
+            "enum": [
+              "all",
+              "inline",
+              "tasknotes",
+              "file"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "description": "Filter by status.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "task_query",
+      "title": "Query Tasks"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a task using the configured task system. Prefer this over raw note edits for new tasks.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Preview without writing.",
+            "type": "boolean"
+          },
+          "due": {
+            "description": "Optional due date.",
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "note": {
+            "description": "Optional note target for inline task creation.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Optional priority.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Task text, optionally with NLP date/project/context hints.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "task_create",
+      "title": "Create Task"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Mark one resolved task complete using task-aware mutation rules. Prefer this over raw note patching for task completion.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "date": {
+            "description": "Completion date.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Preview without writing.",
+            "type": "boolean"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "task": {
+            "description": "Task path, title, or inline task selector.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "name": "task_complete",
+      "title": "Complete Task"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Update a task due date using task-aware mutation rules. Prefer this over raw note patching for due-date changes.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Preview without writing.",
+            "type": "boolean"
+          },
+          "due": {
+            "description": "New due date.",
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "task": {
+            "description": "Task path, title, or inline task selector.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "due"
+        ],
+        "type": "object"
+      },
+      "name": "task_reschedule",
+      "title": "Reschedule Task"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Add one reminder to a TaskNotes task. Relative reminders follow the task's due (else scheduled) date, so they move with a recurring task.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Optional reminder text.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Preview without writing.",
+            "type": "boolean"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "reminder": {
+            "description": "An offset relative to due, else scheduled (-15m, -1h, -2d, -1w, -PT30M), an anchored offset (due-1h, scheduled+0m), or a date-time for an absolute reminder (2026-11-05T14:00).",
+            "type": "string"
+          },
+          "task": {
+            "description": "TaskNotes task path, file name, alias, or title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "reminder"
+        ],
+        "type": "object"
+      },
+      "name": "task_reminder_add",
+      "title": "Add Task Reminder"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Remove one reminder from a TaskNotes task by its id.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Preview without writing.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Reminder id, as task_list or the task's frontmatter reports it.",
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "task": {
+            "description": "TaskNotes task path, file name, alias, or title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "task_reminder_remove",
+      "title": "Remove Task Reminder"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a new note from explicit body text, optional template, and optional frontmatter properties.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "description": "Markdown body to write to the new note.",
+            "type": "string"
+          },
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "check": {
+            "description": "Run non-blocking diagnostics on the resulting note.",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "description": "Check the path, permission, and frontmatter without creating the note.",
+            "type": "boolean"
+          },
+          "frontmatter": {
+            "additionalProperties": true,
+            "description": "Optional frontmatter properties to merge into the created note.",
+            "type": "object"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Vault-relative note path to create.",
+            "type": "string"
+          },
+          "template": {
+            "description": "Optional named template to render first.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "note_create",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "commit": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "created": {
+            "description": "Whether the note was created.",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "description": "Set when nothing was written.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Vault-relative path of the new note.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "title": "Create Note"
+    },
+    {
+      "_meta": {
+        "anthropic/alwaysLoad": true
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Append text to a note, prepend it, or insert it below a heading; periodic targets are also supported.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "check": {
+            "description": "Run non-blocking diagnostics on the resulting note.",
+            "type": "boolean"
+          },
+          "date": {
+            "description": "Reference date for periodic note resolution.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Report the resulting note as `content` without writing it or creating a missing periodic note.",
+            "type": "boolean"
+          },
+          "expected_hash": {
+            "description": "`content_hash` from an earlier `note_get`; the write is refused with `stale_content` if the note changed since.",
+            "type": "string"
+          },
+          "heading": {
+            "description": "Heading used when `mode = after_heading`.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Caller-chosen key for this append; repeating a call with the same key and arguments returns the first result without appending again.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "Append mode.",
+            "enum": [
+              "append",
+              "prepend",
+              "after_heading"
+            ],
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "note": {
+            "description": "Target note identifier when appending to an existing note.",
+            "type": "string"
+          },
+          "periodic": {
+            "description": "Periodic note target to create or append to.",
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "description": "Text to append, prepend, or insert under a heading.",
+            "type": "string"
+          },
+          "vars": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "QuickAdd-style template variables available inside the appended text.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "note_append",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "appended": {
+            "description": "Whether text was added.",
+            "type": "boolean"
+          },
+          "commit": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "created": {
+            "description": "Whether the note was created first.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Vault-relative note path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "title": "Append To Note"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Perform a guarded find-and-replace inside one note or one selected note scope.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "all": {
+            "description": "Replace all matches instead of requiring a single match.",
+            "type": "boolean"
+          },
+          "block_ref": {
+            "description": "Block reference id to patch inside.",
+            "type": "string"
+          },
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "check": {
+            "description": "Run non-blocking diagnostics on the resulting note.",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "description": "Preview the patch without writing the file.",
+            "type": "boolean"
+          },
+          "expected_hash": {
+            "description": "`content_hash` from an earlier `note_get`; the write is refused with `stale_content` if the note changed since.",
+            "type": "string"
+          },
+          "find": {
+            "description": "Literal text or regex to find.",
+            "type": "string"
+          },
+          "heading": {
+            "description": "Heading text to patch inside.",
+            "type": "string"
+          },
+          "lines": {
+            "description": "Optional line range inside the selected scope.",
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "note": {
+            "description": "Note path or markdown file to patch.",
+            "type": "string"
+          },
+          "replace": {
+            "description": "Replacement text.",
+            "type": "string"
+          },
+          "section_id": {
+            "description": "Semantic section id to patch inside.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note",
+          "find",
+          "replace"
+        ],
+        "type": "object"
+      },
+      "name": "note_patch",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "commit": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "dry_run": {
+            "description": "Set when nothing was written.",
+            "type": "boolean"
+          },
+          "match_count": {
+            "description": "Matches replaced.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Vault-relative note path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "title": "Patch Note Text"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return summary metadata and graph counts for one resolved note.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "note": {
+            "description": "Note path or note identifier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "type": "object"
+      },
+      "name": "note_info",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "backlink_count": {
+            "description": "Notes linking here.",
+            "type": "integer"
+          },
+          "outgoing_link_count": {
+            "description": "Links out of the note.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Vault-relative note path.",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags on the note.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "word_count": {
+            "description": "Words in the note.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "title": "Read Note Metadata"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Replace one note's body content with supplied text, optionally preserving the existing frontmatter block.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "check": {
+            "description": "Run non-blocking diagnostics on the resulting note.",
+            "type": "boolean"
+          },
+          "content": {
+            "description": "Replacement markdown content.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Report whether the content would change, without writing.",
+            "type": "boolean"
+          },
+          "expected_hash": {
+            "description": "`content_hash` from an earlier `note_get`; the write is refused with `stale_content` if the note changed since.",
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "note": {
+            "description": "Note identifier to replace.",
+            "type": "string"
+          },
+          "preserve_frontmatter": {
+            "description": "Keep the existing frontmatter block and replace only the body.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "note",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "note_set",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "commit": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "dry_run": {
+            "description": "Set when nothing was written.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Vault-relative note path.",
+            "type": "string"
+          },
+          "would_change": {
+            "description": "For a dry run: whether the content would change.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "title": "Replace Note Content"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Delete one note and report the backlinks that would become unresolved.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Preview deletion and backlinks without removing the file.",
+            "type": "boolean"
+          },
+          "expected_hash": {
+            "description": "`content_hash` from an earlier `note_get`; the write is refused with `stale_content` if the note changed since.",
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "note": {
+            "description": "Note identifier to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "type": "object"
+      },
+      "name": "note_delete",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "backlink_count": {
+            "description": "Notes that linked here.",
+            "type": "integer"
+          },
+          "deleted": {
+            "description": "Whether the note was deleted.",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "description": "Set when nothing was written.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Vault-relative note path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "title": "Delete Note"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Query the configured web search backend and return structured result rows.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "description": "Optional search backend override.",
+            "enum": [
+              "disabled",
+              "auto",
+              "duckduckgo",
+              "kagi",
+              "exa",
+              "tavily",
+              "brave",
+              "ollama"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum number of results to return.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Web search query string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "web_search",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "backend": {
+            "description": "Search backend used.",
+            "type": "string"
+          },
+          "query": {
+            "description": "The query.",
+            "type": "string"
+          },
+          "results": {
+            "description": "Results with title, URL, and snippet.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "query",
+          "results"
+        ],
+        "type": "object"
+      },
+      "title": "Search The Web"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Fetch one URL as markdown, html, or raw content.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "description": "Fetch output mode.",
+            "enum": [
+              "markdown",
+              "html",
+              "raw"
+            ],
+            "type": "string"
+          },
+          "url": {
+            "description": "URL to fetch.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "web_fetch",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "content": {
+            "description": "Fetched content.",
+            "type": "string"
+          },
+          "content_type": {
+            "description": "Response content type.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "Extraction mode.",
+            "type": "string"
+          },
+          "status": {
+            "description": "HTTP status.",
+            "type": "integer"
+          },
+          "url": {
+            "description": "Fetched URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "content"
+        ],
+        "type": "object"
+      },
+      "title": "Fetch URL"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read the effective Vulcan config, optionally narrowed to one section.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "section": {
+            "description": "Optional dotted config section to return.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "config_get",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "config"
+        ],
+        "type": "object"
+      },
+      "title": "Read Effective Config"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Write one shared config value to `.vulcan/config.toml` using the same parser and auto-commit behavior as the CLI.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "description": "Preview the config change without writing it.",
+            "type": "boolean"
+          },
+          "key": {
+            "description": "Dotted config key to write.",
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "value": {
+            "description": "Raw CLI-style config value string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "type": "object"
+      },
+      "name": "config_set",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "dry_run": {
+            "description": "Set when nothing was written.",
+            "type": "boolean"
+          },
+          "key": {
+            "description": "Configuration key.",
+            "type": "string"
+          },
+          "updated": {
+            "description": "Whether the value changed.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "title": "Set Config Value"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run an incremental or full vault scan and return the resulting scan summary.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "full": {
+            "description": "Force a full scan instead of incremental reconciliation.",
+            "type": "boolean"
+          },
+          "no_commit": {
+            "description": "Suppress scan auto-commit behavior.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "index_scan",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "added": {
+            "description": "Files added to the index.",
+            "type": "integer"
+          },
+          "deleted": {
+            "description": "Files removed from the index.",
+            "type": "integer"
+          },
+          "mode": {
+            "description": "Scan mode.",
+            "type": "string"
+          },
+          "unchanged": {
+            "description": "Files unchanged.",
+            "type": "integer"
+          },
+          "updated": {
+            "description": "Files re-indexed.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "title": "Scan Vault Index"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Inspect the selected vault's Git sync state and exact remote live ref without capturing, publishing, or applying files.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "description": "`concise` (default): outcome, planned actions, heads, safety. `full`: the whole report.",
+            "enum": [
+              "concise",
+              "full"
+            ],
+            "type": "string"
+          },
+          "remote": {
+            "description": "Configured Git remote name; defaults to `origin`.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "sync_status",
+      "title": "Inspect Sync Status"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Run read-only Git layout, ref, journal, filter, cache, and target-platform synchronization diagnostics.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "platform": {
+            "description": "Optional target platform override for immutable-tree diagnostics.",
+            "enum": [
+              "linux_native",
+              "windows_native",
+              "other_native",
+              "android_shared"
+            ],
+            "type": "string"
+          },
+          "remote": {
+            "description": "Configured Git remote name; defaults to `origin`.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "sync_doctor",
+      "title": "Diagnose Git Sync"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List unresolved preserved conflicts or inspect one immutable conflict record; this tool never resolves a conflict.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "conflict_id": {
+            "description": "Optional preserved conflict ID; omit to list unresolved conflicts.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "sync_conflicts",
+      "title": "Inspect Preserved Sync Conflicts"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read a bounded slice of any vault file, such as an attachment, as UTF-8 text or base64, with the whole file's content hash.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "limit_bytes": {
+            "description": "Bytes to return (default 262144, at most 1048576).",
+            "type": "integer"
+          },
+          "offset": {
+            "description": "Byte offset to start at (default 0); follow `next_offset` for the rest.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Vault-relative path of any file, such as an attachment.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "file_get",
+      "title": "Read Vault File"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create or replace a non-Markdown vault file, such as an attachment, from text or base64 (at most 10 MiB).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "content": {
+            "description": "File content, as text or base64.",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Validate without writing.",
+            "type": "boolean"
+          },
+          "encoding": {
+            "description": "How `content` is encoded (default utf8).",
+            "enum": [
+              "utf8",
+              "base64"
+            ],
+            "type": "string"
+          },
+          "expected_hash": {
+            "description": "`content_hash` from `file_get`; refuse with stale_content if the file changed.",
+            "type": "string"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "overwrite": {
+            "description": "Replace an existing file instead of refusing.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Vault-relative path of a non-Markdown file, such as an image or PDF.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "file_put",
+      "title": "Write Vault File"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Start a synchronization of this registered vault now: through the daemon when it runs, otherwise directly. Returns the queued job or the cycle's report.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "sync_refresh",
+      "title": "Synchronize Now"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Clear a paused registration so automatic synchronization runs again, and start a synchronization.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "sync_resume",
+      "title": "Resume Synchronization"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Move or rename one note and rewrite every link and embed that points at it.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "destination": {
+            "description": "New vault-relative path (`.md` added when missing).",
+            "type": "string"
+          },
+          "dry_run": {
+            "description": "Report the move and the link rewrites without changing files.",
+            "type": "boolean"
+          },
+          "no_commit": {
+            "description": "Suppress auto-commit for this mutation.",
+            "type": "boolean"
+          },
+          "note": {
+            "description": "Note to move or rename.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note",
+          "destination"
+        ],
+        "type": "object"
+      },
+      "name": "note_move",
+      "title": "Move Or Rename Note"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List staged, unstaged, and untracked vault paths.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "git_status",
+      "title": "Show Uncommitted Changes"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return the unified diff of uncommitted vault changes, optionally for one path.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Vault-relative path to limit the diff to; omit for every change.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "git_diff",
+      "title": "Show Uncommitted Diff"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List the most recent commits that touched the vault.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Opaque `page.next_cursor` from the previous page; omit for the first page.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "`concise` (default): short commit, time, summary, author. `full`: every field.",
+            "enum": [
+              "concise",
+              "full"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Commits per page, newest first (default 20, at most 200).",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "git_log",
+      "title": "List Recent Commits"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Show which commit last changed each line of one vault file.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Opaque `page.next_cursor` from the previous page; omit for the first page.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "`concise` (default): line ranges per commit. `full`: one entry per line with its text.",
+            "enum": [
+              "concise",
+              "full"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Lines per page (default 200, at most 2000).",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Vault-relative file to blame.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "git_blame",
+      "title": "Blame File Lines"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Commit named `paths`, every vault change (`all: true`), or everything in a `changeset`, running pre-commit hooks; the commit names the client in Vulcan-MCP-* trailers.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "all": {
+            "description": "Commit every uncommitted change in the vault, including other writers' edits; check `git_status` first.",
+            "type": "boolean"
+          },
+          "changeset": {
+            "description": "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Commit message.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Files to commit. In the vault, name them or pass `all`; in a `changeset`, everything is committed when omitted.",
+            "items": {
+              "description": "Vault-relative file path.",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "name": "git_commit",
+      "title": "Commit Vault Changes"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Start a changeset: a branch and worktree outside the vault, indexed. Pass its `id` as `changeset` to note, file, search, query, task, and git tools to work in it until it lands or is abandoned; other writers, sync, and auto-commit do not see it meanwhile.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "description": "Short description of the change, shown in `changeset_list`.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "changeset_begin",
+      "title": "Begin A Changeset"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List the vault's changesets with their commits ahead and uncommitted paths.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "changeset_list",
+      "title": "List Changesets"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Land a changeset on the vault's branch: commit leftovers with `message`, rebase if the branch moved, fast-forward, re-index, and remove the changeset. A rebase conflict keeps the changeset unchanged and names the paths.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Changeset id, as `changeset_begin` returned it.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Commit message for changes still uncommitted in the changeset; without one, uncommitted changes refuse the landing.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "changeset_land",
+      "title": "Land A Changeset"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Delete a changeset, its branch, and its worktree without landing anything.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Changeset id, as `changeset_begin` returned it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "changeset_abandon",
+      "title": "Abandon A Changeset"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Report how a tool call that timed out with an `indeterminate` error ended: running, succeeded with its result, or failed. Check it before repeating the call.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Operation id, from the `operation_id` of an `indeterminate` error.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "operation_get",
+      "title": "Get An Operation"
+    }
+  ],
+  "writer": {
+    "changeset_argument": true,
+    "tools": [
+      "note_get",
+      "note_outline",
+      "search",
+      "query",
+      "status",
+      "daily",
+      "graph_communities",
+      "link_suggestions",
+      "link_suggestion_resolve",
+      "task_query",
+      "task_create",
+      "task_complete",
+      "task_reschedule",
+      "task_reminder_add",
+      "task_reminder_remove",
+      "note_create",
+      "note_append",
+      "note_patch",
+      "note_info",
+      "note_set",
+      "note_delete",
+      "config_get",
+      "index_scan",
+      "sync_status",
+      "sync_doctor",
+      "sync_conflicts",
+      "file_get",
+      "file_put",
+      "sync_refresh",
+      "sync_resume",
+      "note_move",
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_blame",
+      "git_commit",
+      "changeset_begin",
+      "changeset_list",
+      "changeset_land",
+      "changeset_abandon",
+      "operation_get"
+    ]
+  }
+}

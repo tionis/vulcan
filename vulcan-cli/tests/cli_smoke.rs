@@ -1150,6 +1150,14 @@ impl McpHttpSession {
             headers.push(("MCP-Protocol-Version".to_string(), version.to_string()));
             if let Some(method) = payload["method"].as_str() {
                 headers.push(("Mcp-Method".to_string(), method.to_string()));
+                let name = match method {
+                    "tools/call" | "prompts/get" => payload["params"]["name"].as_str(),
+                    "resources/read" => payload["params"]["uri"].as_str(),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    headers.push(("Mcp-Name".to_string(), name.to_string()));
+                }
             }
         } else {
             headers.push(("MCP-Protocol-Version".to_string(), "2025-06-18".to_string()));
@@ -34936,6 +34944,353 @@ fn mcp_stdio_delivers_subscribed_list_changes_to_listen_requests() {
         "params": { "requestId": "watch" }
     }));
     session.finish();
+}
+
+/// One of the four ways a client reaches Vulcan's MCP server, for the
+/// dual-era scenario suite.
+enum EraClient {
+    LegacyStdio(McpSession),
+    ModernStdio(McpSession),
+    LegacyHttp(McpHttpSession, String),
+    ModernHttp(McpHttpSession),
+}
+
+impl EraClient {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::LegacyStdio(_) => "legacy stdio",
+            Self::ModernStdio(_) => "modern stdio",
+            Self::LegacyHttp(..) => "legacy HTTP",
+            Self::ModernHttp(_) => "modern HTTP",
+        }
+    }
+
+    fn modern(&self) -> bool {
+        matches!(self, Self::ModernStdio(_) | Self::ModernHttp(_))
+    }
+
+    fn connect(vault_root: &Path, era: usize) -> Self {
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "era-suite", "version": "1" }
+            }
+        });
+        match era {
+            0 => {
+                let mut session = McpSession::start(vault_root, &[]);
+                let reply = session.send(initialize);
+                assert_eq!(
+                    reply.last().expect("initialize")["result"]["protocolVersion"],
+                    "2025-11-25"
+                );
+                session.send_notification(serde_json::json!({
+                    "jsonrpc": "2.0", "method": "notifications/initialized"
+                }));
+                Self::LegacyStdio(session)
+            }
+            1 => Self::ModernStdio(McpSession::start(vault_root, &[])),
+            2 => {
+                let session = McpHttpSession::start(vault_root, "/mcp", None, &[]);
+                let reply = session.post(&initialize, None);
+                assert_eq!(reply.status_line, "HTTP/1.1 200 OK");
+                let id = reply
+                    .headers
+                    .get("mcp-session-id")
+                    .cloned()
+                    .expect("legacy HTTP session id");
+                let initialized = session.post(
+                    &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                    Some(&id),
+                );
+                assert!(initialized.status_line.starts_with("HTTP/1.1 202"));
+                Self::LegacyHttp(session, id)
+            }
+            _ => Self::ModernHttp(McpHttpSession::start(vault_root, "/mcp", None, &[])),
+        }
+    }
+
+    /// Send one request and return its JSON-RPC response.
+    fn call(&mut self, id: u64, method: &str, mut params: Value) -> Value {
+        if self.modern() {
+            params["_meta"] = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": { "name": "era-suite", "version": "1" }
+            });
+        }
+        let request = serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": method, "params": params
+        });
+        match self {
+            Self::LegacyStdio(session) | Self::ModernStdio(session) => session
+                .send(request)
+                .into_iter()
+                .find(|message| message["id"] == id)
+                .expect("a response"),
+            Self::LegacyHttp(session, session_id) => {
+                session.post(&request, Some(session_id)).json_body()
+            }
+            Self::ModernHttp(session) => session.post(&request, None).json_body(),
+        }
+    }
+}
+
+/// Remove what only the 2026-07-28 era adds to a result, checking it on
+/// the way: every modern result names its `resultType`, lists and reads
+/// carry cache hints, and server info rides in `_meta`.
+fn strip_modern_result_fields(method: &str, response: &mut Value) {
+    let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) else {
+        return;
+    };
+    assert_eq!(
+        result.remove("resultType"),
+        Some(Value::from("complete")),
+        "{method}"
+    );
+    if matches!(
+        method,
+        "tools/list"
+            | "resources/list"
+            | "resources/templates/list"
+            | "prompts/list"
+            | "resources/read"
+    ) {
+        assert!(
+            result.remove("ttlMs").is_some_and(|ttl| ttl.is_u64()),
+            "{method}"
+        );
+        assert!(result.remove("cacheScope").is_some(), "{method}");
+    }
+    if let Some(Value::Object(meta)) = result.get_mut("_meta") {
+        meta.remove("io.modelcontextprotocol/serverInfo");
+        if meta.is_empty() {
+            result.remove("_meta");
+        }
+    }
+}
+
+/// The same scenarios over a legacy stdio connection, a modern stdio
+/// connection, legacy HTTP and modern HTTP (`docs/specs/mcp.md` §14): apart
+/// from the fields the 2026-07-28 era adds, every era answers alike, and
+/// where the spec has the eras differ the suite says so.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mcp_eras_answer_the_same_scenarios_alike() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts dir");
+    fs::write(
+        vault_root.join("AI/Prompts/summarize-note.md"),
+        "---\nname: summarize-note\ndescription: Summarize one note\narguments:\n  - name: note\n    required: true\n    completion: note\n---\nSummarize {{note}}.\n",
+    )
+    .expect("prompt file should write");
+    run_scan(&vault_root);
+
+    let scenarios: Vec<(&str, Value)> = vec![
+        ("tools/list", serde_json::json!({})),
+        (
+            "tools/call",
+            serde_json::json!({"name": "note_get", "arguments": {"note": "Projects/Alpha.md"}}),
+        ),
+        (
+            "tools/call",
+            serde_json::json!({"name": "note_get", "arguments": {"note": "Missing.md"}}),
+        ),
+        (
+            "tools/call",
+            serde_json::json!({"name": "note_get", "arguments": {"note": 7}}),
+        ),
+        (
+            "tools/call",
+            serde_json::json!({"name": "no_such_tool", "arguments": {}}),
+        ),
+        (
+            "tools/call",
+            serde_json::json!({"name": "search", "arguments": {"query": "alpha", "limit": 2}}),
+        ),
+        ("resources/list", serde_json::json!({})),
+        ("resources/templates/list", serde_json::json!({})),
+        (
+            "resources/read",
+            serde_json::json!({"uri": "vulcan://note/Projects/Alpha.md"}),
+        ),
+        (
+            "resources/read",
+            serde_json::json!({"uri": "vulcan://help/tools"}),
+        ),
+        ("prompts/list", serde_json::json!({})),
+        (
+            "prompts/get",
+            serde_json::json!({"name": "summarize-note", "arguments": {"note": "Home"}}),
+        ),
+        (
+            "completion/complete",
+            serde_json::json!({
+                "ref": {"type": "ref/prompt", "name": "summarize-note"},
+                "argument": {"name": "note", "value": "Pro"}
+            }),
+        ),
+        ("server/discover", serde_json::json!({})),
+    ];
+
+    let mut baseline: Option<Vec<Value>> = None;
+    for era in 0..4 {
+        let mut client = EraClient::connect(&vault_root, era);
+        let name = client.name();
+        let mut answers = Vec::new();
+        for (index, (method, params)) in scenarios.iter().enumerate() {
+            let id = 100 + index as u64;
+            let mut response = client.call(id, method, params.clone());
+            assert_eq!(response["id"], id, "{name} {method}: {response}");
+            // `server/discover` is a 2026-07-28 method and answers in that
+            // shape in both eras.
+            if client.modern() || *method == "server/discover" {
+                strip_modern_result_fields(method, &mut response);
+            }
+            answers.push(response);
+        }
+
+        // Where the eras differ by design.
+        let missing = client.call(
+            200,
+            "resources/read",
+            serde_json::json!({"uri": "vulcan://note/Missing.md"}),
+        );
+        if client.modern() {
+            assert_eq!(missing["error"]["code"], -32602, "{name}: {missing}");
+        } else {
+            assert!(missing["error"]["code"].is_i64(), "{name}: {missing}");
+        }
+        let ping = client.call(201, "ping", serde_json::json!({}));
+        if client.modern() {
+            assert!(
+                ping.get("error").is_some(),
+                "{name}: ping is legacy only: {ping}"
+            );
+        } else {
+            assert_eq!(ping["result"], serde_json::json!({}), "{name}: {ping}");
+        }
+
+        // Spot checks that the shared answers are the right ones.
+        let tool_names = answers[0]["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>();
+        assert!(tool_names.contains(&"note_get"), "{name}");
+        assert_eq!(
+            answers[1]["result"]["structuredContent"]["path"], "Projects/Alpha.md",
+            "{name}"
+        );
+        assert_eq!(answers[2]["result"]["isError"], true, "{name}");
+        assert_eq!(answers[3]["result"]["isError"], true, "{name}");
+
+        match &baseline {
+            None => baseline = Some(answers),
+            Some(expected) => {
+                for (index, (answer, expected)) in answers.iter().zip(expected).enumerate() {
+                    assert_eq!(
+                        answer, expected,
+                        "{name} answered `{}` differently from legacy stdio",
+                        scenarios[index].0
+                    );
+                }
+            }
+        }
+        if let EraClient::LegacyStdio(session) | EraClient::ModernStdio(session) = client {
+            session.finish();
+        }
+    }
+}
+
+/// Golden `tools/list` per built-in permission profile (`docs/specs/mcp.md`
+/// §14): the order and bytes of each catalog are stable, so a change to a
+/// tool's name, schema, annotations or visibility shows up as a snapshot
+/// diff. `unrestricted` is recorded in full; the other profiles record
+/// whether their tools take a `changeset` argument, and each tool by name
+/// where its definition is otherwise the same as `unrestricted`'s, in full
+/// where it differs. Regenerate with `VULCAN_UPDATE_SNAPSHOTS=1`.
+#[test]
+fn mcp_tools_list_is_golden_for_every_builtin_profile() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let meta = serde_json::json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+    });
+    let list = |profile: &str| -> Vec<Value> {
+        let mut session = McpSession::start(&vault_root, &["--permissions", profile]);
+        let mut tools = Vec::new();
+        let mut cursor: Option<Value> = None;
+        for id in 1.. {
+            let mut params = serde_json::json!({ "_meta": meta });
+            if let Some(cursor) = cursor.take() {
+                params["cursor"] = cursor;
+            }
+            let reply = session.send(serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/list", "params": params
+            }));
+            let result = &reply.last().expect("tools/list response")["result"];
+            tools.extend(
+                result["tools"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{profile}: {result}"))
+                    .iter()
+                    .cloned(),
+            );
+            match result.get("nextCursor") {
+                Some(next) if !next.is_null() => cursor = Some(next.clone()),
+                _ => break,
+            }
+        }
+        session.finish();
+        tools
+    };
+
+    let unrestricted = list("unrestricted");
+    let mut golden = serde_json::Map::new();
+    for profile in vulcan_core::config::builtin_permission_profiles().keys() {
+        if profile == "unrestricted" {
+            continue;
+        }
+        let tools = list(profile);
+        let changesets = tools
+            .iter()
+            .any(|tool| tool["inputSchema"]["properties"].get("changeset").is_some());
+        let tools = tools
+            .into_iter()
+            .map(|tool| {
+                let same = unrestricted.iter().any(|full| {
+                    let mut full = full.clone();
+                    if !changesets {
+                        if let Some(properties) = full["inputSchema"]["properties"].as_object_mut()
+                        {
+                            properties.remove("changeset");
+                        }
+                    }
+                    full == tool
+                });
+                if same {
+                    tool["name"].clone()
+                } else {
+                    tool
+                }
+            })
+            .collect::<Vec<_>>();
+        golden.insert(
+            profile.clone(),
+            serde_json::json!({ "changeset_argument": changesets, "tools": tools }),
+        );
+    }
+    golden.insert("unrestricted".to_string(), Value::Array(unrestricted));
+    assert_json_snapshot("mcp_tools_by_profile.json", &Value::Object(golden));
 }
 
 #[test]
