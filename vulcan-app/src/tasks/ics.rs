@@ -10,7 +10,8 @@
 use super::reminders::{tasknote_reminder_instant, zoned_instant, ReminderSettings};
 use super::{date_part, shift_date_keeping_time, TaskNoteRecord};
 use crate::AppError;
-use chrono::{Duration, NaiveDate};
+use jiff::civil::Date;
+use jiff::Timestamp;
 use serde::Serialize;
 use std::fmt::Write as _;
 use vulcan_core::tasks::next_recurrence_occurrence;
@@ -55,7 +56,7 @@ struct TaskEvent {
 }
 
 enum EventStart {
-    AllDay(NaiveDate),
+    AllDay(Date),
     Timed { start_ms: i64, minutes: i64 },
 }
 
@@ -64,10 +65,7 @@ impl EventStart {
         match self {
             Self::AllDay(day) => (day.to_string(), 0),
             Self::Timed { start_ms, .. } => (
-                chrono::DateTime::from_timestamp_millis(*start_ms)
-                    .unwrap_or_default()
-                    .date_naive()
-                    .to_string(),
+                utc_timestamp(*start_ms).strftime("%Y-%m-%d").to_string(),
                 *start_ms,
             ),
         }
@@ -79,10 +77,10 @@ pub(super) fn task_ics_window(
     request: &TaskIcsRequest,
     settings: &ReminderSettings,
     now_ms: i64,
-) -> Result<(NaiveDate, NaiveDate), AppError> {
+) -> Result<(Date, Date), AppError> {
     let today = settings.timezone.date_at(now_ms).to_string();
     let parse = |value: &str| {
-        NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        Date::strptime("%Y-%m-%d", value)
             .map_err(|_| AppError::operation(format!("invalid date: {value}")))
     };
     let from = parse(&crate::periodic::normalize_date_argument_at(
@@ -94,7 +92,9 @@ pub(super) fn task_ics_window(
             Some(value),
             &today,
         )?)?,
-        None => from + Duration::days(DEFAULT_TASK_ICS_WINDOW_DAYS),
+        None => from
+            .checked_add(jiff::Span::new().days(DEFAULT_TASK_ICS_WINDOW_DAYS))
+            .map_err(|_| AppError::operation(format!("date out of range: {from}")))?,
     };
     if to < from {
         return Err(AppError::operation(format!(
@@ -109,7 +109,7 @@ pub(super) fn task_ics_window(
 pub(super) fn render_task_ics(
     records: &[TaskNoteRecord],
     settings: &ReminderSettings,
-    window: (NaiveDate, NaiveDate),
+    window: (Date, Date),
     calendar_name: Option<&str>,
     now_ms: i64,
 ) -> TaskIcsExport {
@@ -171,15 +171,15 @@ pub(super) fn render_task_ics(
 fn task_events(
     record: &TaskNoteRecord,
     settings: &ReminderSettings,
-    from: NaiveDate,
-    to: NaiveDate,
+    from: Date,
+    to: Date,
 ) -> Vec<TaskEvent> {
     let task = &record.indexed;
     // A task sits on its scheduled day, else on its due day.
     let Some(anchor) = task.scheduled.as_deref().or(task.due.as_deref()) else {
         return Vec::new();
     };
-    let Some(current) = date_part(anchor).and_then(|day| day.parse::<NaiveDate>().ok()) else {
+    let Some(current) = date_part(anchor).and_then(|day| day.parse::<Date>().ok()) else {
         return Vec::new();
     };
     let excluded = task
@@ -195,7 +195,7 @@ fn task_events(
         days.push(current);
     }
     if let Some(rule) = task.recurrence.as_deref() {
-        let mut after = current.max(from - Duration::days(1));
+        let mut after = current.max(from.yesterday().unwrap_or(from));
         while days.len() < MAX_OCCURRENCES_PER_TASK {
             let Some(next) = next_recurrence_occurrence(
                 rule,
@@ -203,7 +203,7 @@ fn task_events(
                 &after.to_string(),
                 &excluded,
             )
-            .and_then(|day| day.parse::<NaiveDate>().ok()) else {
+            .and_then(|day| day.parse::<Date>().ok()) else {
                 break;
             };
             if next > to {
@@ -219,7 +219,7 @@ fn task_events(
     let recurring = task.recurrence.is_some();
     days.into_iter()
         .filter_map(|day| {
-            let shift = (day - current).num_days();
+            let shift = i64::from(current.until(day).ok()?.get_days());
             let occurrence = shifted(task, shift);
             task_event(record, &occurrence, settings, day, recurring, shift == 0)
         })
@@ -245,7 +245,7 @@ fn task_event(
     record: &TaskNoteRecord,
     occurrence: &IndexedTaskNote,
     settings: &ReminderSettings,
-    day: NaiveDate,
+    day: Date,
     recurring: bool,
     current: bool,
 ) -> Option<TaskEvent> {
@@ -362,7 +362,10 @@ fn write_event(content: &mut String, event: &TaskEvent, stamp: &str) {
             push_line(content, &format!("DTSTART;VALUE=DATE:{}", ics_date(*day)));
             push_line(
                 content,
-                &format!("DTEND;VALUE=DATE:{}", ics_date(*day + Duration::days(1))),
+                &format!(
+                    "DTEND;VALUE=DATE:{}",
+                    ics_date(day.tomorrow().unwrap_or(*day))
+                ),
             );
         }
         EventStart::Timed { start_ms, minutes } => {
@@ -401,15 +404,16 @@ fn write_event(content: &mut String, event: &TaskEvent, stamp: &str) {
     push_line(content, "END:VEVENT");
 }
 
-fn ics_date(day: NaiveDate) -> String {
-    day.format("%Y%m%d").to_string()
+fn ics_date(day: Date) -> String {
+    day.strftime("%Y%m%d").to_string()
 }
 
 fn ics_utc(at_ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(at_ms)
-        .unwrap_or_default()
-        .format("%Y%m%dT%H%M%SZ")
-        .to_string()
+    utc_timestamp(at_ms).strftime("%Y%m%dT%H%M%SZ").to_string()
+}
+
+fn utc_timestamp(at_ms: i64) -> Timestamp {
+    Timestamp::from_millisecond(at_ms).unwrap_or(Timestamp::UNIX_EPOCH)
 }
 
 fn escape_text(value: &str) -> String {
@@ -441,15 +445,14 @@ fn push_line(content: &mut String, line: &str) {
 mod tests {
     use super::*;
     use crate::tasks::reminders::ReminderTimezone;
-    use chrono::NaiveTime;
     use serde_json::json;
 
     fn settings() -> ReminderSettings {
         ReminderSettings {
             inline: false,
             due_dates: false,
-            default_time: NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
-            timezone: ReminderTimezone::Named(chrono_tz::Europe::Berlin),
+            default_time: jiff::civil::time(9, 0, 0, 0),
+            timezone: ReminderTimezone::named("Europe/Berlin").unwrap(),
         }
     }
 
@@ -488,7 +491,7 @@ mod tests {
         }
     }
 
-    fn day(value: &str) -> NaiveDate {
+    fn day(value: &str) -> Date {
         value.parse().unwrap()
     }
 
@@ -617,9 +620,10 @@ mod tests {
 
     #[test]
     fn windows_default_to_sixty_days_and_reject_reversed_ranges() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-11-13T12:00:00Z")
+        let now = "2026-11-13T12:00:00Z"
+            .parse::<Timestamp>()
             .unwrap()
-            .timestamp_millis();
+            .as_millisecond();
         let (from, to) = task_ics_window(&TaskIcsRequest::default(), &settings(), now).unwrap();
         assert_eq!((from, to), (day("2026-11-13"), day("2027-01-12")));
         let reversed = TaskIcsRequest {

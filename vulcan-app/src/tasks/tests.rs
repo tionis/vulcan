@@ -4133,10 +4133,16 @@ fn tasknotes_blockers_resolve_by_note_link() {
     assert_eq!(blockers.len(), 4, "{blockers:?}");
 }
 
+fn zoned_plus_one(text: &str) -> jiff::Zoned {
+    text.parse::<jiff::Timestamp>()
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(1)))
+}
+
 #[test]
 fn tasknote_filename_formats_match_tasknotes() {
     use vulcan_core::TaskNotesFilenameFormat as Format;
-    let at = chrono::DateTime::parse_from_rfc3339("2026-10-08T20:39:08+01:00").unwrap();
+    let at = zoned_plus_one("2026-10-08T20:39:08+01:00");
     // 20:39:08 is 74,348 s after local midnight: `1ld8` in base 36.
     assert_eq!(
         super::tasknote_file_stem(Format::Zettel, "x", &at),
@@ -4150,7 +4156,7 @@ fn tasknote_filename_formats_match_tasknotes() {
         super::tasknote_file_stem(Format::Title, "Plan: trip", &at),
         super::sanitize_tasknote_filename("Plan: trip")
     );
-    let midnight = chrono::DateTime::parse_from_rfc3339("2026-10-08T00:00:00+01:00").unwrap();
+    let midnight = zoned_plus_one("2026-10-08T00:00:00+01:00");
     assert_eq!(
         super::tasknote_file_stem(Format::Zettel, "x", &midnight),
         "2610080"
@@ -4166,7 +4172,7 @@ fn zettel_names_move_forward_one_second_when_taken() {
         filename_format: vulcan_core::TaskNotesFilenameFormat::Zettel,
         ..vulcan_core::TaskNotesConfig::default()
     };
-    let at = chrono::DateTime::parse_from_rfc3339("2026-10-08T20:39:08+01:00").unwrap();
+    let at = zoned_plus_one("2026-10-08T20:39:08+01:00");
     fs::create_dir_all(temp.path().join("Tasks")).unwrap();
     fs::write(temp.path().join("Tasks/2610081ld8.md"), "taken\n").unwrap();
     assert_eq!(

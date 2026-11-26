@@ -101,7 +101,7 @@ impl Fixture {
             guard: &guard,
             profile,
             gate: &Ungated,
-            today: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+            today: jiff::civil::date(2026, 11, 7),
         };
         run_chat_command(&vault, &parse_chat_message(message))
     }
@@ -113,7 +113,7 @@ impl Fixture {
             guard: &guard,
             profile: "unrestricted",
             gate: &Ungated,
-            today: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+            today: jiff::civil::date(2026, 11, 7),
         };
         run_chat_action(&vault, action)
     }
@@ -187,7 +187,7 @@ fn daily_captures_use_the_configured_heading_and_format_in_local_time() {
 
     let guard = fixture.guard("unrestricted");
     let vault = ChatVault {
-        today: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+        today: jiff::civil::date(2026, 11, 7),
         ..vault_for(&fixture, &guard, "unrestricted")
     };
     super::run_chat_undo(&vault, &reply.undo).expect("undo");
@@ -257,7 +257,7 @@ fn task_replies_show_dates_and_reminders_in_words() {
     );
     let guard = fixture.guard("unrestricted");
     let vault = ChatVault {
-        today: chrono::Local::now().date_naive(),
+        today: jiff::Zoned::now().date(),
         ..vault_for(&fixture, &guard, "unrestricted")
     };
     let reply = run_chat_command(
@@ -279,7 +279,7 @@ fn task_replies_show_dates_and_reminders_in_words() {
 
 #[test]
 fn friendly_task_dates_are_relative_near_today() {
-    let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+    let today = jiff::civil::date(2026, 11, 7);
     assert_eq!(friendly_task_date("2026-11-07", today), "Today");
     assert_eq!(
         friendly_task_date("2026-11-08T12:00:00", today),
@@ -431,8 +431,13 @@ fn reminders_are_grouped_by_local_day() {
 
 #[test]
 fn day_headings_name_nearby_days() {
-    let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
-    let day = |offset: i64| super::day_heading(today + chrono::Duration::days(offset), today);
+    let today = jiff::civil::date(2026, 11, 7);
+    let day = |offset: i64| {
+        super::day_heading(
+            today.checked_add(jiff::Span::new().days(offset)).unwrap(),
+            today,
+        )
+    };
     assert_eq!(day(-1), "Yesterday, Fri 6 Nov");
     assert_eq!(day(0), "Today, Sat 7 Nov");
     assert_eq!(day(1), "Tomorrow, Sun 8 Nov");
@@ -463,7 +468,7 @@ fn reminder_plans_render_in_the_vault_timezone_with_path_privacy() {
         guard: &guard,
         profile: "readonly",
         gate: &Ungated,
-        today: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+        today: jiff::civil::date(2026, 11, 7),
     };
     let plan = reminders::plan_chat_reminders(&vault).unwrap();
     assert_eq!(plan.catch_up_ms, 2 * 60 * 60 * 1_000);
@@ -501,7 +506,9 @@ fn vault_for<'a>(
         guard,
         profile,
         gate: &Ungated,
-        today: chrono::Utc::now().date_naive(),
+        today: jiff::Timestamp::now()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .date(),
     }
 }
 
@@ -538,15 +545,16 @@ fn reminder_buttons_complete_and_snooze_inline_tasks() {
         .unwrap()
         .format("%Y-%m-%d %H:%M")
         .to_string();
-    let local = chrono::DateTime::from_timestamp_millis(at)
+    let local = jiff::Timestamp::from_millisecond(at)
         .unwrap()
-        .naive_utc();
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .datetime();
     assert_eq!(
         snoozed,
         format!(
             "Snoozed until {} {}.",
             calendar_date(local.date(), vault.today),
-            local.format("%H:%M")
+            local.strftime("%H:%M")
         )
     );
     assert!(fixture
@@ -1082,7 +1090,7 @@ fn validation_checks_announce_each_new_problem_once() {
         guard: &guard,
         profile: "unrestricted",
         gate: &Ungated,
-        today: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+        today: jiff::civil::date(2026, 11, 7),
     };
     let first = validation::chat_validation_check(&vault, "notes", &[]).unwrap();
     assert_eq!(first.problems.len(), 1, "{:?}", first.problems);

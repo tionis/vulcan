@@ -75,7 +75,7 @@ pub struct TaskReminderAddRequest {
 pub struct TaskSnoozeRequest {
     pub task: String,
     /// Wall-clock time in the vault's reminder timezone.
-    pub until: chrono::NaiveDateTime,
+    pub until: jiff::civil::DateTime,
     pub dry_run: bool,
 }
 

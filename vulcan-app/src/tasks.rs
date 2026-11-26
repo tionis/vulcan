@@ -455,7 +455,7 @@ pub fn apply_task_snooze_with_guard(
             paths,
             &TaskReminderAddRequest {
                 task: request.task.clone(),
-                spec: request.until.format("%Y-%m-%dT%H:%M").to_string(),
+                spec: request.until.strftime("%Y-%m-%dT%H:%M").to_string(),
                 description: Some("Snoozed".to_string()),
                 dry_run: request.dry_run,
             },
@@ -866,12 +866,7 @@ pub fn apply_task_add_with_guard(
             )
         });
 
-    let relative_path = new_tasknote_path(
-        paths,
-        &config.tasknotes,
-        &title,
-        chrono::Local::now().fixed_offset(),
-    );
+    let relative_path = new_tasknote_path(paths, &config.tasknotes, &title, jiff::Zoned::now());
     let absolute_path = paths.vault_root().join(&relative_path);
     if let Some(guard) = guard {
         guard
@@ -5173,12 +5168,7 @@ fn build_converted_tasknote(
             )
         });
 
-    let relative_path = new_tasknote_path(
-        paths,
-        &config.tasknotes,
-        &title,
-        chrono::Local::now().fixed_offset(),
-    );
+    let relative_path = new_tasknote_path(paths, &config.tasknotes, &title, jiff::Zoned::now());
     if let Some(guard) = guard {
         guard
             .check_read_path(&relative_path)
@@ -7317,16 +7307,18 @@ fn advance_recurring_tasknote(
 fn date_part(value: &str) -> Option<&str> {
     let value = value.trim();
     let day = value.get(..10)?;
-    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    jiff::civil::Date::strptime("%Y-%m-%d", day).ok()?;
     Some(day)
 }
 
 /// `value` moved by `days`, keeping anything after its date (a time of day).
 fn shift_date_keeping_time(value: &str, days: i64) -> Option<String> {
     let value = value.trim();
-    let day = chrono::NaiveDate::parse_from_str(date_part(value)?, "%Y-%m-%d").ok()?;
-    let moved = day.checked_add_signed(chrono::Duration::days(days))?;
-    Some(format!("{}{}", moved.format("%Y-%m-%d"), &value[10..]))
+    let day = jiff::civil::Date::strptime("%Y-%m-%d", date_part(value)?).ok()?;
+    let moved = day
+        .checked_add(jiff::Span::new().try_days(days).ok()?)
+        .ok()?;
+    Some(format!("{moved}{}", &value[10..]))
 }
 
 fn set_tasknote_frontmatter_value(
@@ -7408,7 +7400,7 @@ fn new_tasknote_path(
     paths: &VaultPaths,
     config: &vulcan_core::TaskNotesConfig,
     title: &str,
-    now: chrono::DateTime<chrono::FixedOffset>,
+    now: jiff::Zoned,
 ) -> String {
     let folder = config.tasks_folder.trim_end_matches('/');
     let path_for = |stem: String| format!("{folder}/{stem}.md");
@@ -7421,7 +7413,9 @@ fn new_tasknote_path(
         if !paths.vault_root().join(&path).exists() {
             return path;
         }
-        at += chrono::TimeDelta::seconds(1);
+        at = at
+            .checked_add(jiff::SignedDuration::from_secs(1))
+            .unwrap_or(at);
     }
     path_for(tasknote_file_stem(config.filename_format, title, &at))
 }
@@ -7430,20 +7424,27 @@ fn new_tasknote_path(
 fn tasknote_file_stem(
     format: vulcan_core::TaskNotesFilenameFormat,
     title: &str,
-    at: &chrono::DateTime<chrono::FixedOffset>,
+    at: &jiff::Zoned,
 ) -> String {
-    use chrono::Timelike;
     match format {
         vulcan_core::TaskNotesFilenameFormat::Title => sanitize_tasknote_filename(title),
         vulcan_core::TaskNotesFilenameFormat::Zettel => {
             format!(
                 "{}{}",
-                at.format("%y%m%d"),
-                base36(at.num_seconds_from_midnight())
+                at.strftime("%y%m%d"),
+                base36(seconds_from_midnight(at.time()))
             )
         }
-        vulcan_core::TaskNotesFilenameFormat::Timestamp => at.format("%Y-%m-%d-%H%M%S").to_string(),
+        vulcan_core::TaskNotesFilenameFormat::Timestamp => {
+            at.strftime("%Y-%m-%d-%H%M%S").to_string()
+        }
     }
+}
+
+fn seconds_from_midnight(time: jiff::civil::Time) -> u32 {
+    let seconds =
+        i32::from(time.hour()) * 3600 + i32::from(time.minute()) * 60 + i32::from(time.second());
+    u32::try_from(seconds).unwrap_or_default()
 }
 
 /// Lowercase base 36, as JavaScript's `Number.prototype.toString(36)`.
@@ -7464,7 +7465,9 @@ fn base36(mut value: u32) -> String {
 /// A `dateCreated`/`dateModified` value as `TaskNotes` writes it: local time
 /// with milliseconds and the UTC offset (`2026-11-02T15:16:33.812+01:00`).
 fn tasknote_metadata_timestamp() -> String {
-    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+    jiff::Zoned::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%.3f%:z")
+        .to_string()
 }
 
 fn current_utc_timestamp_string() -> String {
@@ -7490,8 +7493,8 @@ fn tasknote_reference_ms(config: &VaultConfig) -> i64 {
 /// compares against the time of day to pick today or tomorrow.
 fn tasknote_reference_ms_at(config: &VaultConfig, now_ms: i64) -> i64 {
     let timezone = reminders::ReminderTimezone::from_config(&config.tasks.reminders)
-        .unwrap_or(reminders::ReminderTimezone::Local);
-    timezone.local_datetime(now_ms).and_utc().timestamp_millis()
+        .unwrap_or_else(|_| reminders::ReminderTimezone::local());
+    timezone.wall_clock_ms(now_ms)
 }
 
 fn normalize_tasknote_context(context: &str) -> Option<String> {

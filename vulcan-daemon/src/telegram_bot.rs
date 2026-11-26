@@ -1028,7 +1028,7 @@ impl Bot<'_> {
             let Some(at) = user
                 .digest
                 .as_deref()
-                .and_then(|at| chrono::NaiveTime::parse_from_str(at, "%H:%M").ok())
+                .and_then(|at| jiff::civil::Time::strptime("%H:%M", at).ok())
             else {
                 continue;
             };
@@ -1043,7 +1043,7 @@ impl Bot<'_> {
                     continue;
                 };
                 let local = settings.timezone.local_datetime(now);
-                let day = local.date().format("%Y-%m-%d").to_string();
+                let day = local.date().to_string();
                 if local.time() < at
                     || self
                         .state

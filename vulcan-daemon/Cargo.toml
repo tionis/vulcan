@@ -15,6 +15,7 @@ web = ["vulcan-app/web"]
 [dependencies]
 chrono = { workspace = true, features = ["clock"] }
 chrono-tz.workspace = true
+jiff.workspace = true
 axum.workspace = true
 fs2.workspace = true
 libc.workspace = true

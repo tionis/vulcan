@@ -19,6 +19,7 @@ base64 = { workspace = true, optional = true }
 blake3.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+jiff.workspace = true
 iana-time-zone.workspace = true
 cel.workspace = true
 csv.workspace = true

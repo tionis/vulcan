@@ -193,8 +193,14 @@ fn next_occurrence_line(
     // A `⏰` reminder moves with the other dates, keeping its time of day,
     // so the next occurrence does not inherit an already past reminder.
     if let Some((range, mut reminder)) = super::reminder::inline_reminder_marker_span(&next_line) {
-        reminder.date += chrono::Duration::days(shift);
-        next_line.replace_range(range, &reminder.to_marker());
+        if let Some(date) = jiff::Span::new()
+            .try_days(shift)
+            .ok()
+            .and_then(|span| reminder.date.checked_add(span).ok())
+        {
+            reminder.date = date;
+            next_line.replace_range(range, &reminder.to_marker());
+        }
     }
     Some(next_line)
 }

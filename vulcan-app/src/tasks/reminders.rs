@@ -7,7 +7,9 @@
 
 use super::TaskReminderItem;
 use crate::AppError;
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
+use jiff::civil::{Date, DateTime, Time};
+use jiff::tz::{AmbiguousOffset, TimeZone};
+use jiff::{SignedDuration, Timestamp, Zoned};
 use serde_json::Value;
 use std::collections::HashMap;
 use vulcan_core::config::{TaskDueDateReminders, TaskRemindersConfig, TasksConfig};
@@ -58,72 +60,77 @@ pub fn inline_task_key(path: &str, text: &str, id: Option<&str>) -> String {
 }
 
 /// The timezone reminder wall-clock times are read in.
-#[derive(Debug, Clone, Copy)]
-pub enum ReminderTimezone {
-    Named(chrono_tz::Tz),
-    Local,
-}
+#[derive(Debug, Clone)]
+pub struct ReminderTimezone(TimeZone);
 
 impl ReminderTimezone {
     /// `tasks.reminders.timezone`, or the device's local timezone.
     pub fn from_config(config: &TaskRemindersConfig) -> Result<Self, AppError> {
         match config.timezone.as_deref() {
-            Some(name) => name.parse::<chrono_tz::Tz>().map(Self::Named).map_err(|_| {
+            Some(name) => Self::named(name).ok_or_else(|| {
                 AppError::operation(format!(
                     "tasks.reminders.timezone is not an IANA timezone name: {name}"
                 ))
             }),
-            None => Ok(Self::Local),
+            None => Ok(Self::local()),
         }
+    }
+
+    /// The IANA timezone `name`, such as `Europe/Berlin`.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        TimeZone::get(name).ok().map(Self)
+    }
+
+    /// The device's local timezone.
+    #[must_use]
+    pub fn local() -> Self {
+        Self(TimeZone::system())
+    }
+
+    fn zoned(&self, at_ms: i64) -> Zoned {
+        Timestamp::from_millisecond(at_ms)
+            .unwrap_or(Timestamp::UNIX_EPOCH)
+            .to_zoned(self.0.clone())
     }
 
     /// The calendar date at `now_ms` (Unix ms) in this timezone.
     #[must_use]
-    pub fn date_at(self, now_ms: i64) -> NaiveDate {
-        let instant = chrono::DateTime::from_timestamp_millis(now_ms).unwrap_or_default();
-        match self {
-            Self::Named(tz) => instant.with_timezone(&tz).date_naive(),
-            Self::Local => instant.with_timezone(&chrono::Local).date_naive(),
-        }
+    pub fn date_at(&self, now_ms: i64) -> Date {
+        self.zoned(now_ms).date()
     }
 
     /// The wall-clock time at `at_ms` in this timezone.
     #[must_use]
-    pub fn local_datetime(self, at_ms: i64) -> NaiveDateTime {
-        let instant = chrono::DateTime::from_timestamp_millis(at_ms).unwrap_or_default();
-        match self {
-            Self::Named(tz) => instant.with_timezone(&tz).naive_local(),
-            Self::Local => instant.with_timezone(&chrono::Local).naive_local(),
-        }
+    pub fn local_datetime(&self, at_ms: i64) -> DateTime {
+        self.zoned(at_ms).datetime()
+    }
+
+    /// The wall-clock time at `at_ms` in this timezone, read as if it were
+    /// UTC, for callers that render wall-clock milliseconds.
+    #[must_use]
+    pub fn wall_clock_ms(&self, at_ms: i64) -> i64 {
+        self.local_datetime(at_ms)
+            .to_zoned(TimeZone::UTC)
+            .map_or(at_ms, |wall| wall.timestamp().as_millisecond())
     }
 
     /// `at_ms` as `YYYY-MM-DD HH:MM` wall-clock time in this timezone.
     #[must_use]
-    pub fn format_local(self, at_ms: i64) -> String {
-        let instant = chrono::DateTime::from_timestamp_millis(at_ms).unwrap_or_default();
-        match self {
-            Self::Named(tz) => instant
-                .with_timezone(&tz)
-                .format("%Y-%m-%d %H:%M")
-                .to_string(),
-            Self::Local => instant
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string(),
-        }
+    pub fn format_local(&self, at_ms: i64) -> String {
+        self.zoned(at_ms).strftime("%Y-%m-%d %H:%M").to_string()
     }
 
     /// `at_ms` as an RFC 3339 date-time with this timezone's offset, such as
     /// `2026-11-19T09:00:00+01:00` (`Z` for UTC).
     #[must_use]
-    pub fn format_rfc3339(self, at_ms: i64) -> String {
-        let instant = chrono::DateTime::from_timestamp_millis(at_ms).unwrap_or_default();
-        let seconds = chrono::SecondsFormat::Secs;
-        match self {
-            Self::Named(tz) => instant.with_timezone(&tz).to_rfc3339_opts(seconds, true),
-            Self::Local => instant
-                .with_timezone(&chrono::Local)
-                .to_rfc3339_opts(seconds, true),
+    pub fn format_rfc3339(&self, at_ms: i64) -> String {
+        let zoned = self.zoned(at_ms);
+        let base = zoned.strftime("%Y-%m-%dT%H:%M:%S").to_string();
+        if zoned.offset() == jiff::tz::Offset::UTC {
+            format!("{base}Z")
+        } else {
+            format!("{base}{}", zoned.strftime("%:z"))
         }
     }
 
@@ -131,19 +138,14 @@ impl ReminderTimezone {
     /// fires at the first valid minute after it; a repeated time fires at
     /// its first occurrence.
     #[must_use]
-    pub fn instant_ms(self, local: NaiveDateTime) -> Option<i64> {
+    pub fn instant_ms(&self, local: DateTime) -> Option<i64> {
         (0..=180).find_map(|minutes| {
-            let candidate = local + chrono::Duration::minutes(minutes);
-            match self {
-                Self::Named(tz) => tz
-                    .from_local_datetime(&candidate)
-                    .earliest()
-                    .map(|at| at.timestamp_millis()),
-                Self::Local => chrono::Local
-                    .from_local_datetime(&candidate)
-                    .earliest()
-                    .map(|at| at.timestamp_millis()),
+            let candidate = local.checked_add(SignedDuration::from_mins(minutes)).ok()?;
+            let ambiguous = self.0.to_ambiguous_timestamp(candidate);
+            if matches!(ambiguous.offset(), AmbiguousOffset::Gap { .. }) {
+                return None;
             }
+            ambiguous.earlier().ok().map(Timestamp::as_millisecond)
         })
     }
 }
@@ -153,19 +155,18 @@ impl ReminderTimezone {
 pub struct ReminderSettings {
     pub inline: bool,
     pub due_dates: bool,
-    pub default_time: NaiveTime,
+    pub default_time: Time,
     pub timezone: ReminderTimezone,
 }
 
 impl ReminderSettings {
     pub fn from_config(config: &TaskRemindersConfig) -> Result<Self, AppError> {
-        let default_time =
-            NaiveTime::parse_from_str(config.default_time.trim(), "%H:%M").map_err(|_| {
-                AppError::operation(format!(
-                    "tasks.reminders.default_time must be HH:MM: {}",
-                    config.default_time
-                ))
-            })?;
+        let default_time = Time::strptime("%H:%M", config.default_time.trim()).map_err(|_| {
+            AppError::operation(format!(
+                "tasks.reminders.default_time must be HH:MM: {}",
+                config.default_time
+            ))
+        })?;
         Ok(Self {
             inline: config.inline,
             due_dates: config.due_dates == TaskDueDateReminders::Notify,
@@ -208,8 +209,8 @@ pub fn tasknote_reminder_instant(
 /// floating time is read in the reminder timezone, and a bare date means the default time.
 pub(super) fn zoned_instant(value: &str, settings: &ReminderSettings) -> Option<i64> {
     let value = value.trim();
-    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(value) {
-        return Some(at.timestamp_millis());
+    if let Some(at_ms) = rfc3339_ms(value) {
+        return Some(at_ms);
     }
     for format in [
         "%Y-%m-%dT%H:%M:%S%.f",
@@ -217,16 +218,26 @@ pub(super) fn zoned_instant(value: &str, settings: &ReminderSettings) -> Option<
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
     ] {
-        if let Ok(local) = NaiveDateTime::parse_from_str(value, format) {
+        if let Ok(local) = DateTime::strptime(format, value) {
             return settings.timezone.instant_ms(local);
         }
     }
-    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+    if let Ok(date) = Date::strptime("%Y-%m-%d", value) {
         return settings
             .timezone
-            .instant_ms(date.and_time(settings.default_time));
+            .instant_ms(date.to_datetime(settings.default_time));
     }
     parse_date_like_string(value)
+}
+
+/// An RFC 3339 date-time with an offset or `Z`, as Unix ms.
+pub(crate) fn rfc3339_ms(value: &str) -> Option<i64> {
+    // A civil time alone is not an instant; jiff's parser would otherwise
+    // accept bare dates and times only with an offset anyway.
+    value
+        .parse::<Timestamp>()
+        .ok()
+        .map(Timestamp::as_millisecond)
 }
 
 /// Give absolute `TaskNotes` reminders written without a zone, such as
@@ -252,7 +263,7 @@ pub(super) fn anchor_absolute_reminders(reminders: &mut [Value], config: &TaskRe
         let Some(time) = object.get("absoluteTime").and_then(Value::as_str) else {
             continue;
         };
-        if chrono::DateTime::parse_from_rfc3339(time.trim()).is_ok() {
+        if rfc3339_ms(time.trim()).is_some() {
             continue;
         }
         if let Some(at_ms) = zoned_instant(time, &settings) {
@@ -301,7 +312,7 @@ pub(super) fn inline_reminder_items(
                     .due_dates
                     .then(|| property_text(task.properties.get("due")))
                     .flatten()
-                    .and_then(|value| NaiveDate::parse_from_str(value.get(..10)?, "%Y-%m-%d").ok())
+                    .and_then(|value| Date::strptime("%Y-%m-%d", value.get(..10)?).ok())
                     .map(|date| ("due", "due", Some("due".to_string()), date, None))
             };
             let Some((reminder_id, reminder_type, related_to, date, time)) = remind.or_else(due)
@@ -310,7 +321,7 @@ pub(super) fn inline_reminder_items(
             };
             let Some(notify_at) = settings
                 .timezone
-                .instant_ms(date.and_time(time.unwrap_or(settings.default_time)))
+                .instant_ms(date.to_datetime(time.unwrap_or(settings.default_time)))
             else {
                 continue;
             };
@@ -375,8 +386,8 @@ mod tests {
         ReminderSettings {
             inline: true,
             due_dates: false,
-            default_time: NaiveTime::from_hms_opt(9, 0, 0).expect("valid time"),
-            timezone: ReminderTimezone::Named(chrono_tz::Europe::Berlin),
+            default_time: jiff::civil::time(9, 0, 0, 0),
+            timezone: ReminderTimezone::named("Europe/Berlin").expect("known zone"),
         }
     }
 
@@ -418,9 +429,9 @@ mod tests {
     }
 
     fn utc(text: &str) -> i64 {
-        chrono::DateTime::parse_from_rfc3339(text)
+        text.parse::<Timestamp>()
             .expect("valid timestamp")
-            .timestamp_millis()
+            .as_millisecond()
     }
 
     #[test]
@@ -485,36 +496,18 @@ mod tests {
 
     #[test]
     fn named_timezones_resolve_wall_times_including_dst_gaps() {
-        let berlin = ReminderTimezone::Named(chrono_tz::Europe::Berlin);
+        let berlin = ReminderTimezone::named("Europe/Berlin").expect("known zone");
         let at = |text: &str| {
             berlin
-                .instant_ms(NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M").unwrap())
+                .instant_ms(DateTime::strptime("%Y-%m-%d %H:%M", text).unwrap())
                 .unwrap()
         };
         // 10:00 CET is 09:00 UTC.
-        assert_eq!(
-            at("2026-11-07 10:00"),
-            chrono::Utc
-                .with_ymd_and_hms(2026, 11, 7, 9, 0, 0)
-                .unwrap()
-                .timestamp_millis()
-        );
+        assert_eq!(at("2026-11-07 10:00"), utc("2026-11-07T09:00:00Z"));
         // 02:30 does not exist on 2026-03-29 in Berlin: fire at 03:00 CEST.
-        assert_eq!(
-            at("2026-03-29 02:30"),
-            chrono::Utc
-                .with_ymd_and_hms(2026, 3, 29, 1, 0, 0)
-                .unwrap()
-                .timestamp_millis()
-        );
+        assert_eq!(at("2026-03-29 02:30"), utc("2026-03-29T01:00:00Z"));
         // 02:30 repeats on 2026-10-25: fire at the first one (CEST).
-        assert_eq!(
-            at("2026-10-25 02:30"),
-            chrono::Utc
-                .with_ymd_and_hms(2026, 10, 25, 0, 30, 0)
-                .unwrap()
-                .timestamp_millis()
-        );
+        assert_eq!(at("2026-10-25 02:30"), utc("2026-10-25T00:30:00Z"));
     }
 
     #[test]

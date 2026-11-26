@@ -18,7 +18,7 @@ use crate::tasks::{
     build_tasks_query_result_with_guard, ReminderTimezone, TaskAddRequest,
 };
 use crate::AppError;
-use chrono::{Datelike, NaiveDate};
+use jiff::civil::{Date, Time};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -364,7 +364,7 @@ pub struct ChatVault<'a> {
     /// Held around every write: the daemon's per-vault mutation permit.
     pub gate: &'a dyn MutationGate,
     /// Today in the vault's reminder timezone.
-    pub today: NaiveDate,
+    pub today: Date,
 }
 
 /// Run a vault command. [`ChatCommand::Vault`], [`ChatCommand::Help`],
@@ -654,7 +654,7 @@ pub fn run_chat_action(vault: &ChatVault<'_>, action: &ChatAction) -> Result<Cha
                     vault.profile,
                     crate::mcp_protocol::McpTaskCompleteArgs {
                         task: task.clone(),
-                        date: Some(vault.today.format("%Y-%m-%d").to_string()),
+                        date: Some(vault.today.to_string()),
                         dry_run: false,
                         no_commit: false,
                     },
@@ -683,12 +683,12 @@ pub fn run_chat_reschedule(
 ) -> Result<ChatReply, AppError> {
     let config = load_vault_config(vault.paths).config;
     let timezone = ReminderTimezone::from_config(&config.tasks.reminders)?;
-    let Some(when) = when::parse_chat_when(text, &config.tasknotes, timezone, now_ms) else {
+    let Some(when) = when::parse_chat_when(text, &config.tasknotes, &timezone, now_ms) else {
         return Ok(ChatReply::text(CHAT_WHEN_HINT));
     };
     let value = match when {
-        when::ChatWhen::At(at) => at.format("%Y-%m-%dT%H:%M").to_string(),
-        when::ChatWhen::Day(day) => day.format("%Y-%m-%d").to_string(),
+        when::ChatWhen::At(at) => at.strftime("%Y-%m-%dT%H:%M").to_string(),
+        when::ChatWhen::Day(day) => day.to_string(),
     };
     let shown =
         crate::tasks::build_task_show_report_with_guard(vault.paths, task, vault.guard).ok();
@@ -824,7 +824,7 @@ fn capture_inbox(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppErro
 }
 
 fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError> {
-    let date = vault.today.format("%Y-%m-%d").to_string();
+    let date = vault.today.to_string();
     let config = load_vault_config(vault.paths).config;
     let expected =
         vulcan_core::periodic::expected_periodic_note_path(&config.periodic, "daily", &date);
@@ -874,8 +874,8 @@ fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError
 fn render_daily_capture(config: &vulcan_core::VaultConfig, path: &str, text: &str) -> String {
     let now = vulcan_core::current_utc_timestamp_ms();
     let timezone = crate::tasks::reminders::ReminderTimezone::from_config(&config.tasks.reminders)
-        .unwrap_or(crate::tasks::reminders::ReminderTimezone::Local);
-    let wall = timezone.local_datetime(now).and_utc().timestamp_millis();
+        .unwrap_or_else(|_| crate::tasks::reminders::ReminderTimezone::local());
+    let wall = timezone.wall_clock_ms(now);
     let timestamp = crate::templates::TemplateTimestamp::from_wall_millis(wall, wall - now);
     let mut variables = crate::templates::template_variables_for_path(path, timestamp);
     // `{time}` is the clock time a reader expects in a note, as `{{time}}`
@@ -1031,9 +1031,8 @@ fn due_tasks(vault: &ChatVault<'_>, days: u32) -> Result<ChatReply, AppError> {
     ensure_fresh(vault)?;
     let bound = vault
         .today
-        .checked_add_days(chrono::Days::new(u64::from(days) + 1))
-        .unwrap_or(vault.today)
-        .format("%Y-%m-%d");
+        .checked_add(jiff::Span::new().days(i64::from(days) + 1))
+        .unwrap_or(vault.today);
     let query = format!(
         "NOT (done OR status.type is cancelled)\n\
          (due before {bound}) OR (scheduled before {bound})\n\
@@ -1048,7 +1047,7 @@ fn due_tasks(vault: &ChatVault<'_>, days: u32) -> Result<ChatReply, AppError> {
     if result.tasks.is_empty() {
         return Ok(ChatReply::text(format!("{heading}: nothing open.")));
     }
-    let today = vault.today.format("%Y-%m-%d").to_string();
+    let today = vault.today.to_string();
     let mut lines = vec![format!("{heading} ({}):", result.tasks.len())];
     let mut buttons = Vec::new();
     for task in result.tasks.iter().take(CHAT_LIST_LIMIT) {
@@ -1105,9 +1104,12 @@ pub fn chat_digest(
     let timezone =
         ReminderTimezone::from_config(&load_vault_config(vault.paths).config.tasks.reminders)?;
     let local_now = timezone.local_datetime(now_ms);
-    let midnight = local_now.date().succ_opt().unwrap_or(local_now.date());
-    let minutes_left = (midnight.and_time(chrono::NaiveTime::MIN) - local_now)
-        .num_minutes()
+    let midnight = local_now.date().tomorrow().unwrap_or(local_now.date());
+    // Real minutes to the start of tomorrow, which DST days lengthen or
+    // shorten.
+    let minutes_left = timezone
+        .instant_ms(midnight.to_datetime(Time::midnight()))
+        .map_or(1, |midnight_ms| (midnight_ms - now_ms) / 60_000)
         .max(1);
     let report = build_task_reminders_report_with_guard(
         vault.paths,
@@ -1120,7 +1122,7 @@ pub fn chat_digest(
         .filter(|reminder| !reminder.overdue)
         .filter_map(|reminder| {
             let local = timezone.local_datetime(parse_date_like_string(&reminder.notify_at)?);
-            Some(format!("• {} {}", local.format("%H:%M"), reminder.title))
+            Some(format!("• {} {}", local.strftime("%H:%M"), reminder.title))
         })
         .take(CHAT_LIST_LIMIT)
         .collect::<Vec<_>>();
@@ -1174,7 +1176,7 @@ fn reminders(vault: &ChatVault<'_>, window: &str) -> Result<ChatReply, AppError>
         let overdue = if reminder.overdue { " (overdue)" } else { "" };
         lines.push(format!(
             "• {} {}{overdue}",
-            local.format("%H:%M"),
+            local.strftime("%H:%M"),
             reminder.title
         ));
     }
@@ -1189,7 +1191,7 @@ fn reminders(vault: &ChatVault<'_>, window: &str) -> Result<ChatReply, AppError>
 }
 
 /// `Today, Sat 7 Nov`, `Tomorrow, Sun 8 Nov`, `Tue 10 Nov`, or with the year when it differs.
-fn day_heading(date: NaiveDate, today: NaiveDate) -> String {
+fn day_heading(date: Date, today: Date) -> String {
     let label = calendar_date(date, today);
     match relative_day(date, today) {
         Some(relative) => format!("{relative}, {label}"),
@@ -1198,17 +1200,17 @@ fn day_heading(date: NaiveDate, today: NaiveDate) -> String {
 }
 
 /// `Sun 8 Nov`, with the year when it is not `today`'s.
-pub(crate) fn calendar_date(date: NaiveDate, today: NaiveDate) -> String {
+pub(crate) fn calendar_date(date: Date, today: Date) -> String {
     let format = if date.year() == today.year() {
         "%a %-d %b"
     } else {
         "%a %-d %b %Y"
     };
-    date.format(format).to_string()
+    date.strftime(format).to_string()
 }
 
-fn relative_day(date: NaiveDate, today: NaiveDate) -> Option<&'static str> {
-    match (date - today).num_days() {
+fn relative_day(date: Date, today: Date) -> Option<&'static str> {
+    match today.until(date).ok()?.get_days() {
         -1 => Some("Yesterday"),
         0 => Some("Today"),
         1 => Some("Tomorrow"),
@@ -1219,7 +1221,7 @@ fn relative_day(date: NaiveDate, today: NaiveDate) -> Option<&'static str> {
 /// A day relative to `today` where that is shorter: `Today`, `Tomorrow`,
 /// `Yesterday`, else `Sun 8 Nov`.
 #[must_use]
-pub fn friendly_day(date: NaiveDate, today: NaiveDate) -> String {
+pub fn friendly_day(date: Date, today: Date) -> String {
     relative_day(date, today).map_or_else(|| calendar_date(date, today), ToString::to_string)
 }
 
@@ -1227,11 +1229,11 @@ pub fn friendly_day(date: NaiveDate, today: NaiveDate) -> String {
 /// (`2026-11-08`, `2026-11-08T12:00`), as `Tomorrow` or `Tomorrow 12:00`.
 /// Anything else is returned unchanged.
 #[must_use]
-pub fn friendly_task_date(value: &str, today: NaiveDate) -> String {
+pub fn friendly_task_date(value: &str, today: Date) -> String {
     let value = value.trim();
     let Some(date) = value
         .get(..10)
-        .and_then(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok())
+        .and_then(|day| Date::strptime("%Y-%m-%d", day).ok())
     else {
         return value.to_string();
     };
@@ -1243,9 +1245,9 @@ pub fn friendly_task_date(value: &str, today: NaiveDate) -> String {
                 .get(10)
                 .is_some_and(|c| matches!(c, b'T' | b' '))
         })
-        .and_then(|time| chrono::NaiveTime::parse_from_str(time, "%H:%M").ok());
+        .and_then(|time| Time::strptime("%H:%M", time).ok());
     match time {
-        Some(time) => format!("{} {}", friendly_day(date, today), time.format("%H:%M")),
+        Some(time) => format!("{} {}", friendly_day(date, today), time.strftime("%H:%M")),
         None => friendly_day(date, today),
     }
 }
@@ -1273,7 +1275,7 @@ fn task_reminder_lines(vault: &ChatVault<'_>, path: &str) -> Vec<String> {
             let when = format!(
                 "{} {}",
                 friendly_day(local.date(), vault.today),
-                local.format("%H:%M")
+                local.strftime("%H:%M")
             );
             Some(if reminder.overdue {
                 format!("Reminder: {when} (already passed, not sent)")

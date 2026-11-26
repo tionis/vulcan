@@ -198,9 +198,9 @@ pub fn run_reminder_action(
         settings
             .timezone
             .date_at(now_ms)
-            .succ_opt()
+            .tomorrow()
             .unwrap_or_default()
-            .and_time(settings.default_time)
+            .to_datetime(settings.default_time)
     } else {
         let duration = parse_duration_string(action)
             .filter(|duration| *duration > 0)
@@ -225,7 +225,7 @@ pub fn run_reminder_snooze_text(
     let config = load_vault_config(vault.paths).config;
     let settings = ReminderSettings::from_config(&config.tasks.reminders)?;
     let Some(when) =
-        super::when::parse_chat_when(text, &config.tasknotes, settings.timezone, now_ms)
+        super::when::parse_chat_when(text, &config.tasknotes, &settings.timezone, now_ms)
     else {
         return Ok(None);
     };
@@ -246,7 +246,7 @@ pub fn run_reminder_snooze_text(
 fn snooze(
     vault: &ChatVault<'_>,
     item: &TaskReminderItem,
-    until: chrono::NaiveDateTime,
+    until: jiff::civil::DateTime,
 ) -> Result<String, AppError> {
     let report = with_write(vault, || {
         apply_task_snooze_with_guard(
@@ -268,11 +268,11 @@ fn snooze(
 
 /// A time in a message that stays in the chat: `Sun 8 Nov 12:00`, never
 /// relative, since "today" is wrong by tomorrow.
-fn message_time(at: chrono::NaiveDateTime, today: chrono::NaiveDate) -> String {
+fn message_time(at: jiff::civil::DateTime, today: jiff::civil::Date) -> String {
     format!(
         "{} {}",
         super::calendar_date(at.date(), today),
-        at.format("%H:%M")
+        at.strftime("%H:%M")
     )
 }
 
@@ -289,7 +289,7 @@ fn complete(vault: &ChatVault<'_>, item: &TaskReminderItem) -> Result<String, Ap
                 date: Some(
                     item.occurrence
                         .clone()
-                        .unwrap_or_else(|| vault.today.format("%Y-%m-%d").to_string()),
+                        .unwrap_or_else(|| vault.today.to_string()),
                 ),
                 dry_run: false,
                 no_commit: false,

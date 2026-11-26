@@ -8,7 +8,7 @@
 //! A Dataview `[remind:: ...]` field is indexed through the ordinary inline
 //! field path under the same `remind` key.
 
-use chrono::{NaiveDate, NaiveTime};
+use jiff::civil::{Date, Time};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -21,8 +21,8 @@ pub const INLINE_REMINDER_PROPERTY: &str = "remind";
 /// A reminder time from a task line: a date with an optional wall-clock time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InlineReminderTime {
-    pub date: NaiveDate,
-    pub time: Option<NaiveTime>,
+    pub date: Date,
+    pub time: Option<Time>,
 }
 
 impl InlineReminderTime {
@@ -30,8 +30,8 @@ impl InlineReminderTime {
     #[must_use]
     pub fn to_property_value(self) -> String {
         match self.time {
-            Some(time) => format!("{}T{}", self.date.format("%Y-%m-%d"), time.format("%H:%M")),
-            None => self.date.format("%Y-%m-%d").to_string(),
+            Some(time) => format!("{}T{}", self.date, time.strftime("%H:%M")),
+            None => self.date.to_string(),
         }
     }
 
@@ -41,10 +41,10 @@ impl InlineReminderTime {
         match self.time {
             Some(time) => format!(
                 "{INLINE_REMINDER_MARKER} {} {}",
-                self.date.format("%Y-%m-%d"),
-                time.format("%H:%M")
+                self.date,
+                time.strftime("%H:%M")
             ),
-            None => format!("{INLINE_REMINDER_MARKER} {}", self.date.format("%Y-%m-%d")),
+            None => format!("{INLINE_REMINDER_MARKER} {}", self.date),
         }
     }
 }
@@ -157,20 +157,20 @@ fn title_strip_patterns() -> &'static [Regex] {
 }
 
 fn build_reminder(date: &str, time: Option<&str>) -> Option<InlineReminderTime> {
-    let date = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let date = Date::strptime("%Y-%m-%d", date).ok()?;
     let time = match time {
         // Reminders have minute precision; seconds are accepted and dropped.
         Some(time) => {
             let mut parts = time.splitn(3, ':');
-            let hour = parts.next()?.parse::<u32>().ok()?;
-            let minute = parts.next()?.parse::<u32>().ok()?;
+            let hour = parts.next()?.parse::<i8>().ok()?;
+            let minute = parts.next()?.parse::<i8>().ok()?;
             if let Some(seconds) = parts.next() {
                 seconds
                     .parse::<u32>()
                     .ok()
                     .filter(|seconds| *seconds < 60)?;
             }
-            Some(NaiveTime::from_hms_opt(hour, minute, 0)?)
+            Some(Time::new(hour, minute, 0, 0).ok()?)
         }
         None => None,
     };
