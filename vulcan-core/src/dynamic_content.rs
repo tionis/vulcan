@@ -1734,6 +1734,8 @@ fn dataview_js_markdown(result: &DataviewJsResult, options: DataviewMarkdownOpti
         )),
         DataviewJsOutput::Paragraph { text } => JsMarkdownPiece::Block(text.clone()),
         DataviewJsOutput::Span { text } => JsMarkdownPiece::Inline(text.clone()),
+        // Markdown keeps raw HTML, which Obsidian renders.
+        DataviewJsOutput::Html { html, .. } => JsMarkdownPiece::Block(html.clone()),
         DataviewJsOutput::Header { level, text } => {
             JsMarkdownPiece::Block(format!("{} {text}", "#".repeat((*level).clamp(1, 6))))
         }

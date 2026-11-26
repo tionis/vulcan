@@ -159,6 +159,11 @@ pub enum DataviewJsOutput {
     Span {
         text: String,
     },
+    /// A node a script attached to `dv.container`, as HTML and as text.
+    Html {
+        html: String,
+        text: String,
+    },
 }
 
 #[cfg(not(feature = "js_runtime"))]
@@ -637,6 +642,703 @@ if (__vulcanDeterministicStatic) {
   });
 }
 
+// A small DOM for scripts that build their output from elements, as
+// Obsidian scripts do with `document.createElement`, `dv.container`, and
+// Obsidian's `createEl` helpers. Nodes serialize to HTML; there is no
+// layout, styling, or events (listeners are accepted and never fire).
+const __vulcanVoidElements = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr",
+]);
+const __vulcanRawTextElements = new Set(["script", "style"]);
+
+function __vulcanEscapeHtml(text, attribute = false) {
+  const escaped = String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return attribute ? escaped.replace(/"/g, "&quot;") : escaped;
+}
+
+class VulcanNode {
+  constructor() {
+    this.parentNode = null;
+    this.childNodes = [];
+  }
+
+  get parentElement() {
+    return this.parentNode instanceof VulcanElement ? this.parentNode : null;
+  }
+
+  get firstChild() {
+    return this.childNodes[0] ?? null;
+  }
+
+  get lastChild() {
+    return this.childNodes[this.childNodes.length - 1] ?? null;
+  }
+
+  get nextSibling() {
+    const siblings = this.parentNode?.childNodes ?? [];
+    return siblings[siblings.indexOf(this) + 1] ?? null;
+  }
+
+  get previousSibling() {
+    const siblings = this.parentNode?.childNodes ?? [];
+    const index = siblings.indexOf(this);
+    return index > 0 ? siblings[index - 1] : null;
+  }
+
+  get textContent() {
+    return this.childNodes.map((child) => child.textContent).join("");
+  }
+
+  set textContent(value) {
+    this.replaceChildren(...(value == null || value === "" ? [] : [String(value)]));
+  }
+
+  static __adopt(node) {
+    const child = node instanceof VulcanNode ? node : new VulcanText(node);
+    if (child instanceof VulcanFragment) {
+      return child.childNodes.splice(0);
+    }
+    child.parentNode?.removeChild(child);
+    return [child];
+  }
+
+  insertBefore(node, reference) {
+    const children = VulcanNode.__adopt(node);
+    const index = reference == null ? this.childNodes.length : this.childNodes.indexOf(reference);
+    this.childNodes.splice(index < 0 ? this.childNodes.length : index, 0, ...children);
+    for (const child of children) {
+      child.parentNode = this;
+      this.__attached(child);
+    }
+    return node;
+  }
+
+  appendChild(node) {
+    return this.insertBefore(node, null);
+  }
+
+  append(...nodes) {
+    for (const node of nodes) {
+      this.appendChild(node);
+    }
+  }
+
+  prepend(...nodes) {
+    const first = this.firstChild;
+    for (const node of nodes) {
+      this.insertBefore(node, first);
+    }
+  }
+
+  removeChild(node) {
+    const index = this.childNodes.indexOf(node);
+    if (index >= 0) {
+      this.childNodes.splice(index, 1);
+      node.parentNode = null;
+    }
+    return node;
+  }
+
+  replaceChild(node, old) {
+    this.insertBefore(node, old);
+    return this.removeChild(old);
+  }
+
+  replaceChildren(...nodes) {
+    for (const child of this.childNodes.splice(0)) {
+      child.parentNode = null;
+    }
+    this.append(...nodes);
+  }
+
+  remove() {
+    this.parentNode?.removeChild(this);
+  }
+
+  hasChildNodes() {
+    return this.childNodes.length > 0;
+  }
+
+  contains(node) {
+    for (let current = node; current; current = current.parentNode) {
+      if (current === this) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  cloneNode(deep = false) {
+    const clone = this.__shallowClone();
+    if (deep) {
+      for (const child of this.childNodes) {
+        clone.appendChild(child.cloneNode(true));
+      }
+    }
+    return clone;
+  }
+
+  addEventListener() {}
+
+  removeEventListener() {}
+
+  dispatchEvent() {
+    return true;
+  }
+
+  __attached() {}
+
+  get outerHTML() {
+    return this.innerHTML;
+  }
+
+  get innerHTML() {
+    return this.childNodes.map((child) => child.outerHTML).join("");
+  }
+}
+
+class VulcanText extends VulcanNode {
+  constructor(text) {
+    super();
+    this.data = String(text);
+    this.nodeType = 3;
+    this.nodeName = "#text";
+  }
+
+  get textContent() {
+    return this.data;
+  }
+
+  set textContent(value) {
+    this.data = String(value ?? "");
+  }
+
+  get nodeValue() {
+    return this.data;
+  }
+
+  get outerHTML() {
+    return __vulcanRawTextElements.has(this.parentNode?.tagName?.toLowerCase())
+      ? this.data
+      : __vulcanEscapeHtml(this.data);
+  }
+
+  __shallowClone() {
+    return new VulcanText(this.data);
+  }
+}
+
+// Markup assigned to `innerHTML`, kept as written rather than parsed.
+class VulcanRawHtml extends VulcanNode {
+  constructor(html) {
+    super();
+    this.html = String(html);
+  }
+
+  get textContent() {
+    return this.html.replace(/<[^>]*>/g, "");
+  }
+
+  get outerHTML() {
+    return this.html;
+  }
+
+  __shallowClone() {
+    return new VulcanRawHtml(this.html);
+  }
+}
+
+class VulcanFragment extends VulcanNode {
+  constructor() {
+    super();
+    this.nodeType = 11;
+    this.nodeName = "#document-fragment";
+  }
+
+  __shallowClone() {
+    return new VulcanFragment();
+  }
+}
+
+class VulcanClassList {
+  constructor(element) {
+    this.__element = element;
+  }
+
+  get __names() {
+    return (this.__element.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
+  }
+
+  __set(names) {
+    if (names.length === 0) {
+      this.__element.removeAttribute("class");
+    } else {
+      this.__element.setAttribute("class", names.join(" "));
+    }
+  }
+
+  get length() {
+    return this.__names.length;
+  }
+
+  item(index) {
+    return this.__names[index] ?? null;
+  }
+
+  contains(name) {
+    return this.__names.includes(String(name));
+  }
+
+  add(...names) {
+    const current = this.__names;
+    this.__set(current.concat(names.map(String).filter((name) => !current.includes(name))));
+  }
+
+  remove(...names) {
+    this.__set(this.__names.filter((name) => !names.map(String).includes(name)));
+  }
+
+  toggle(name, force) {
+    const present = this.contains(name);
+    const wanted = force === undefined ? !present : !!force;
+    if (wanted && !present) this.add(name);
+    if (!wanted && present) this.remove(name);
+    return wanted;
+  }
+
+  toString() {
+    return this.__names.join(" ");
+  }
+
+  [Symbol.iterator]() {
+    return this.__names[Symbol.iterator]();
+  }
+}
+
+function __vulcanCssName(property) {
+  return property.startsWith("--") ? property : property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+}
+
+// An element's `style`: properties set by name (`style.color`,
+// `style.setProperty("--x", ...)`) or as `cssText`, kept in order.
+function __vulcanStyle(element) {
+  const declarations = () => {
+    const entries = new Map();
+    for (const part of (element.getAttribute("style") ?? "").split(";")) {
+      const colon = part.indexOf(":");
+      if (colon > 0) {
+        entries.set(part.slice(0, colon).trim(), part.slice(colon + 1).trim());
+      }
+    }
+    return entries;
+  };
+  const write = (entries) => {
+    const text = Array.from(entries, ([name, value]) => `${name}: ${value};`).join(" ");
+    if (text) element.setAttribute("style", text);
+    else element.removeAttribute("style");
+  };
+  const methods = {
+    setProperty(name, value) {
+      const entries = declarations();
+      if (value == null || value === "") entries.delete(__vulcanCssName(name));
+      else entries.set(__vulcanCssName(name), String(value));
+      write(entries);
+    },
+    getPropertyValue(name) {
+      return declarations().get(__vulcanCssName(name)) ?? "";
+    },
+    removeProperty(name) {
+      const entries = declarations();
+      const old = entries.get(__vulcanCssName(name)) ?? "";
+      entries.delete(__vulcanCssName(name));
+      write(entries);
+      return old;
+    },
+  };
+  return new Proxy(methods, {
+    get(target, property) {
+      if (property in target) return target[property];
+      if (property === "cssText") return element.getAttribute("style") ?? "";
+      if (typeof property !== "string") return undefined;
+      return target.getPropertyValue(property);
+    },
+    set(target, property, value) {
+      if (property === "cssText") {
+        write(new Map());
+        if (value) element.setAttribute("style", String(value));
+      } else {
+        target.setProperty(property, value);
+      }
+      return true;
+    },
+  });
+}
+
+class VulcanElement extends VulcanNode {
+  constructor(tagName) {
+    super();
+    this.tagName = String(tagName).toUpperCase();
+    this.nodeName = this.tagName;
+    this.nodeType = 1;
+    this.__attributes = new Map();
+    this.classList = new VulcanClassList(this);
+    this.style = __vulcanStyle(this);
+    const element = this;
+    this.dataset = new Proxy({}, {
+      get(_, key) {
+        return typeof key === "string" ? element.getAttribute(`data-${__vulcanCssName(key)}`) ?? undefined : undefined;
+      },
+      set(_, key, value) {
+        element.setAttribute(`data-${__vulcanCssName(String(key))}`, value);
+        return true;
+      },
+    });
+  }
+
+  get localName() {
+    return this.tagName.toLowerCase();
+  }
+
+  get children() {
+    return this.childNodes.filter((child) => child instanceof VulcanElement);
+  }
+
+  get firstElementChild() {
+    return this.children[0] ?? null;
+  }
+
+  get lastElementChild() {
+    const children = this.children;
+    return children[children.length - 1] ?? null;
+  }
+
+  get childElementCount() {
+    return this.children.length;
+  }
+
+  setAttribute(name, value) {
+    this.__attributes.set(String(name), String(value));
+  }
+
+  getAttribute(name) {
+    return this.__attributes.has(String(name)) ? this.__attributes.get(String(name)) : null;
+  }
+
+  hasAttribute(name) {
+    return this.__attributes.has(String(name));
+  }
+
+  removeAttribute(name) {
+    this.__attributes.delete(String(name));
+  }
+
+  toggleAttribute(name, force) {
+    const wanted = force === undefined ? !this.hasAttribute(name) : !!force;
+    if (wanted) this.setAttribute(name, "");
+    else this.removeAttribute(name);
+    return wanted;
+  }
+
+  getAttributeNames() {
+    return Array.from(this.__attributes.keys());
+  }
+
+  get attributes() {
+    return Array.from(this.__attributes, ([name, value]) => ({ name, value }));
+  }
+
+  get className() {
+    return this.getAttribute("class") ?? "";
+  }
+
+  set className(value) {
+    this.setAttribute("class", value);
+  }
+
+  get id() {
+    return this.getAttribute("id") ?? "";
+  }
+
+  set id(value) {
+    this.setAttribute("id", value);
+  }
+
+  get innerText() {
+    return this.textContent;
+  }
+
+  set innerText(value) {
+    this.textContent = value;
+  }
+
+  get innerHTML() {
+    return super.innerHTML;
+  }
+
+  set innerHTML(value) {
+    this.replaceChildren(...(value ? [new VulcanRawHtml(value)] : []));
+  }
+
+  get outerHTML() {
+    const name = this.localName;
+    const attributes = Array.from(this.__attributes, ([key, value]) =>
+      value === "" ? ` ${key}` : ` ${key}="${__vulcanEscapeHtml(value, true)}"`
+    ).join("");
+    if (__vulcanVoidElements.has(name)) {
+      return `<${name}${attributes}>`;
+    }
+    return `<${name}${attributes}>${this.innerHTML}</${name}>`;
+  }
+
+  insertAdjacentHTML(position, html) {
+    this.__insertAdjacent(position, new VulcanRawHtml(html));
+  }
+
+  insertAdjacentText(position, text) {
+    this.__insertAdjacent(position, new VulcanText(text));
+  }
+
+  insertAdjacentElement(position, element) {
+    this.__insertAdjacent(position, element);
+    return element;
+  }
+
+  __insertAdjacent(position, node) {
+    switch (String(position).toLowerCase()) {
+      case "beforebegin":
+        this.parentNode?.insertBefore(node, this);
+        break;
+      case "afterbegin":
+        this.insertBefore(node, this.firstChild);
+        break;
+      case "beforeend":
+        this.appendChild(node);
+        break;
+      case "afterend":
+        this.parentNode?.insertBefore(node, this.nextSibling);
+        break;
+    }
+  }
+
+  // Simple selectors only: a tag, `#id`, `.class`, or a combination
+  // (`div.card`); descendant and attribute selectors find nothing.
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = (node) => {
+      for (const child of node.children ?? []) {
+        if (child.matches(selector)) matches.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return matches;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  getElementsByTagName(name) {
+    return this.querySelectorAll(String(name));
+  }
+
+  getElementsByClassName(name) {
+    return this.querySelectorAll(`.${name}`);
+  }
+
+  matches(selector) {
+    return String(selector).split(",").some((part) => {
+      const match = /^\s*([A-Za-z][\w-]*|\*)?((?:[#.][\w-]+)*)\s*$/.exec(part);
+      if (!match) return false;
+      const [, tag, rest] = match;
+      if (tag && tag !== "*" && tag.toLowerCase() !== this.localName) return false;
+      for (const [, kind, name] of rest.matchAll(/([#.])([\w-]+)/g)) {
+        if (kind === "#" ? this.id !== name : !this.classList.contains(name)) return false;
+      }
+      return true;
+    });
+  }
+
+  closest(selector) {
+    for (let current = this; current instanceof VulcanElement; current = current.parentNode) {
+      if (current.matches(selector)) return current;
+    }
+    return null;
+  }
+
+  __shallowClone() {
+    const clone = new VulcanElement(this.localName);
+    for (const [name, value] of this.__attributes) {
+      clone.setAttribute(name, value);
+    }
+    return clone;
+  }
+
+  // Obsidian's element helpers.
+  createEl(tag, options = {}, callback) {
+    const element = __vulcanCreateEl(tag, options);
+    this.appendChild(element);
+    if (typeof callback === "function") callback(element);
+    return element;
+  }
+
+  createDiv(options = {}, callback) {
+    return this.createEl("div", options, callback);
+  }
+
+  createSpan(options = {}, callback) {
+    return this.createEl("span", options, callback);
+  }
+
+  empty() {
+    this.replaceChildren();
+  }
+
+  setText(text) {
+    this.textContent = text;
+  }
+
+  addClass(...names) {
+    this.classList.add(...names.flat());
+  }
+
+  addClasses(names) {
+    this.classList.add(...names);
+  }
+
+  removeClass(...names) {
+    this.classList.remove(...names.flat());
+  }
+
+  removeClasses(names) {
+    this.classList.remove(...names);
+  }
+
+  toggleClass(names, force) {
+    for (const name of [names].flat()) this.classList.toggle(name, force);
+  }
+
+  hasClass(name) {
+    return this.classList.contains(name);
+  }
+
+  setAttr(name, value) {
+    if (value == null || value === false) this.removeAttribute(name);
+    else this.setAttribute(name, value === true ? "" : value);
+  }
+
+  setAttrs(attributes) {
+    for (const [name, value] of Object.entries(attributes ?? {})) this.setAttr(name, value);
+  }
+
+  getAttr(name) {
+    return this.getAttribute(name);
+  }
+
+  getText() {
+    return this.textContent;
+  }
+
+  show() {
+    this.style.removeProperty("display");
+  }
+
+  hide() {
+    this.style.display = "none";
+  }
+
+  toggle(show) {
+    if (show) this.show();
+    else this.hide();
+  }
+
+  isShown() {
+    return this.style.display !== "none";
+  }
+
+  setCssStyles(styles) {
+    for (const [name, value] of Object.entries(styles ?? {})) this.style[name] = value;
+  }
+
+  setCssProps(props) {
+    for (const [name, value] of Object.entries(props ?? {})) this.style.setProperty(name, value);
+  }
+
+  appendText(text) {
+    this.appendChild(new VulcanText(text));
+  }
+}
+
+// Obsidian's `createEl(tag, { cls, text, attr, title, href, value, type,
+// placeholder, prepend, parent })`.
+function __vulcanCreateEl(tag, options = {}) {
+  const element = new VulcanElement(tag);
+  const settings = typeof options === "string" ? { cls: options } : options ?? {};
+  if (settings.cls) element.addClass(...[settings.cls].flat().flatMap((name) => String(name).split(/\s+/)).filter(Boolean));
+  if (settings.text != null) {
+    if (settings.text instanceof VulcanNode) element.appendChild(settings.text);
+    else element.textContent = settings.text;
+  }
+  for (const key of ["title", "href", "value", "type", "placeholder"]) {
+    if (settings[key] != null) element.setAttribute(key, settings[key]);
+  }
+  element.setAttrs(settings.attr);
+  if (settings.parent instanceof VulcanNode) {
+    if (settings.prepend) settings.parent.prepend(element);
+    else settings.parent.appendChild(element);
+  }
+  return element;
+}
+
+// The element a DataviewJS block renders into. Each node attached to it
+// leaves an `html` output at its place among the other outputs; the
+// outputs take the nodes' final HTML when the script finishes, so content
+// added after attaching still shows.
+class VulcanContainer extends VulcanElement {
+  constructor() {
+    super("div");
+    this.__nodes = [];
+  }
+
+  __attached(child) {
+    const index = this.__nodes.push(child) - 1;
+    __vulcan_emit(JSON.stringify({ kind: "html", html: `\u0000vulcan-node:${index}`, text: "" }));
+  }
+}
+
+const __vulcanDocument = {
+  createElement: (tag) => new VulcanElement(tag),
+  createElementNS: (_namespace, tag) => new VulcanElement(tag),
+  createTextNode: (text) => new VulcanText(text),
+  createDocumentFragment: () => new VulcanFragment(),
+  createComment: () => new VulcanFragment(),
+  getElementById: () => null,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+};
+__vulcanDocument.body = new VulcanElement("body");
+__vulcanDocument.head = new VulcanElement("head");
+__vulcanDocument.documentElement = new VulcanElement("html");
+
+// The final HTML and text of each node attached to `dv.container` since
+// the last call, in attachment order; the container starts over.
+function __vulcanTakeContainerNodes() {
+  const container = globalThis.dv?.container;
+  if (!(container instanceof VulcanContainer)) {
+    return "[]";
+  }
+  // A node taken off the container again renders nothing.
+  const nodes = container.__nodes
+    .splice(0)
+    .map((node) =>
+      node.parentNode === container ? { html: node.outerHTML, text: node.textContent } : { html: "", text: "" }
+    );
+  for (const child of container.childNodes.splice(0)) {
+    child.parentNode = null;
+  }
+  return JSON.stringify(nodes);
+}
+
 class DataArray {
   constructor(values = []) {
     this.values = Array.from(values ?? []);
@@ -946,6 +1648,9 @@ function __vulcanPlain(value) {
   }
   if (value instanceof Link || value instanceof __VulcanListPairWidget) {
     return value.markdown();
+  }
+  if (value instanceof VulcanNode) {
+    return value.outerHTML;
   }
   if (value instanceof DataArray) {
     return value.array().map(__vulcanPlain);
@@ -3448,21 +4153,16 @@ const dv = {
   },
   el(element, text, attrs = {}) {
     __vulcan_emit(JSON.stringify({ kind: "element", element: String(element), text: String(text), attrs: __vulcanPlain(attrs) }));
+    // Dataview returns the element; changes to it after the call are not
+    // rendered, since the output above is already fixed.
+    const created = __vulcanCreateEl(String(element), { cls: attrs?.cls, attr: attrs?.attr });
+    created.textContent = String(text);
+    return created;
   },
   span(text) {
     __vulcan_emit(JSON.stringify({ kind: "span", text: String(text) }));
   },
-  container: {
-    classes: [],
-    addClass(name) {
-      if (!this.classes.includes(name)) {
-        this.classes.push(name);
-      }
-    },
-    removeClass(name) {
-      this.classes = this.classes.filter((candidate) => candidate !== name);
-    },
-  },
+  container: new VulcanContainer(),
   io: {
     async load(path, _originFile) {
       return __vulcan_load(path);
@@ -5114,6 +5814,20 @@ Prefer vault.* over app.vault.* for full Vulcan-native functionality.`
 );
 
 globalThis.dv = dv;
+globalThis.document = __vulcanDocument;
+globalThis.activeDocument = __vulcanDocument;
+globalThis.createEl = (tag, options, callback) => {
+  const element = __vulcanCreateEl(tag, options);
+  if (typeof callback === "function") callback(element);
+  return element;
+};
+globalThis.createDiv = (options, callback) => globalThis.createEl("div", options, callback);
+globalThis.createSpan = (options, callback) => globalThis.createEl("span", options, callback);
+globalThis.createFragment = (callback) => {
+  const fragment = new VulcanFragment();
+  if (typeof callback === "function") callback(fragment);
+  return fragment;
+};
 globalThis.vault = vault;
 globalThis.tools = tools;
 globalThis.skills = skills;
@@ -5410,14 +6124,46 @@ globalThis.this = dv.current();
                     .catch(&ctx)
                     .map_err(|error| map_caught_runtime_error(&error, &timeout_description))
             })?;
-            let outputs = self.outputs.lock().map_err(|_| {
+            let container_nodes = self.context.with(|ctx| {
+                ctx.eval::<String, _>("__vulcanTakeContainerNodes()")
+                    .catch(&ctx)
+                    .map_err(|error| map_caught_runtime_error(&error, &timeout_description))
+            })?;
+            let mut outputs = self.outputs.lock().map_err(|_| {
                 DataviewJsError::Message("DataviewJS output lock poisoned".to_string())
             })?;
+            fill_container_outputs(&mut outputs, &container_nodes);
 
             Ok(DataviewJsResult {
                 outputs: outputs.clone(),
                 value,
             })
+        }
+    }
+
+    /// Give each `html` output left by a node attached to `dv.container`
+    /// that node's final HTML and text, from the prelude's
+    /// `__vulcanTakeContainerNodes()`.
+    fn fill_container_outputs(outputs: &mut [DataviewJsOutput], nodes_json: &str) {
+        #[derive(Deserialize)]
+        struct ContainerNode {
+            html: String,
+            text: String,
+        }
+        let nodes: Vec<ContainerNode> = serde_json::from_str(nodes_json).unwrap_or_default();
+        for output in outputs {
+            let DataviewJsOutput::Html { html, text } = output else {
+                continue;
+            };
+            let Some(node) = html
+                .strip_prefix("\u{0}vulcan-node:")
+                .and_then(|index| index.parse::<usize>().ok())
+                .and_then(|index| nodes.get(index))
+            else {
+                continue;
+            };
+            html.clone_from(&node.html);
+            text.clone_from(&node.text);
         }
     }
 
@@ -9347,6 +10093,86 @@ globalThis.this = dv.current();
             assert_eq!(value["dueDate"], 4);
             assert_eq!(value["emoji"], "gifts");
             assert_eq!(value["accented"], "un jeu de console");
+        }
+
+        #[test]
+        fn dataviewjs_scripts_can_build_output_from_dom_elements() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                dv.paragraph("before");
+                const style = document.createElement("style");
+                style.textContent = ".grid > .rhs { color: red; }";
+                dv.container.appendChild(style);
+                const grid = document.createElement("div");
+                grid.className = "grid";
+                dv.container.appendChild(grid);
+                // Filled after it is attached, as Obsidian scripts often do.
+                for (const [lhs, rhs] of [["a <b>", "1"], ["c", "2"]]) {
+                  const left = document.createElement("div");
+                  left.className = "lhs";
+                  left.textContent = lhs;
+                  grid.appendChild(left);
+                  grid.createDiv({ cls: "rhs", text: rhs });
+                }
+                dv.paragraph("after");
+                const card = dv.container.createEl("p", { cls: ["card", "wide"], attr: { "data-id": 7 } });
+                card.style.marginTop = "1em";
+                card.innerHTML = "<em>raw</em>";
+                const gone = dv.container.createSpan({ text: "gone" });
+                gone.remove();
+                ({
+                  node: grid.firstChild,
+                  found: grid.querySelectorAll("div.rhs").map((cell) => cell.textContent),
+                  classes: [...card.classList],
+                  text: grid.textContent,
+                })
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            let html = |html: &str, text: &str| DataviewJsOutput::Html {
+                html: html.to_string(),
+                text: text.to_string(),
+            };
+            assert_eq!(
+                result.outputs,
+                vec![
+                    DataviewJsOutput::Paragraph {
+                        text: "before".to_string()
+                    },
+                    html(
+                        "<style>.grid > .rhs { color: red; }</style>",
+                        ".grid > .rhs { color: red; }",
+                    ),
+                    html(
+                        "<div class=\"grid\"><div class=\"lhs\">a &lt;b&gt;</div><div class=\"rhs\">1</div>\
+                         <div class=\"lhs\">c</div><div class=\"rhs\">2</div></div>",
+                        "a <b>1c2",
+                    ),
+                    DataviewJsOutput::Paragraph {
+                        text: "after".to_string()
+                    },
+                    html(
+                        "<p class=\"card wide\" data-id=\"7\" style=\"margin-top: 1em;\"><em>raw</em></p>",
+                        "raw",
+                    ),
+                    html("", ""),
+                ]
+            );
+            let value = result.value.expect("script value");
+            // Nodes in values are their HTML; their parents make them cyclic.
+            assert_eq!(value["node"], "<div class=\"lhs\">a &lt;b&gt;</div>");
+            assert_eq!(value["found"], serde_json::json!(["1", "2"]));
+            assert_eq!(value["classes"], serde_json::json!(["card", "wide"]));
+            assert_eq!(value["text"], "a <b>1c2");
         }
 
         #[test]

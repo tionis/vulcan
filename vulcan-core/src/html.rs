@@ -698,6 +698,8 @@ fn render_dataview_js_result_html(
                 text,
                 attrs,
             } => render_generic_element_html(element, text, attrs),
+            // Sanitized as raw HTML in notes is.
+            DataviewJsOutput::Html { html, .. } => sanitize_html_fragment(html),
         })
         .filter(|section| !section.is_empty())
         .collect::<Vec<_>>()

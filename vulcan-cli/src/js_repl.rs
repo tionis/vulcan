@@ -548,7 +548,9 @@ fn print_outputs_human(outputs: &[DataviewJsOutput]) {
                     println!("- [{status}] {text}");
                 }
             }
-            DataviewJsOutput::Paragraph { text } | DataviewJsOutput::Span { text } => {
+            DataviewJsOutput::Paragraph { text }
+            | DataviewJsOutput::Span { text }
+            | DataviewJsOutput::Html { text, .. } => {
                 println!("{text}");
             }
             DataviewJsOutput::Header { level, text } => {

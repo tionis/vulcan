@@ -1269,9 +1269,9 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
   - `dv.taskList(tasks, groupByFile?)` — renders tasks, grouped by file unless `groupByFile` is `false` (Dataview's default); a task whose parent is also listed shows only beneath it
   - `dv.paragraph(text)` — renders text output
   - `dv.header(level, text)` — renders a heading
-  - `dv.el(element, text, [attrs])` — generic element output (maps to text in CLI)
+  - `dv.el(element, text, [attrs])` — generic element output (maps to text in CLI); returns the element, whose later changes are not rendered
   - `dv.span(text)` — inline text output
-  - `dv.container` — reference to the output container (in CLI: output buffer object; in WebUI: DOM element)
+  - `dv.container` — the element the block renders into. Scripts get a small DOM: `document.createElement()`, `createTextNode()`, `createDocumentFragment()`, and Obsidian's global and element `createEl()`/`createDiv()`/`createSpan()` helpers, with elements that keep text, classes, attributes, `style`, `dataset`, and children, accept `innerHTML` as raw markup, and answer simple selectors (`div.card`, `#id`). Each node attached to `dv.container` becomes an `html` output at its place among the other outputs, with its HTML as it stands when the script finishes. Markdown keeps that HTML raw, the HTML renderer sanitizes it like raw HTML in notes, and the terminal shows its text. There is no layout or styling, and event listeners never fire.
 
   **I/O methods:**
   - `dv.io.load(path)` — read a note's content, resolving to a string (read-only, within vault boundary only)
