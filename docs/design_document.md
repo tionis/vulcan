@@ -1264,7 +1264,7 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
   **Render methods:**
   - `dv.table(headers, rows)` — renders a table (CLI: columnar output; JSON: array-of-objects)
   - `dv.list(items)` — renders a list
-  - `dv.taskList(tasks, groupByFile?)` — renders tasks
+  - `dv.taskList(tasks, groupByFile?)` — renders tasks, grouped by file unless `groupByFile` is `false` (Dataview's default); a task whose parent is also listed shows only beneath it
   - `dv.paragraph(text)` — renders text output
   - `dv.header(level, text)` — renders a heading
   - `dv.el(element, text, [attrs])` — generic element output (maps to text in CLI)

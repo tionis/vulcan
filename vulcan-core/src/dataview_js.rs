@@ -3428,8 +3428,16 @@ const dv = {
   list(items) {
     __vulcan_emit(JSON.stringify({ kind: "list", items: __vulcanAsArray(items).map(__vulcanPlain) }));
   },
-  taskList(tasks, groupByFile = false) {
-    __vulcan_emit(JSON.stringify({ kind: "task_list", tasks: __vulcanAsArray(tasks).map(__vulcanPlain), group_by_file: !!groupByFile }));
+  // As in Dataview, tasks are grouped by file unless `groupByFile` is
+  // false, and a task whose parent is also listed shows only beneath it.
+  taskList(tasks, groupByFile = true) {
+    const items = __vulcanAsArray(tasks);
+    const lineKey = (item, line) => `${item?.path ?? ""}:${line}`;
+    const present = new Set(items.map((item) => lineKey(item, item?.line)));
+    const roots = items.filter(
+      (item) => !(item && item.parent != null && present.has(lineKey(item, item.parent)))
+    );
+    __vulcan_emit(JSON.stringify({ kind: "task_list", tasks: roots.map(__vulcanPlain), group_by_file: !!groupByFile }));
   },
   paragraph(text) {
     __vulcan_emit(JSON.stringify({ kind: "paragraph", text: String(text) }));
@@ -9350,6 +9358,45 @@ globalThis.this = dv.current();
                 value["pairMarkdown"],
                 "- [[Projects/Alpha.md|Alpha]]: active\n- [[Projects/Beta.md|Beta]]: backlog\n"
             );
+        }
+
+        #[test]
+        fn dataviewjs_task_lists_group_by_file_by_default() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                "const tasks = dv.current().file.tasks;\n\
+                 dv.taskList(tasks);\n\
+                 dv.taskList(tasks, false);",
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            let lists = result
+                .outputs
+                .iter()
+                .map(|output| match output {
+                    DataviewJsOutput::TaskList {
+                        tasks,
+                        group_by_file,
+                    } => (
+                        *group_by_file,
+                        tasks
+                            .iter()
+                            .map(|task| task["text"].clone())
+                            .collect::<Vec<_>>(),
+                    ),
+                    other => panic!("unexpected output: {other:?}"),
+                })
+                .collect::<Vec<_>>();
+            // `Ship release` sits under `Write docs`, so it shows only there.
+            let roots = vec![serde_json::json!("Write docs [due:: 2026-04-01]")];
+            assert_eq!(lists, vec![(true, roots.clone()), (false, roots)]);
         }
 
         #[test]
