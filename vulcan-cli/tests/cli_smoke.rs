@@ -34843,6 +34843,62 @@ fn mcp_rejects_the_removed_tool_pack_flags_with_an_explanation() {
 }
 
 #[test]
+fn mcp_stdio_delivers_subscribed_list_changes_to_listen_requests() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts dir");
+
+    let mut session = McpSession::start(&vault_root, &[]);
+    // The listen request is never answered while it is open, so it is
+    // written without waiting for a response.
+    session.send_notification(serde_json::json!({
+        "jsonrpc": "2.0", "id": "watch", "method": "subscriptions/listen",
+        "params": {
+            "notifications": { "promptsListChanged": true },
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }
+        }
+    }));
+    let seen = session.wait_for_notifications(&["notifications/subscriptions/acknowledged"]);
+    let ack = seen
+        .iter()
+        .find(|message| message["method"] == "notifications/subscriptions/acknowledged")
+        .expect("the subscription should be acknowledged");
+    assert_eq!(
+        ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        "watch"
+    );
+    assert_eq!(
+        ack["params"]["notifications"],
+        serde_json::json!({"promptsListChanged": true})
+    );
+
+    fs::write(
+        vault_root.join("AI/Prompts/summarize-note.md"),
+        "---\nname: summarize-note\n---\nSummarize {{note}}.\n",
+    )
+    .expect("prompt file should write");
+    let seen = session.wait_for_notifications(&["notifications/prompts/list_changed"]);
+    let change = seen
+        .iter()
+        .find(|message| message["method"] == "notifications/prompts/list_changed")
+        .expect("the change should be delivered");
+    assert_eq!(
+        change["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        "watch"
+    );
+    session.send_notification(serde_json::json!({
+        "jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": { "requestId": "watch" }
+    }));
+    session.finish();
+}
+
+#[test]
 fn mcp_server_serves_modern_requests_without_a_handshake() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

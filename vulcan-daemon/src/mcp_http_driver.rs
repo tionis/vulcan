@@ -33,7 +33,6 @@ use vulcan_app::mcp_core::{
     subscription_notification, MCP_HEADER_MISMATCH,
 };
 use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id, McpHttpProcessResult};
-use vulcan_app::mcp_protocol::McpMethodError;
 
 pub type McpHttpCoreFactory<C> = fn(McpHttpProtocolConfig) -> Result<C, String>;
 
@@ -375,19 +374,8 @@ fn handle_mcp_http_listen_with_timing<C: McpRequestCore>(
     }
     let filter = match listen_request(payload.get("params")) {
         Ok(filter) => filter,
-        Err(McpMethodError::JsonRpc {
-            code,
-            message,
-            data,
-        }) => {
-            return stream.respond(modern_http_response(Err(jsonrpc_error(
-                id, code, message, data,
-            ))));
-        }
-        Err(McpMethodError::Tool { message, .. }) => {
-            return stream.respond(modern_http_response(Err(jsonrpc_error(
-                id, -32602, message, None,
-            ))));
+        Err(error) => {
+            return stream.respond(modern_http_response(Err(error.into_jsonrpc_error(id))));
         }
     };
     let mut core = match create_mcp_http_core(context, authority) {

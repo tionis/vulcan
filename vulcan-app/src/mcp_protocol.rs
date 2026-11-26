@@ -265,6 +265,22 @@ pub enum McpMethodError {
 }
 
 impl McpMethodError {
+    /// The JSON-RPC error response for request `id`, where a tool result is
+    /// not an option (a tool error becomes invalid params).
+    #[must_use]
+    pub fn into_jsonrpc_error(self, id: Value) -> Value {
+        match self {
+            Self::JsonRpc {
+                code,
+                message,
+                data,
+            } => crate::mcp_dispatch::jsonrpc_error(id, code, message, data),
+            Self::Tool { message, .. } => {
+                crate::mcp_dispatch::jsonrpc_error(id, -32602, message, None)
+            }
+        }
+    }
+
     pub fn invalid_params(message: impl Into<String>) -> Self {
         Self::JsonRpc {
             code: -32602,

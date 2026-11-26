@@ -5,7 +5,8 @@
 //! `notifications/cancelled` can still reach a call that waits or runs.
 //! Everything else is answered in order on the reader. One writer serializes
 //! what goes to stdout, and a change watcher tells a legacy client when its
-//! tool, prompt, or resource lists change, without being asked.
+//! tool, prompt, or resource lists change, without being asked, and delivers
+//! the same to each open `subscriptions/listen` of a 2026-07-28 client.
 
 use serde_json::Value;
 use std::collections::HashSet;
@@ -16,6 +17,9 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::McpServerCore;
+use vulcan_app::mcp_core::{
+    listen_request, subscription_acknowledged, subscription_notification, McpSubscriptionFilter,
+};
 use vulcan_app::mcp_dispatch::jsonrpc_error;
 use vulcan_app::mcp_operations::{
     indeterminate_response, McpOperationLookup, McpOperationRegistry,
@@ -100,6 +104,17 @@ impl Tracker {
     }
 }
 
+/// An open `subscriptions/listen`: its request id, what it asked for, and a
+/// copy of the core whose list snapshot dates from when it was opened.
+struct Subscription {
+    key: String,
+    id: Value,
+    filter: McpSubscriptionFilter,
+    core: McpServerCore,
+}
+
+type Subscriptions = Arc<Mutex<Vec<Subscription>>>;
+
 fn id_key(id: &Value) -> String {
     serde_json::to_string(id).unwrap_or_default()
 }
@@ -112,6 +127,7 @@ pub(super) fn serve(
     output: Box<dyn Write + Send>,
 ) -> std::io::Result<()> {
     core.watch_list_changes();
+    core.offer_subscriptions();
     let operations = Arc::new(McpOperationRegistry::default());
     core.keep_operations(Arc::clone(&operations) as Arc<dyn McpOperationLookup>);
     let core = Arc::new(Mutex::new(core));
@@ -155,8 +171,14 @@ pub(super) fn serve(
         .collect::<Result<Vec<_>, _>>()?;
 
     let stop = Arc::new(AtomicBool::new(false));
+    let subscriptions: Subscriptions = Arc::default();
     let watcher = {
-        let (core, output, stop) = (Arc::clone(&core), Arc::clone(&output), Arc::clone(&stop));
+        let (core, output, stop, subscriptions) = (
+            Arc::clone(&core),
+            Arc::clone(&output),
+            Arc::clone(&stop),
+            Arc::clone(&subscriptions),
+        );
         std::thread::Builder::new()
             .name("vulcan-mcp-stdio-watch".to_string())
             .spawn(move || {
@@ -172,11 +194,31 @@ pub(super) fn serve(
                     for message in &changes {
                         send(&output, message);
                     }
+                    let mut subscriptions =
+                        subscriptions.lock().unwrap_or_else(PoisonError::into_inner);
+                    for subscription in subscriptions.iter_mut() {
+                        for change in subscription.core.list_changes() {
+                            if subscription.filter.wants(&change) {
+                                send(
+                                    &output,
+                                    &subscription_notification(&subscription.id, change),
+                                );
+                            }
+                        }
+                    }
                 }
             })?
     };
 
-    let result = read_requests(input, &core, &output, &tracker, &queue, request_timeout);
+    let result = read_requests(
+        input,
+        &core,
+        &output,
+        &tracker,
+        &queue,
+        &subscriptions,
+        request_timeout,
+    );
 
     drop(queue);
     tracker.drain(DRAIN);
@@ -242,6 +284,7 @@ fn read_requests(
     output: &Output,
     tracker: &Tracker,
     queue: &mpsc::SyncSender<(String, Value)>,
+    subscriptions: &Subscriptions,
     request_timeout: Duration,
 ) -> std::io::Result<()> {
     for line in input.lines() {
@@ -266,7 +309,33 @@ fn read_requests(
                 .get("params")
                 .and_then(|params| params.get("requestId"))
             {
-                tracker.cancel(id_key(id));
+                let key = id_key(id);
+                subscriptions
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .retain(|subscription| subscription.key != key);
+                tracker.cancel(key);
+            }
+            continue;
+        }
+        if let (Some("subscriptions/listen"), Some(id)) = (method, request.get("id")) {
+            match listen_request(request.get("params")) {
+                Ok(filter) => {
+                    let copy = core.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                    // Acknowledged before it is registered, so nothing on the
+                    // subscription can come first.
+                    send(output, &subscription_acknowledged(id, filter));
+                    subscriptions
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(Subscription {
+                            key: id_key(id),
+                            id: id.clone(),
+                            filter,
+                            core: copy,
+                        });
+                }
+                Err(error) => send(output, &error.into_jsonrpc_error(id.clone())),
             }
             continue;
         }
