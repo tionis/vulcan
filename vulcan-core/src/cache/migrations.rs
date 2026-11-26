@@ -217,6 +217,11 @@ impl MigrationRegistry {
                 "store the inline fields of list items",
                 schema::apply_schema_v39,
             ),
+            Migration::new(
+                40,
+                "store each note's property key order",
+                schema::apply_schema_v40,
+            ),
         ])
     }
 
@@ -788,7 +793,7 @@ mod tests {
         // Writes through any source table stamp the row with a new version.
         for statement in [
             "UPDATE documents SET file_size = 9 WHERE id = 'd1'",
-            "INSERT INTO properties VALUES ('d1', 'a: 1', '{\"a\":1}')",
+            "INSERT INTO properties (document_id, raw_yaml, canonical_json) VALUES ('d1', 'a: 1', '{\"a\":1}')",
             "UPDATE properties SET canonical_json = '{\"a\":2}' WHERE document_id = 'd1'",
             "INSERT INTO tags VALUES ('t1', 'd1', 'x')",
             "DELETE FROM tags WHERE id = 't1'",

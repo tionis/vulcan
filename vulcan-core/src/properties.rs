@@ -34,6 +34,10 @@ pub struct IndexedProperties {
     pub values: Vec<IndexedPropertyValue>,
     pub list_items: Vec<IndexedPropertyListItem>,
     pub diagnostics: Vec<PropertyTypeDiagnostic>,
+    /// Each key once, in the order Dataview's page object holds them:
+    /// frontmatter keys as written, then list-item fields, then the
+    /// remaining inline fields, each in document order.
+    pub key_order: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,6 +207,10 @@ pub struct NoteRecord {
     pub raw_inline_expressions: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub inline_expressions: Vec<EvaluatedInlineExpression>,
+    /// The page's property keys in Dataview's order (see
+    /// [`IndexedProperties::key_order`]); `properties` itself is sorted.
+    #[serde(skip)]
+    pub property_order: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,12 +341,19 @@ pub fn extract_indexed_properties(
         merge_property_json_values(&mut merged_properties, key, inline_values);
     }
 
+    let mut seen = HashSet::new();
+    let key_order = values
+        .iter()
+        .filter(|value| seen.insert(value.key.as_str()))
+        .map(|value| value.key.clone())
+        .collect();
     Ok(Some(IndexedProperties {
         raw_yaml,
         canonical_json: serde_json::to_string(&Value::Object(merged_properties))?,
         values,
         list_items,
         diagnostics,
+        key_order,
     }))
 }
 
@@ -1620,12 +1635,14 @@ type StoredNoteRow = (
     Option<String>,
     Option<String>,
     Option<i64>,
+    String,
 );
 
 const STORED_NOTE_COLUMNS: &str = "documents.id, documents.path, documents.filename, \
      documents.extension, documents.file_mtime, documents.file_size, \
      COALESCE(properties.canonical_json, '{}'), COALESCE(properties.raw_yaml, ''), \
-     documents.periodic_type, documents.periodic_date, documents.file_ctime";
+     documents.periodic_type, documents.periodic_date, documents.file_ctime, \
+     COALESCE(properties.key_order_json, '[]')";
 
 fn stored_note_row(row: &rusqlite::Row<'_>) -> Result<StoredNoteRow, rusqlite::Error> {
     Ok((
@@ -1640,6 +1657,7 @@ fn stored_note_row(row: &rusqlite::Row<'_>) -> Result<StoredNoteRow, rusqlite::E
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
+        row.get(11)?,
     ))
 }
 
@@ -1662,6 +1680,7 @@ fn stored_note_record(
         periodic_type,
         periodic_date,
         recorded_ctime,
+        key_order_json,
     ) = row;
     let properties =
         serde_json::from_str(&props_json).unwrap_or(Value::Object(serde_json::Map::default()));
@@ -1689,6 +1708,7 @@ fn stored_note_record(
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: serde_json::from_str(&key_order_json).unwrap_or_default(),
         },
     )
 }
@@ -4096,6 +4116,27 @@ mod tests {
                 "tags=list",
             ]
         );
+    }
+
+    #[test]
+    fn key_order_follows_dataview() {
+        let config = VaultConfig::default();
+        let parsed = parse_document(
+            concat!(
+                "---\nzeta: 1\nAlpha: 2\n---\n",
+                "Later:: a\n",
+                "zeta:: 3\n",
+                "- Item [Mid:: b]\n",
+                "- [ ] Task [due:: 2026-04-01]\n",
+            ),
+            &config,
+        );
+        let indexed = extract_indexed_properties(&parsed, &config)
+            .expect("properties should extract")
+            .expect("note has properties");
+        // Frontmatter as written, then list-item fields, then the rest;
+        // each key once, and task fields are not page keys.
+        assert_eq!(indexed.key_order, ["zeta", "Alpha", "Mid", "Later"]);
     }
 
     #[test]

@@ -1,5 +1,14 @@
 use rusqlite::Transaction;
 
+/// Each note's property keys in Dataview's order, which the canonical
+/// (sorted) properties JSON does not keep. The parser version bump that
+/// came with it re-parses existing notes.
+pub fn apply_schema_v40(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "ALTER TABLE properties ADD COLUMN key_order_json TEXT NOT NULL DEFAULT '[]';",
+    )
+}
+
 /// Typed inline fields of list items, which Dataview exposes on each item.
 /// The parser version bump that came with it re-parses existing notes.
 pub fn apply_schema_v39(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {

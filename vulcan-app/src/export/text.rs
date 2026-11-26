@@ -227,6 +227,7 @@ mod tests {
                 tasks: Vec::new(),
                 raw_inline_expressions: Vec::new(),
                 inline_expressions: Vec::new(),
+                property_order: Vec::new(),
             },
             content: content.to_string(),
         }

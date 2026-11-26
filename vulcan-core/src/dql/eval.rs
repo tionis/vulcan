@@ -1485,6 +1485,7 @@ pub(crate) fn synthetic_group_note(fields: &Map<String, Value>) -> NoteRecord {
         tasks: Vec::new(),
         raw_inline_expressions: Vec::new(),
         inline_expressions: Vec::new(),
+        property_order: Vec::new(),
     }
 }
 

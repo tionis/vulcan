@@ -4010,6 +4010,7 @@ SORT file.path ASC"#,
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: Vec::new(),
         }
     }
 

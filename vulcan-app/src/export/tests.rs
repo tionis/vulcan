@@ -1010,6 +1010,7 @@ fn epub_tag_targets_are_slugged_and_unique() {
                 tasks: Vec::new(),
                 raw_inline_expressions: Vec::new(),
                 inline_expressions: Vec::new(),
+                property_order: Vec::new(),
             },
             content: String::new(),
         },
@@ -1035,6 +1036,7 @@ fn epub_tag_targets_are_slugged_and_unique() {
                 tasks: Vec::new(),
                 raw_inline_expressions: Vec::new(),
                 inline_expressions: Vec::new(),
+                property_order: Vec::new(),
             },
             content: String::new(),
         },
@@ -1128,6 +1130,7 @@ fn write_sqlite_export_writes_expected_schema_and_rows() {
             value: Value::from(4),
             error: None,
         }],
+        property_order: Vec::new(),
     };
     let report = QueryReport {
         query: QueryAst {

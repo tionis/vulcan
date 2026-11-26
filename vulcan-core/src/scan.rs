@@ -2501,13 +2501,14 @@ fn insert_properties(
 ) -> Result<(), ScanError> {
     transaction.execute(
         "
-        INSERT INTO properties (document_id, raw_yaml, canonical_json)
-        VALUES (?1, ?2, ?3)
+        INSERT INTO properties (document_id, raw_yaml, canonical_json, key_order_json)
+        VALUES (?1, ?2, ?3, ?4)
         ",
         params![
             document_id,
             &properties.raw_yaml,
-            &properties.canonical_json
+            &properties.canonical_json,
+            serde_json::to_string(&properties.key_order).unwrap_or_else(|_| "[]".to_string())
         ],
     )?;
     Ok(())

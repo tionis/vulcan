@@ -35,6 +35,8 @@ pub struct NoteRecordWire {
     pub tasks: Vec<NoteTaskRecord>,
     pub raw_inline_expressions: Vec<String>,
     pub inline_expressions: Vec<EvaluatedInlineExpression>,
+    #[serde(default)]
+    pub property_order: Vec<String>,
 }
 
 impl From<NoteRecord> for NoteRecordWire {
@@ -60,6 +62,7 @@ impl From<NoteRecord> for NoteRecordWire {
             tasks: note.tasks,
             raw_inline_expressions: note.raw_inline_expressions,
             inline_expressions: note.inline_expressions,
+            property_order: note.property_order,
         }
     }
 }
@@ -89,6 +92,7 @@ impl NoteRecordWire {
             tasks: Vec::new(),
             raw_inline_expressions: Vec::new(),
             inline_expressions: Vec::new(),
+            property_order: Vec::new(),
         }
     }
 }
@@ -116,6 +120,7 @@ impl From<NoteRecordWire> for NoteRecord {
             tasks: note.tasks,
             raw_inline_expressions: note.raw_inline_expressions,
             inline_expressions: note.inline_expressions,
+            property_order: note.property_order,
         }
     }
 }
@@ -228,6 +233,7 @@ mod tests {
                 value: serde_json::json!(2),
                 error: Some("none".into()),
             }],
+            property_order: vec!["b".into(), "a".into()],
         };
         let text = serde_json::to_string(&NoteRecordWire::from(note.clone())).unwrap();
         let decoded: NoteRecordWire = serde_json::from_str(&text).unwrap();

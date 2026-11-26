@@ -8363,7 +8363,62 @@ globalThis.this = dv.current();
             .cloned()
             .unwrap_or_else(Map::new);
         fields.insert("file".to_string(), dataview_file_object(note, vault_root));
+        if !note.property_order.is_empty() {
+            fields.insert(
+                PAGE_KEY_ORDER.to_string(),
+                Value::Array(
+                    note.property_order
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
         Value::Object(fields)
+    }
+
+    /// Marks a page object with its keys in Dataview's order; JSON handed
+    /// to scripts writes the page's keys in that order and drops the mark.
+    const PAGE_KEY_ORDER: &str = "\u{0}vulcan:key-order";
+
+    /// A value serialized for scripts: objects marked with
+    /// [`PAGE_KEY_ORDER`] list `file` first and then their keys in that
+    /// order, then any others, as a Dataview page does.
+    struct ScriptJson<'a>(&'a Value);
+
+    impl Serialize for ScriptJson<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            match self.0 {
+                Value::Array(items) => serializer.collect_seq(items.iter().map(ScriptJson)),
+                Value::Object(object) => {
+                    let Some(order) = object.get(PAGE_KEY_ORDER).and_then(Value::as_array) else {
+                        return serializer.collect_map(
+                            object.iter().map(|(key, value)| (key, ScriptJson(value))),
+                        );
+                    };
+                    let mut keys = Vec::with_capacity(object.len());
+                    if object.contains_key("file") {
+                        keys.push("file");
+                    }
+                    let mut seen = std::collections::HashSet::new();
+                    let listed = order.iter().filter_map(Value::as_str);
+                    let rest = object.keys().map(String::as_str);
+                    for key in listed.chain(rest) {
+                        if key != PAGE_KEY_ORDER
+                            && key != "file"
+                            && object.contains_key(key)
+                            && seen.insert(key)
+                        {
+                            keys.push(key);
+                        }
+                    }
+                    serializer
+                        .collect_map(keys.into_iter().map(|key| (key, ScriptJson(&object[key]))))
+                }
+                other => other.serialize(serializer),
+            }
+        }
     }
 
     fn load_daily_page_object(
@@ -8849,7 +8904,8 @@ globalThis.this = dv.current();
     where
         T: Serialize,
     {
-        serde_json::to_string(&value)
+        serde_json::to_value(value)
+            .and_then(|value| serde_json::to_string(&ScriptJson(&value)))
             .map_err(|error| Exception::throw_message(ctx, &error.to_string()))
     }
 
@@ -9235,8 +9291,8 @@ globalThis.this = dv.current();
                 concat!(
                     "---\nProject Status: active\nkept-name: frontmatter\n---\n",
                     "kept name:: inline\n",
-                    "Twice Over:: 1\n",
                     "twice  over:: 2\n",
+                    "Twice Over:: 1\n",
                     "- Item [Item Kind:: list]\n",
                 ),
             )
@@ -9257,6 +9313,8 @@ globalThis.this = dv.current();
                   dueDate: dashboard["due-date"].month,
                   emoji: dashboard["🎅"],
                   accented: dashboard["noël"],
+                  keys: Object.keys(page),
+                  lazyKeys: Object.keys(dv.pages('"Keys"')[0]),
                 })
                 "#,
                 Some("Dashboard.md"),
@@ -9267,9 +9325,24 @@ globalThis.this = dv.current();
             assert_eq!(value["status"], "active");
             // An existing field keeps its name and value.
             assert_eq!(value["kept"], "frontmatter");
-            // Pooled in field-name order, as Vulcan's property map sorts keys;
-            // here that is also the order Dataview pools them in.
-            assert_eq!(value["twice"], serde_json::json!([1, 2]));
+            // Pooled in the order the keys first appear, as in Dataview.
+            assert_eq!(value["twice"], serde_json::json!([2, 1]));
+            // `file`, then frontmatter keys, list-item fields, and the other
+            // inline fields as written, then the canonical names.
+            let keys = serde_json::json!([
+                "file",
+                "Project Status",
+                "kept-name",
+                "Item Kind",
+                "kept name",
+                "twice  over",
+                "Twice Over",
+                "project-status",
+                "item-kind",
+                "twice-over",
+            ]);
+            assert_eq!(value["keys"], keys);
+            assert_eq!(value["lazyKeys"], keys);
             assert_eq!(value["itemKind"], "list");
             assert_eq!(value["dueDate"], 4);
             assert_eq!(value["emoji"], "gifts");

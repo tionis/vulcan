@@ -27,6 +27,7 @@ fn note(properties: Value, path: &str, name: &str, ext: &str) -> NoteRecord {
         tasks: Vec::new(),
         raw_inline_expressions: Vec::new(),
         inline_expressions: Vec::new(),
+        property_order: Vec::new(),
     }
 }
 

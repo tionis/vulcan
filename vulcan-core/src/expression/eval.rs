@@ -1003,6 +1003,7 @@ mod tests {
             tasks: Vec::new(),
             raw_inline_expressions: Vec::new(),
             inline_expressions: Vec::new(),
+            property_order: Vec::new(),
         }
     }
 
@@ -1039,6 +1040,7 @@ mod tests {
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: Vec::new(),
         };
         let formulas = BTreeMap::new();
         let mut ctx = EvalContext::new(&note, &formulas);
@@ -1080,6 +1082,7 @@ mod tests {
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: Vec::new(),
         };
         let formulas = BTreeMap::new();
         let mut ctx = EvalContext::new(&note, &formulas);
@@ -1513,6 +1516,7 @@ mod tests {
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: Vec::new(),
         };
         let mut formulas = BTreeMap::new();
         formulas.insert("total".to_string(), serde_json::json!(100));
@@ -1624,6 +1628,7 @@ mod tests {
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: Vec::new(),
         };
         let formulas = BTreeMap::new();
         let ctx = EvalContext::new(&note, &formulas).with_note_lookup(lookup);
@@ -1653,6 +1658,7 @@ mod tests {
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: Vec::new(),
         };
         let mut lookup = HashMap::new();
         lookup.insert("alice".to_string(), alice);
@@ -1718,6 +1724,7 @@ mod tests {
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: Vec::new(),
         };
         let mut lookup = HashMap::new();
         lookup.insert("alice".to_string(), alice);

@@ -655,6 +655,7 @@ mod tests {
             tasks: vec![],
             raw_inline_expressions: vec![],
             inline_expressions: vec![],
+            property_order: Vec::new(),
         };
         let formulas = BTreeMap::new();
         let ctx = EvalContext::new(&note, &formulas);
