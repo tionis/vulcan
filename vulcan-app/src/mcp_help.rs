@@ -377,6 +377,13 @@ fn static_help_topic(
 pub fn builtin_help_topics() -> Vec<HelpTopicReport> {
     vec![
         static_help_topic(
+            "mcp-clients",
+            HelpTopicKind::Guide,
+            "Connect MCP clients (Claude Code, claude.ai, ChatGPT): stdio, local HTTP, named remotes, what a connection sees, long calls, troubleshooting.",
+            include_str!("../../docs/guide/mcp-clients.md"),
+            &["mcp", "mcp-remotes", "chatgpt-mcp", "sandbox"],
+        ),
+        static_help_topic(
             "mcp-remotes",
             HelpTopicKind::Guide,
             "Named MCP remote setup, consent, multi-vault hosting, credentials, and recovery.",

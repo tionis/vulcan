@@ -47,7 +47,7 @@ Recommended setup:
 2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/mcp/operations/*`, `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
 3. In ChatGPT, open **Settings → Security and login**, enable **Developer mode**, then open **ChatGPT Plugins**, add a connection, and enter the public MCP URL including `/mcp`.
 4. Sign in through IndieAuth. On Vulcan's consent page, verify the client, identity, exact MCP URL,
-   vault, permission profile, scopes, and expiry before approving. The profile decides which tools ChatGPT sees.
+   vault, permission profile, and expiry before approving. The profile decides which tools ChatGPT sees.
 5. Inspect or revoke access later with `vulcan mcp connections list`, `show <id>`, or
    `revoke <id>`. Removing a remote revokes its grants unless `--preserve-grants` is explicit.
 

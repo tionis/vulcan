@@ -2,8 +2,10 @@
 
 Use `vulcan --vault /path/to/vault mcp` for local stdio, or add
 `--transport http --bind 127.0.0.1:8765` for local HTTP. Neither requires a daemon,
-named remote, or browser login. Named remotes provide HTTPS-facing OAuth access
-for hosted clients; they require a build with the `oauth` feature.
+named remote, or browser login; [Connecting MCP clients](mcp-clients.md) (`vulcan help
+mcp-clients`) covers them and what a connection sees. Named remotes provide HTTPS-facing OAuth
+access for hosted clients such as claude.ai and ChatGPT; they require a build with the `oauth`
+feature.
 
 ## Start with read-only access
 
@@ -17,8 +19,7 @@ vulcan mcp remote show personal-agent
 vulcan mcp remote run personal-agent
 ```
 
-The defaults are a loopback bind, the `readonly` ceiling and consent profile, and
-the `notes-read,search,status` packs. When the reverse proxy runs on another host, pass an explicit
+The defaults are a loopback bind and the `readonly` ceiling and consent profile. When the reverse proxy runs on another host, pass an explicit
 `--bind` such as the device's private-network address (for example a NetBird or Tailscale IP) or a
 wildcard like `0.0.0.0:8765`. Named remotes always require IndieAuth sign-in and Vulcan consent, so
 a wider bind does not admit unauthenticated requests, but the hop between proxy and Vulcan is plain
@@ -36,7 +37,8 @@ through DNS rebinding. HTTPS ingress supplies transport security; Vulcan still
 authenticates and authorizes each connection.
 
 The human signs in through IndieAuth, then separately approves a vault, permission
-profile, scopes, and expiry on Vulcan's consent page. The
+profile, and expiry on Vulcan's consent page. There is one OAuth scope, `mcp`; what a
+connection may do comes from the profile. The
 approval lasts 1 hour, 1 day, 7, 30 (the default) or 90 days, or 1 year, or until the
 end of a chosen day at most a year ahead, read in the server's time zone; a longer
 connection is approved again. The chosen profile decides both which tools the
@@ -48,9 +50,8 @@ synced `config.toml` defines, or widens, is refused as a ceiling, so a push to t
 it. The consent profiles a connection may choose can still come from the synced config, within the
 ceiling.
 
-For writable daily/task workflows, review `daily-wiki-agent` and the explicit pack
-configuration in [ChatGPT MCP setup](chatgpt-mcp.md), also available through
-`vulcan help chatgpt-mcp`.
+For writable daily/task workflows, review the `daily-wiki-agent` profile in
+[ChatGPT MCP setup](chatgpt-mcp.md), also available through `vulcan help chatgpt-mcp`.
 
 ## Connecting clients
 
@@ -174,4 +175,5 @@ sync moves only commits, so a synced vault needs `[git] auto_commit = true` with
 
 See [configuration reference](../reference/config.md) for storage conventions and
 [implementation acceptance](../specs/named-mcp-acceptance.md) for tested boundaries.
-Real ChatGPT account/public-ingress acceptance is a separate deployment check.
+Real client acceptance (claude.ai, ChatGPT) through public ingress is a separate deployment
+check.

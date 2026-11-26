@@ -103,11 +103,10 @@ Use `vulcan mcp connections list/show/revoke`, not manual JSON edits, to manage 
 permission profiles remain normal shared/local `.vulcan` configuration and are revalidated against
 both the approved snapshot and current remote ceiling on every authenticated request.
 
-Migration from a long-form remote invocation is explicit: register its vault, translate the old
-`--permissions` value into the remote ceiling/default, initialize the remote with the old exact
-`--public-url` and IndieAuth identity,
-then remove secrets from the shell/service command and run `vulcan mcp remote run <name>`. Existing
-direct flags remain supported and are not imported automatically.
+The direct `--public-url` and `--oauth-*` flags of `vulcan mcp` were removed and are refused. To
+move such a setup, register its vault, translate its `--permissions` value into the remote
+ceiling/default, initialize the remote with the old exact `--public-url` and IndieAuth identity,
+then run `vulcan mcp remote run <name>`.
 
 For resident remotes, `vulcan daemon start --detach` loads all named definitions at
 startup and supervises them under `listener.mcp-remotes`; restart the daemon after a remote

@@ -8854,7 +8854,9 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.13 Documentation and acceptance
 
-- [ ] MCP guides, ChatGPT guide, AGENTS template, `mcp-setup` skill; live acceptance with Claude Code, claude.ai and ChatGPT.
+- [x] MCP guides, ChatGPT guide, AGENTS template, `mcp-setup` skill: new [Connecting MCP clients](guide/mcp-clients.md) guide (`vulcan help mcp-clients`); tool packs, scopes and the removed direct OAuth flags gone from the remotes guide, ChatGPT guide, `config` help and skill.
+- [x] Live acceptance with Claude Code 2.1.332 (local stdio and static-token HTTP, headless): 2026-07-28 negotiated, tools, reads, writes, search, status, ambiguous-note input request (answered `cancel` headless), progress on HTTP event streams. Fixed on the way: server version, `last_scan` format, `no_frontmatter` with `lines`. Claude Code declares tasks on `server/discover` but not on `tools/call`, so no task was created (correct per spec); skills over MCP need an interactive session (not `-p`).
+- [ ] Live acceptance with claude.ai (named remote, IndieAuth, HTTPS proxy) and ChatGPT; Claude Code skills in an interactive session.
 
 ---
 

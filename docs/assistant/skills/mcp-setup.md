@@ -1,7 +1,7 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, which tools a connection sees, remote HTTPS setup, credential migration, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 24
+version: 25
 tools:
   - mcp
   - describe
@@ -22,7 +22,7 @@ debugging, and which tools a connection sees (its permission profile).
 
 ## Recommended Flow
 
-1. Read `vulcan help mcp-remotes` for client-independent setup, lifecycle, and recovery. For a local harness, use `vulcan mcp --transport stdio` (the default) or direct loopback HTTP. No daemon, browser, or named remote is required.
+1. Read `vulcan help mcp-clients` for connecting clients and what a connection sees, and `vulcan help mcp-remotes` for remote setup, lifecycle, and recovery. For a local harness, use `vulcan mcp --transport stdio` (the default) or direct loopback HTTP. No daemon, browser, or named remote is required.
 2. For ChatGPT or another hosted client, register the vault and preview `vulcan mcp remote init <name> --public-url <https-url> --identity <indieauth-url> --dry-run`. Apply it after reviewing the vault, bind address, and ceiling/default profiles. The ceiling must be a built-in such as `writer` or a device-local profile: define one in the device's `daemon.toml` with `vulcan config permissions profile create <name> --target device` (or move a local one with `vulcan config permissions profile move <name>`), never in the synced `.vulcan/config.toml`. On a device whose `daemon.toml` declares the remote, vault (with `source`) and profile, `vulcan daemon plan` then `vulcan daemon apply` sets it up in one step; see `vulcan help device-config`. When the vault itself describes its remote in `[mcp_remote]` of `.vulcan/config.toml`, a device opts in with `vulcan vault set <id> --serve-remote <bind>` and `vulcan daemon apply` instead of `mcp remote init`; `--no-serve-remote` stops serving it. While the opt-in stays, the remote keeps its identity and grants even if the vault's settings break.
 3. To expose another registered vault through the same URL, stop the remote and use `vulcan mcp remote set <name> --add-wiki <id> --dry-run`, then apply without `--dry-run`. Use `--wiki <id>` when updating one vault's ceiling or default profile. Start it with `vulcan mcp remote run <name>`, or use `vulcan daemon start --detach` to host configured remotes as resident listeners. Give the client the single public MCP URL printed by init/show. Proxy the MCP path and its `/operations/<id>` subpath, OAuth metadata paths, and `/oauth/*` to that listener. When the proxy runs on another host, set `--bind` to the device's private-network address or a wildcard; named remotes always authenticate, so this does not admit unauthenticated requests.
 4. Sign in with IndieAuth, then review and explicitly approve Vulcan's separate consent page. For a remote exposing multiple vaults, explicitly select one vault and its profile; each grant and MCP session stays bound to that selection. Pick the shortest expiry that fits (1 hour up to 1 year, or a last day at most a year ahead); a longer connection is approved again rather than extended. IndieAuth login alone grants no vault authority.
@@ -87,6 +87,6 @@ debugging, and which tools a connection sees (its permission profile).
 ## Example Moves
 
 - Initialize `personal-chatgpt`, run it, inspect the resulting connection, and revoke it without touching the vault.
-- Use the long-form direct `--oauth-*` flags only for debugging, external OIDC, or compatibility.
-- Debug why `tools/list` does not include a skill command under the selected pack/profile.
-- Compare `describe --format mcp` output against the live MCP registry.
+- Add Vulcan to Claude Code over stdio with `claude mcp add vulcan -- vulcan --vault <path> mcp --permissions <profile>`, or to claude.ai as a custom connector at the named remote's public MCP URL.
+- Debug why `tools/list` does not include a skill command under the selected profile.
+- Compare `vulcan --permissions <profile> describe --format mcp` output against the live MCP registry.

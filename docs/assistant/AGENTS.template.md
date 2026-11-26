@@ -40,7 +40,7 @@ Documentation workflow:
 - Use `vulcan help <topic>` for integrated documentation.
 - Use `vulcan help assistant-integration` for the external-runtime contract and `vulcan agent print-config --runtime <name>` for wrapper snippets.
 - Use `vulcan help device-keys` for Git-over-SSH authentication with the device key (enrollment on clone/add, forge setup, `device replace`, `devices revoke`).
-- Use `vulcan help mcp-remotes` for remote MCP setup, consent, credential migration, and safe recovery after an indeterminate write; `vulcan help chatgpt-mcp` adds the ChatGPT-specific setup.
+- Use `vulcan help mcp-clients` to connect an MCP client (stdio, local HTTP, hosted), `vulcan help mcp-remotes` for remote MCP setup, consent, credential migration, and safe recovery after an indeterminate write; `vulcan help chatgpt-mcp` adds the ChatGPT-specific setup.
 - Use `vulcan describe --format openai-tools` or `--format mcp` to export machine-readable tool schemas.
 - Run `vulcan agent install` after upgrading Vulcan. Skills marked with `metadata.vulcan.managed: true` refresh automatically; same-name unmarked skills are preserved.
 - Remove `metadata.vulcan.managed` before customizing a bundled skill to opt out of refreshes. Use `vulcan agent install --reset <skill>` to restore and re-enroll one bundled skill deliberately.

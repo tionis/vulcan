@@ -656,19 +656,18 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
     );
     lines.push(String::new());
     lines.push(
-        "Migration from a long-form remote invocation is explicit: register its vault, translate the old"
+        "The direct `--public-url` and `--oauth-*` flags of `vulcan mcp` were removed and are refused. To"
             .to_string(),
     );
     lines.push(
-        "`--permissions` value into the remote ceiling/default, initialize the remote with the old exact"
+        "move such a setup, register its vault, translate its `--permissions` value into the remote"
             .to_string(),
     );
-    lines.push("`--public-url` and IndieAuth identity,".to_string());
     lines.push(
-        "then remove secrets from the shell/service command and run `vulcan mcp remote run <name>`. Existing"
+        "ceiling/default, initialize the remote with the old exact `--public-url` and IndieAuth identity,"
             .to_string(),
     );
-    lines.push("direct flags remain supported and are not imported automatically.".to_string());
+    lines.push("then run `vulcan mcp remote run <name>`.".to_string());
     lines.push(String::new());
     lines.push(
         "For resident remotes, `vulcan daemon start --detach` loads all named definitions at"
