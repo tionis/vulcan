@@ -543,6 +543,14 @@ pub fn outcome_markdown(outcome: &NumeralsOutcome) -> (bool, String) {
 pub(crate) const RUNTIME_REQUIRED: &str =
     "Numerals calculations need Vulcan built with the `js_runtime` feature";
 
+/// Loads a Numerals engine on this thread ahead of its first render when
+/// the vault enables Numerals; later renders on the thread reuse it.
+pub fn prewarm(config: &crate::config::VaultConfig) {
+    if config.numerals.enabled {
+        engine::prewarm(config);
+    }
+}
+
 /// A mathjs engine for one render's Meta Bind math views, started on
 /// first use; see [`crate::metabind`].
 pub struct MathEvaluator {
@@ -566,25 +574,63 @@ impl MathEvaluator {
 
 #[cfg(feature = "js_runtime")]
 mod engine {
+    use std::cell::{Cell, RefCell};
     use std::time::{Duration, Instant};
 
-    use rquickjs::{CatchResultExt, Context, Runtime};
+    use rquickjs::{CatchResultExt, Context, Module, Runtime};
 
     use super::{InlineNumeralsMode, NumeralsBlockOutput, NumeralsNote, NumeralsStyle};
     use crate::config::{
         NumeralsCurrencyDisplay, NumeralsCurrencyPrecision, NumeralsNumberFormat, VaultConfig,
     };
 
-    const MATHJS: &str = include_str!("../vendor/mathjs/math.js");
-    const PRELUDE: &str = include_str!("numerals_prelude.js");
+    /// mathjs (with build.rs's speed patch) and `numerals_prelude.js` as one
+    /// module, compiled to `QuickJS` bytecode by `build.rs`, and its source.
+    const BYTECODE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/numerals.qjsbc"));
+    const SOURCE: &str = include_str!(concat!(env!("OUT_DIR"), "/numerals.js"));
     /// mathjs is about 650 KB of source; loading it takes longer than a
     /// typical script, so its budget is separate from the per-call timeout.
     const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// How many loaded engines a thread keeps for reuse: a render can hold
+    /// a Numerals engine and a Meta Bind one at once.
+    const IDLE_ENGINES: usize = 2;
+
+    thread_local! {
+        /// Loaded engines waiting for the next render on this thread, with
+        /// the settings they were configured for. Loading mathjs is most of
+        /// the cost of evaluating a note, so long-lived processes (the
+        /// language server, the daemon) and renders of many notes pay it
+        /// once per thread.
+        static IDLE: RefCell<Vec<Engine>> = const { RefCell::new(Vec::new()) };
+        /// Engines this thread has loaded, for tests of reuse.
+        static LOADS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// How many engines this thread has loaded.
+    #[cfg(test)]
+    pub(super) fn loads() -> usize {
+        LOADS.with(Cell::get)
+    }
+
+    /// Whether build.rs's bytecode loads, rather than the source fallback.
+    #[cfg(test)]
+    pub(super) fn bytecode_loads() -> bool {
+        let runtime = Runtime::new().expect("runtime");
+        let context = Context::full(&runtime).expect("context");
+        // SAFETY: as in `Engine::new`.
+        context.with(|ctx| unsafe { Module::load(ctx.clone(), BYTECODE) }.is_ok())
+    }
 
     struct Engine {
         runtime: Runtime,
         context: Context,
         timeout: Duration,
+        /// The settings and limits the engine was started with.
+        key: String,
+        /// Set when a call was interrupted or ran out of memory, which can
+        /// leave mathjs half-initialised.
+        poisoned: Cell<bool>,
     }
 
     /// The note's engine, or why it could not start.
@@ -595,7 +641,7 @@ mod engine {
     impl NoteEngine {
         pub(super) fn start(config: &VaultConfig, note: &NumeralsNote<'_>) -> Self {
             Self {
-                engine: Engine::new(config).and_then(|engine| {
+                engine: Engine::acquire(config).and_then(|engine| {
                     let metadata =
                         serde_json::to_string(&note.metadata).map_err(|error| error.to_string())?;
                     let references = serde_json::to_string(&note.references)
@@ -648,6 +694,12 @@ mod engine {
         }
     }
 
+    pub(super) fn prewarm(config: &VaultConfig) {
+        if let Ok(engine) = Engine::acquire(config) {
+            engine.release();
+        }
+    }
+
     /// mathjs alone, for Meta Bind views.
     pub(super) struct MathEngine {
         engine: Result<Engine, String>,
@@ -656,7 +708,7 @@ mod engine {
     impl MathEngine {
         pub(super) fn start(config: &VaultConfig) -> Self {
             Self {
-                engine: Engine::new(config),
+                engine: Engine::acquire(config),
             }
         }
 
@@ -684,6 +736,38 @@ mod engine {
                 parsed["value"].clone(),
             ))
         }
+    }
+
+    impl Drop for NoteEngine {
+        fn drop(&mut self) {
+            if let Ok(engine) = std::mem::replace(&mut self.engine, Err(String::new())) {
+                engine.release();
+            }
+        }
+    }
+
+    impl Drop for MathEngine {
+        fn drop(&mut self) {
+            if let Ok(engine) = std::mem::replace(&mut self.engine, Err(String::new())) {
+                engine.release();
+            }
+        }
+    }
+
+    fn engine_key(config: &VaultConfig) -> String {
+        let limits = &config.js_runtime;
+        format!(
+            "{}|{}|{}",
+            limits.memory_limit_mb,
+            limits.stack_limit_kb,
+            settings_json(config)
+        )
+    }
+
+    fn timeout(config: &VaultConfig) -> Duration {
+        Duration::from_secs(
+            u64::try_from(config.js_runtime.default_timeout_seconds.max(1)).unwrap_or(u64::MAX),
+        )
     }
 
     fn settings_json(config: &VaultConfig) -> String {
@@ -730,7 +814,46 @@ mod engine {
     }
 
     impl Engine {
-        fn new(config: &VaultConfig) -> Result<Self, String> {
+        /// A loaded engine for `config`: an idle one of this thread's, or a
+        /// new one.
+        fn acquire(config: &VaultConfig) -> Result<Self, String> {
+            let key = engine_key(config);
+            let idle = IDLE
+                .try_with(|idle| {
+                    let mut idle = idle.borrow_mut();
+                    let position = idle.iter().position(|engine| engine.key == key)?;
+                    Some(idle.swap_remove(position))
+                })
+                .ok()
+                .flatten();
+            match idle {
+                Some(mut engine) => {
+                    engine.timeout = timeout(config);
+                    Ok(engine)
+                }
+                None => Self::new(config, key),
+            }
+        }
+
+        /// Keeps the engine for the next render on this thread, unless a
+        /// call left it changed: an interrupted call, or an expression that
+        /// changed mathjs itself (`createUnit`, `config`, `import`).
+        fn release(self) {
+            if self.poisoned.get() || self.call("__numerals.pristine", &[]).as_deref() != Ok("true")
+            {
+                return;
+            }
+            let _ = IDLE.try_with(|idle| {
+                let mut idle = idle.borrow_mut();
+                if idle.len() >= IDLE_ENGINES {
+                    idle.remove(0);
+                }
+                idle.push(self);
+            });
+        }
+
+        fn new(config: &VaultConfig, key: String) -> Result<Self, String> {
+            LOADS.with(|loads| loads.set(loads.get() + 1));
             let limits = &config.js_runtime;
             let runtime = Runtime::new().map_err(|error| error.to_string())?;
             // mathjs needs room beyond a script's: at least 64 MB.
@@ -741,21 +864,33 @@ mod engine {
             runtime
                 .set_interrupt_handler(Some(Box::new(move || started.elapsed() >= LOAD_TIMEOUT)));
             let loaded = context.with(|ctx| -> Result<(), String> {
-                ctx.eval::<(), _>(MATHJS)
+                // SAFETY: `BYTECODE` was written by build.rs with the QuickJS
+                // this crate links (Cargo.lock pins one rquickjs-sys), for the
+                // target's byte order; QuickJS checks the bytecode version and
+                // the source is compiled instead when loading fails.
+                let module = match unsafe { Module::load(ctx.clone(), BYTECODE) } {
+                    Ok(module) => module,
+                    Err(_) => Module::declare(ctx.clone(), "numerals", SOURCE)
+                        .catch(&ctx)
+                        .map_err(|error| format!("mathjs failed to load: {error}"))?,
+                };
+                let (_, promise) = module
+                    .eval()
                     .catch(&ctx)
                     .map_err(|error| format!("mathjs failed to load: {error}"))?;
-                ctx.eval::<(), _>(PRELUDE)
+                promise
+                    .finish::<()>()
                     .catch(&ctx)
-                    .map_err(|error| format!("Numerals failed to load: {error}"))
+                    .map_err(|error| format!("mathjs failed to load: {error}"))
             });
             runtime.set_interrupt_handler(None);
             loaded?;
             let engine = Self {
                 runtime,
                 context,
-                timeout: Duration::from_secs(
-                    u64::try_from(limits.default_timeout_seconds.max(1)).unwrap_or(u64::MAX),
-                ),
+                timeout: timeout(config),
+                key,
+                poisoned: Cell::new(false),
             };
             engine.call("__numerals.configure", &[settings_json(config)])?;
             Ok(engine)
@@ -790,6 +925,12 @@ mod engine {
                     .map(Option::unwrap_or_default)
                     .map_err(|error| {
                         let message = error.to_string();
+                        if ["interrupted", "out of memory", "stack overflow"]
+                            .iter()
+                            .any(|fatal| message.contains(fatal))
+                        {
+                            self.poisoned.set(true);
+                        }
                         message
                             .strip_prefix("Error: ")
                             .unwrap_or(&message)
@@ -839,6 +980,8 @@ mod engine {
         }
     }
 
+    pub(super) fn prewarm(_config: &crate::config::VaultConfig) {}
+
     pub(super) struct MathEngine;
 
     impl MathEngine {
@@ -860,6 +1003,69 @@ mod engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "js_runtime")]
+    fn evaluate(config: &crate::config::VaultConfig, source: &str) -> Vec<String> {
+        let parsed = crate::parse_document(source, config);
+        evaluate_numerals_in_source::<std::collections::hash_map::RandomState>(
+            config, None, None, source, &parsed,
+        )
+        .iter()
+        .map(|region| outcome_markdown(&region.outcome).1)
+        .collect()
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn engines_load_the_precompiled_bytecode() {
+        assert!(engine::bytecode_loads());
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn engines_are_reused_until_an_expression_changes_mathjs() {
+        let mut config = crate::config::VaultConfig::default();
+        config.numerals.enabled = true;
+        let loads = engine::loads();
+        prewarm(&config);
+        assert_eq!(engine::loads(), loads + 1, "prewarming loads an engine");
+        assert_eq!(evaluate(&config, "`#: 2 + 2`\n"), ["4"]);
+        assert_eq!(evaluate(&config, "`#: $x = 3`\n"), ["3"]);
+        assert_eq!(
+            engine::loads(),
+            loads + 1,
+            "the second note reuses the engine"
+        );
+        assert!(
+            evaluate(&config, "`#: $x + 1`\n")[0].contains("Undefined symbol"),
+            "note state does not leak into the next note"
+        );
+
+        assert_eq!(
+            evaluate(&config, "`#: createUnit(\"zorp\", \"3 m\")`\n").len(),
+            1
+        );
+        assert!(
+            evaluate(&config, "`#: 2 zorp to m`\n")[0].contains("zorp"),
+            "a unit one note created is gone in the next"
+        );
+        assert_eq!(
+            engine::loads(),
+            loads + 2,
+            "an engine changed by a note is not reused"
+        );
+
+        config.numerals.dollar_currency = "CAD".to_string();
+        evaluate(&config, "`#: 1 + 1`\n");
+        assert_eq!(
+            engine::loads(),
+            loads + 3,
+            "other settings load their own engine"
+        );
+        config.numerals.dollar_currency = "USD".to_string();
+        evaluate(&config, "`#: 1 + 1`\n");
+        assert_eq!(engine::loads(), loads + 3, "and the first one is kept");
+    }
 
     #[test]
     fn styles_follow_the_fence_language_then_the_config() {

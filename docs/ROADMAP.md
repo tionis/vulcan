@@ -8763,6 +8763,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 - [x] `math*` blocks and `#:`/`#=:`/`#$:`/`#$=:` inline triggers with Numerals' rewrites, `@prev`/`@total`, emitters, directives, currency units, metadata scope, cross-note references, and `$` note globals (a port of the plugin's MIT processing in `numerals_prelude.js`).
 - [x] Rendering in Markdown, HTML, and editor regions; `vulcan numerals eval` and `vulcan numerals apply` for `@[name]` insertion lines with `--dry-run`.
 - [x] `[numerals]` config (off by default) and settings import; `docs/guide/live-documents.md`, skills, tests.
+- [x] Engine cost: build-time QuickJS bytecode for mathjs and the prelude, a checked typed-function sort patch, and per-thread engine reuse that discards engines an expression changed (`createUnit`, `config`, `import`).
 
 ---
 

@@ -260,8 +260,25 @@ Numerals evaluates with mathjs; Vulcan bundles mathjs 15.2.0 (Apache-2.0, vendor
 `vulcan-core/vendor/mathjs/` with its license) and a port of the plugin's processing
 (`vulcan-core/src/numerals_prelude.js`, MIT, from Numerals 1.10.2) into a dedicated QuickJS engine
 with no vault access, so calculator blocks evaluate in every vault, trusted or not, whenever
-`js_runtime` is compiled in. The engine starts once per rendered note that has Numerals regions;
-the note's metadata and the metadata of the notes its references name are passed in as data.
+`js_runtime` is compiled in. Each rendered note that has Numerals regions starts from a clean
+note state; the note's metadata and the metadata of the notes its references name are passed in as
+data.
+
+Engine cost. Loading mathjs dominates evaluation, so:
+
+- `vulcan-core/build.rs` compiles mathjs and the prelude to QuickJS bytecode at build time, so an
+  engine loads in tens of milliseconds instead of compiling about 650 KB of JavaScript. If the
+  bytecode does not load (another QuickJS build), the same source is compiled at runtime instead.
+- The build applies a small, checked patch to mathjs's bundled typed-function: its signature sort
+  remembers per-signature counts instead of recounting them on every comparison, which halves
+  the first `math.evaluate` and leaves the sort order unchanged. The vendored file stays as
+  released.
+- Each thread keeps up to two loaded engines, keyed by the `[numerals]` settings and
+  `[js_runtime]` limits, and reuses them for later notes, so the language server, the daemon, and
+  renders of many notes pay the load once. Note state (metadata, `$` globals, `@prev`) is reset per
+  note. An engine is discarded instead of reused when a call was interrupted or ran out of memory,
+  or when an expression changed mathjs itself (`createUnit(...)`, `config(...)`, `import(...)`), so
+  one note's units or settings never reach another.
 
 Numerals is off until configured (`[numerals] enabled = true`, or `vulcan config import numerals`,
 which turns it on): other tools render ` ```math ` blocks as LaTeX.

@@ -50,6 +50,10 @@ vulcan-sync = { path = "../vulcan-sync", version = "0.4.0" }
 yaml_serde.workspace = true
 zip.workspace = true
 
+[build-dependencies]
+# Compiles the Numerals engine (mathjs) to QuickJS bytecode; see build.rs.
+rquickjs = { workspace = true, optional = true }
+
 [dev-dependencies]
 # Tests stamp `Utc::now()`; the library itself takes the clock from callers.
 chrono = { workspace = true, features = ["clock"] }

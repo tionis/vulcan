@@ -144,6 +144,14 @@ impl EditorSession {
         &self.config
     }
 
+    /// Prepares the calling thread to render this vault's notes: loads a
+    /// Numerals engine when the vault enables Numerals, so the first render
+    /// that needs one does not wait for mathjs. Transports call it on the
+    /// threads that answer render requests.
+    pub fn prewarm_renderer(&self) {
+        vulcan_core::numerals::prewarm(&self.config);
+    }
+
     #[must_use]
     pub fn encoding(&self) -> PositionEncoding {
         self.encoding

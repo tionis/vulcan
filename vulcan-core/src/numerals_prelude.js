@@ -9,10 +9,24 @@
 //
 // Rust drives it through `globalThis.__numerals` with JSON strings:
 // configure(settings), beginNote(metadata, references), block(source, style),
-// and inline(expression, mode, style, continuesSection).
+// inline(expression, mode, style, continuesSection), and pristine().
 (function () {
   "use strict";
   const math = globalThis.math;
+  // Vulcan reuses a loaded engine for later notes. Expressions can change
+  // mathjs itself (`createUnit(...)`, `config(...)`, `import(...)`), which
+  // must not leak into another note, so these record that they ran and
+  // pristine() tells Rust to discard the engine.
+  const original = { createUnit: math.createUnit, config: math.config, import: math.import };
+  let changed = false;
+  const guarded = {};
+  for (const name of Object.keys(original)) {
+    guarded[name] = function () {
+      if (name !== "config" || arguments.length > 0) changed = true;
+      return original[name].apply(math, arguments);
+    };
+  }
+  original.import.call(math, guarded, { override: true });
   const MAX_FIXED_FORMAT_LEADING_DECIMAL_ZEROES = 5;
   const MIN_DECIMAL_PLACES = 0;
   const MAX_DECIMAL_PLACES = 20;
@@ -79,7 +93,7 @@
     for (const entry of currencyMap) {
       if (entry.currency && !createdUnits.has(entry.currency)) {
         try {
-          math.createUnit(entry.currency, { aliases: [entry.currency.toLowerCase(), entry.symbol] });
+          original.createUnit.call(math, entry.currency, { aliases: [entry.currency.toLowerCase(), entry.symbol] });
         } catch (_) {
           // The unit exists already, or the symbol is not a valid alias.
         }
@@ -755,5 +769,9 @@
     return JSON.stringify({ text: formatted.text, tex: false });
   }
 
-  globalThis.__numerals = { configure, beginNote, block, inline };
+  function pristine() {
+    return changed ? "false" : "true";
+  }
+
+  globalThis.__numerals = { configure, beginNote, block, inline, pristine };
 })();

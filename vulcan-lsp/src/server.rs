@@ -481,10 +481,13 @@ impl<'c> Server<'c> {
         let (jobs, job_receiver) = unbounded::<Job>();
         for index in 0..READER_THREADS {
             let receiver = job_receiver.clone();
+            let warm = session.clone();
             threads.push(
                 std::thread::Builder::new()
                     .name(format!("vulcan-lsp-reader-{index}"))
                     .spawn(move || {
+                        warm.prewarm_renderer();
+                        drop(warm);
                         for job in receiver {
                             job();
                         }
