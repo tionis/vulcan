@@ -13,7 +13,7 @@ fn main() {
 mod numerals {
     use std::path::PathBuf;
 
-    use rquickjs::{Context, Module, Runtime, WriteOptions, WriteOptionsEndianness};
+    use rquickjs::{Context, Module, Runtime};
 
     const MATHJS: &str = "vendor/mathjs/math.js";
     const PRELUDE: &str = "src/numerals_prelude.js";
@@ -65,20 +65,19 @@ mod numerals {
              (function () {{\n{mathjs}\n}}).call(globalThis);\n{prelude}"
         );
 
-        let endianness = match std::env::var("CARGO_CFG_TARGET_ENDIAN").as_deref() {
-            Ok("big") => WriteOptionsEndianness::Big,
-            _ => WriteOptionsEndianness::Little,
-        };
+        // The bytecode is the same for every target: this QuickJS (quickjs-ng,
+        // pinned through rquickjs-sys in Cargo.lock) writes it little-endian
+        // with fixed-width fields on any host and byte-swaps when a big-endian
+        // target reads it (its `JS_WRITE_OBJ_BSWAP` is obsolete and 0), atoms
+        // go through a table, BigInt limbs are 32-bit everywhere, and nothing
+        // depends on pointer width. A cross build, whose build script runs on
+        // the host, therefore embeds bytecode the target can load; a version
+        // mismatch fails the load and `numerals.rs` compiles the source.
         let runtime = Runtime::new().expect("QuickJS runtime should start");
         let context = Context::full(&runtime).expect("QuickJS context should start");
         let bytecode = context.with(|ctx| {
             Module::declare(ctx.clone(), "numerals", source.clone())
-                .and_then(|module| {
-                    module.write(WriteOptions {
-                        endianness,
-                        ..WriteOptions::default()
-                    })
-                })
+                .and_then(|module| module.write(rquickjs::WriteOptions::default()))
                 .unwrap_or_else(|error| {
                     let detail = ctx.catch();
                     panic!("the Numerals engine should compile: {error}: {detail:?}")

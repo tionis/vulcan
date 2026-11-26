@@ -613,6 +613,26 @@ mod engine {
         LOADS.with(Cell::get)
     }
 
+    /// Whether the source compiled for a big-endian target writes the same
+    /// bytes build.rs embedded, which is what lets a cross build's host-run
+    /// build script embed bytecode any target loads.
+    #[cfg(test)]
+    pub(super) fn bytecode_is_target_independent() -> bool {
+        let runtime = Runtime::new().expect("runtime");
+        let context = Context::full(&runtime).expect("context");
+        let written = context.with(|ctx| {
+            Module::declare(ctx.clone(), "numerals", SOURCE)
+                .and_then(|module| {
+                    module.write(rquickjs::WriteOptions {
+                        endianness: rquickjs::WriteOptionsEndianness::Big,
+                        ..rquickjs::WriteOptions::default()
+                    })
+                })
+                .expect("the engine source compiles")
+        });
+        written == BYTECODE
+    }
+
     /// Whether build.rs's bytecode loads, rather than the source fallback.
     #[cfg(test)]
     pub(super) fn bytecode_loads() -> bool {
@@ -865,9 +885,10 @@ mod engine {
                 .set_interrupt_handler(Some(Box::new(move || started.elapsed() >= LOAD_TIMEOUT)));
             let loaded = context.with(|ctx| -> Result<(), String> {
                 // SAFETY: `BYTECODE` was written by build.rs with the QuickJS
-                // this crate links (Cargo.lock pins one rquickjs-sys), for the
-                // target's byte order; QuickJS checks the bytecode version and
-                // the source is compiled instead when loading fails.
+                // this crate links (Cargo.lock pins one rquickjs-sys), whose
+                // bytecode does not depend on the target (see build.rs);
+                // QuickJS checks the bytecode version and the source is
+                // compiled instead when loading fails.
                 let module = match unsafe { Module::load(ctx.clone(), BYTECODE) } {
                     Ok(module) => module,
                     Err(_) => Module::declare(ctx.clone(), "numerals", SOURCE)
@@ -1019,6 +1040,10 @@ mod tests {
     #[test]
     fn engines_load_the_precompiled_bytecode() {
         assert!(engine::bytecode_loads());
+        assert!(
+            engine::bytecode_is_target_independent(),
+            "QuickJS bytecode now depends on byte order; build.rs must write it for the target"
+        );
     }
 
     #[cfg(feature = "js_runtime")]
