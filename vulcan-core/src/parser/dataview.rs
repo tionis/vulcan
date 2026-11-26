@@ -431,8 +431,10 @@ fn parse_list_item_block_id(text: &str) -> Option<String> {
     Some(captures.name("id")?.as_str().to_string())
 }
 
+/// An inline field's key as Dataview keeps it: formatting such as `**` is
+/// stripped, but case and inner spacing stay as written.
 fn normalize_inline_field_key(value: &str) -> String {
-    strip_inline_key_formatting(value).trim().to_lowercase()
+    strip_inline_key_formatting(value).trim().to_string()
 }
 
 fn visible_line_text(
@@ -784,8 +786,8 @@ mod tests {
         let extraction = extract_dataview_metadata(source, &[], &[block]);
 
         assert_eq!(extraction.inline_fields.len(), 4);
-        assert_eq!(extraction.inline_fields[0].key, "due date");
-        assert_eq!(extraction.inline_fields[1].key, "noël");
+        assert_eq!(extraction.inline_fields[0].key, "Due Date");
+        assert_eq!(extraction.inline_fields[1].key, "Noël");
         assert_eq!(extraction.inline_fields[2].key, "snake_case");
         assert_eq!(extraction.inline_fields[3].key, "🎅");
     }

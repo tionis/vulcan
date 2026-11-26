@@ -9266,8 +9266,9 @@ globalThis.this = dv.current();
             assert_eq!(value["status"], "active");
             // An existing field keeps its name and value.
             assert_eq!(value["kept"], "frontmatter");
-            // Pooled in field-name order: Vulcan's property map is sorted by key.
-            assert_eq!(value["twice"], serde_json::json!([2, 1]));
+            // Pooled in field-name order, as Vulcan's property map sorts keys;
+            // here that is also the order Dataview pools them in.
+            assert_eq!(value["twice"], serde_json::json!([1, 2]));
             assert_eq!(value["itemKind"], "list");
             assert_eq!(value["dueDate"], 4);
             assert_eq!(value["emoji"], "gifts");
@@ -11705,26 +11706,7 @@ shell = "allow"
 
         /// Paths where Vulcan's run of the probe still differs from Obsidian's. Remove an
         /// entry once its fix lands: the test fails when a listed path no longer differs.
-        const PROBE_KNOWN_DIVERGENCES: &[&str] = &[
-            ".pageKeys.Inline",
-            ".pageKeys.Inline Date",
-            ".pageKeys.Inline Duration",
-            ".pageKeys.Inline Link",
-            ".pageKeys.Inline Number",
-            ".pageKeys.inline date",
-            ".pageKeys.inline duration",
-            ".pageKeys.inline link",
-            ".pageKeys.inline number",
-            ".pageValues.Inline",
-            ".pageValues.Inline Date",
-            ".pageValues.Inline Duration",
-            ".pageValues.Inline Link",
-            ".pageValues.Inline Number",
-            ".pageValues.inline date",
-            ".pageValues.inline duration",
-            ".pageValues.inline link",
-            ".pageValues.inline number",
-        ];
+        const PROBE_KNOWN_DIVERGENCES: &[&str] = &[];
 
         #[test]
         fn dataviewjs_probe_matches_obsidian() {

@@ -4208,7 +4208,7 @@ mod tests {
             "list".to_string(),
         )));
         assert!(dashboard_properties.contains(&(
-            "due date".to_string(),
+            "Due Date".to_string(),
             "inline".to_string(),
             None,
             None,
@@ -4235,7 +4235,7 @@ mod tests {
             "date".to_string(),
         )));
         assert!(dashboard_properties.contains(&(
-            "noël".to_string(),
+            "Noël".to_string(),
             "inline".to_string(),
             Some("un jeu de console".to_string()),
             None,
