@@ -703,30 +703,60 @@ struct HostedOperations {
     authority: McpSessionAuthority,
 }
 
+impl McpHttpOperations {
+    /// The caller's hosted ledger record for this operation, if any.
+    fn hosted_status(
+        &self,
+        operation_id: &str,
+    ) -> Option<crate::mcp_hosted::McpOperationStatusReport> {
+        self.hosted.as_ref().and_then(|hosted| {
+            crate::mcp_hosted::named_mcp_operation_status(
+                &hosted.ledger,
+                &hosted.named,
+                &hosted.authority,
+                operation_id,
+            )
+        })
+    }
+}
+
 impl McpOperationLookup for McpHttpOperations {
     fn get(&self, operation_id: &str) -> Option<Value> {
-        self.hosted
-            .as_ref()
-            .and_then(|hosted| {
-                crate::mcp_hosted::named_mcp_operation_status(
-                    &hosted.ledger,
-                    &hosted.named,
-                    &hosted.authority,
-                    operation_id,
-                )
-            })
+        self.hosted_status(operation_id)
             .and_then(|report| serde_json::to_value(report).ok())
             .or_else(|| self.owned.get(operation_id))
     }
 
-    // Tasks are the calls this listener records; hosted mutations keep their
-    // durable ledger and `status_path` instead.
+    // Tasks are the calls this listener records, which carry their result.
+    // A hosted mutation from before a restart is answered from its durable
+    // ledger record instead.
     fn task(&self, operation_id: &str) -> Option<Value> {
-        self.owned.task(operation_id)
+        self.owned.task(operation_id).or_else(|| {
+            self.hosted_status(operation_id)
+                .map(|report| crate::mcp_hosted::hosted_task(&report))
+        })
     }
 
+    // A hosted mutation from before a restart no longer runs here; its
+    // ledger records the request, and the task reports how it ended.
     fn cancel(&self, operation_id: &str) -> bool {
         self.owned.cancel(operation_id)
+            || self.hosted.as_ref().is_some_and(|hosted| {
+                self.hosted_status(operation_id).is_some()
+                    && hosted
+                        .ledger
+                        .request_cancel(
+                            operation_id,
+                            u64::try_from(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis(),
+                            )
+                            .unwrap_or(u64::MAX),
+                        )
+                        .is_ok()
+            })
     }
 }
 

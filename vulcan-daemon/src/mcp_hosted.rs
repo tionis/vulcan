@@ -84,6 +84,61 @@ pub fn named_mcp_operation_status(
         })
 }
 
+/// A hosted mutation as a task of the tasks extension, from its durable ledger
+/// record. The process that ran it keeps the call's own result in memory; this
+/// is what a later process (after a restart) can still say: a success names
+/// its commit state, since the result itself is not stored.
+#[must_use]
+pub fn hosted_task(report: &McpOperationStatusReport) -> Value {
+    use vulcan_app::mcp_operations::{iso_timestamp, TASK_POLL_INTERVAL_MS};
+    let id = &report.operation_id;
+    let detail = report.detail.clone().unwrap_or_default();
+    let status = serde_json::to_value(report).unwrap_or(Value::Null);
+    let mut task = serde_json::json!({
+        "taskId": id,
+        "createdAt": iso_timestamp(report.updated_unix_ms),
+        "lastUpdatedAt": iso_timestamp(report.updated_unix_ms),
+        "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+        "ttlMs": Value::Null,
+    });
+    let failed = |message: String| serde_json::json!({"code": -32603, "message": message, "data": status.clone()});
+    let (state, message, outcome) = match report.state {
+        HostedJobState::Queued | HostedJobState::Running => {
+            ("working", "the operation is running".to_string(), None)
+        }
+        HostedJobState::Succeeded => (
+            "completed",
+            "the operation succeeded".to_string(),
+            Some((
+                "result",
+                serde_json::json!({
+                    "content": [{"type": "text", "text": format!(
+                        "Operation `{id}` succeeded. Its result was not kept after the server restarted; read the vault for its effect."
+                    )}],
+                    "structuredContent": status.clone(),
+                    "isError": false,
+                }),
+            )),
+        ),
+        HostedJobState::Failed => {
+            let message = format!("the operation failed: {detail}");
+            ("failed", message.clone(), Some(("error", failed(message))))
+        }
+        HostedJobState::Indeterminate | HostedJobState::Interrupted => {
+            let message = format!(
+                "the operation's outcome is unknown: {detail}; inspect the vault before retrying"
+            );
+            ("failed", message.clone(), Some(("error", failed(message))))
+        }
+    };
+    task["status"] = Value::from(state);
+    task["statusMessage"] = Value::from(message);
+    if let Some((key, value)) = outcome {
+        task[key] = value;
+    }
+    task
+}
+
 /// Build one caller-bound execution and register its mutation before launching
 /// the request worker. Reads retain the same identity without durable logging.
 #[allow(clippy::too_many_arguments)]
@@ -605,6 +660,41 @@ mod tests {
             .detail
             .as_deref()
             .is_some_and(|detail| detail.ends_with("path is outside the allowed folders")));
+    }
+
+    #[test]
+    fn ledger_records_read_as_tasks_after_a_restart() {
+        use super::{hosted_task, McpOperationStatusReport};
+        use crate::hosted_jobs::HostedRetryDisposition;
+        let report = |state, detail: Option<&str>| McpOperationStatusReport {
+            operation_id: "01op".to_string(),
+            state,
+            dispatched: true,
+            committed: Some(true),
+            retry_disposition: HostedRetryDisposition::DoNotRetryDirectly,
+            updated_unix_ms: 1_795_708_799_364,
+            detail: detail.map(str::to_string),
+        };
+        let running = hosted_task(&report(HostedJobState::Running, None));
+        assert_eq!(running["taskId"], "01op");
+        assert_eq!(running["status"], "working");
+        let done = hosted_task(&report(HostedJobState::Succeeded, None));
+        assert_eq!(done["status"], "completed");
+        assert_eq!(done["result"]["isError"], false);
+        assert_eq!(done["result"]["structuredContent"]["committed"], true);
+        let failed = hosted_task(&report(HostedJobState::Failed, Some("denied")));
+        assert_eq!(failed["status"], "failed");
+        assert!(failed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("denied"));
+        let unknown = hosted_task(&report(HostedJobState::Interrupted, Some("restart")));
+        assert_eq!(unknown["status"], "failed");
+        assert!(unknown["statusMessage"]
+            .as_str()
+            .unwrap()
+            .contains("inspect the vault"));
+        assert!(unknown.get("result").is_none());
     }
 
     #[test]

@@ -337,7 +337,9 @@ after the call finishes (`ttlMs`), `pollIntervalMs` is 2000; an unknown task is 
 client that has not declared the extension gets -32021. On a named remote, a hosted mutation
 that may become a task is also recorded in memory under its durable ledger id, so the task
 reports the call's result; the ledger stays the durable record (`operation_get`,
-`status_path`), and a task outlives a restart only there. Hosted mutations from clients that do
+`status_path`). After a restart `tasks/get` answers from the ledger record: `completed` with a
+result naming its commit state (the call's own result is not stored), or `failed` for a failed,
+interrupted or unknown outcome; `tasks/cancel` records the request there. Hosted mutations from clients that do
 not declare the extension answer as before, with their operation id and `status_path`.
 
 **Timeouts without tasks:** a call that exceeds `--request-timeout` returns an `indeterminate`

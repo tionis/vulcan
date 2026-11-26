@@ -140,7 +140,9 @@ impl McpOperationRecord {
     }
 }
 
-fn iso_timestamp(unix_ms: u64) -> String {
+/// Milliseconds since the Unix epoch as an RFC 3339 UTC time.
+#[must_use]
+pub fn iso_timestamp(unix_ms: u64) -> String {
     i64::try_from(unix_ms)
         .ok()
         .and_then(chrono::DateTime::from_timestamp_millis)
