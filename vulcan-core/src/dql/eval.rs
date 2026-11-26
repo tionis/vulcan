@@ -1617,10 +1617,63 @@ fn render_table_row(
                 Value::Null,
             )?,
         };
-        object.insert(label, value);
+        object.insert(
+            label,
+            resolve_projected_links(value, &row.note.document_path, note_lookup),
+        );
     }
 
     Ok(Value::Object(object))
+}
+
+/// A projected value with each wikilink pointed at the note it resolves to
+/// from `source_path`, as Dataview stores links when it indexes a page: the
+/// target's vault path, keeping the subpath, display text, and embedding.
+/// Links that resolve to no note stay as written.
+fn resolve_projected_links(value: Value, source_path: &str, lookup: &dyn NoteLookup) -> Value {
+    match value {
+        Value::String(text) => {
+            Value::String(resolve_link_text(&text, source_path, lookup).unwrap_or(text))
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| resolve_projected_links(item, source_path, lookup))
+                .collect(),
+        ),
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, item)| (key, resolve_projected_links(item, source_path, lookup)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn resolve_link_text(text: &str, source_path: &str, lookup: &dyn NoteLookup) -> Option<String> {
+    let link = crate::expression::functions::parse_wikilink(text)?;
+    if link.path.is_empty() {
+        return None;
+    }
+    let note = lookup.resolve(source_path, &link.path)?;
+    let target = if note.file_ext == "md" {
+        note.document_path
+            .strip_suffix(".md")
+            .unwrap_or(&note.document_path)
+    } else {
+        note.document_path.as_str()
+    };
+    let subpath = match (link.link_type, link.subpath.as_deref()) {
+        ("block", Some(block)) => format!("#^{block}"),
+        ("header", Some(heading)) => format!("#{heading}"),
+        _ => String::new(),
+    };
+    let display = link
+        .display
+        .map_or_else(String::new, |display| format!("|{display}"));
+    let embed = if link.embed { "!" } else { "" };
+    Some(format!("{embed}[[{target}{subpath}{display}]]"))
 }
 
 fn render_list_result(
@@ -1667,7 +1720,10 @@ fn render_list_result(
                         Value::Null,
                     )?,
                 };
-                object.insert("value".to_string(), value);
+                object.insert(
+                    "value".to_string(),
+                    resolve_projected_links(value, &row.note.document_path, note_lookup),
+                );
             } else if query.without_id {
                 object.insert(
                     "value".to_string(),
@@ -2518,6 +2574,47 @@ LIMIT 1"#,
             result.rows[0]["File"],
             Value::String("[[Projects/Alpha]]".to_string())
         );
+    }
+
+    #[test]
+    fn projected_links_point_at_the_notes_they_resolve_to() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        std::fs::create_dir_all(vault_root.join("People")).expect("people directory");
+        std::fs::create_dir_all(vault_root.join("a/b")).expect("nested directory");
+        std::fs::write(vault_root.join("People/Sven.md"), "role:: dev\n").expect("person");
+        std::fs::write(
+            vault_root.join("a/b/Debt.md"),
+            "---\nboth: [\"[[Sven]]\", \"[[Nope]]\"]\n---\n\
+             who:: [[../../People/Sven]]\nalso:: [[Sven]]\nsec:: [[Sven#Role|role]]\n\
+             nope:: [[Nope]]\n",
+        )
+        .expect("debt");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let table = evaluate_dql(
+            &paths,
+            r#"TABLE who, also, sec, nope, both, who.role FROM "a""#,
+            None,
+        )
+        .expect("DQL should evaluate");
+        assert_eq!(
+            table.rows[0],
+            serde_json::json!({
+                "File": "[[a/b/Debt]]",
+                "who": "[[People/Sven]]",
+                "also": "[[People/Sven]]",
+                "sec": "[[People/Sven#Role|role]]",
+                "nope": "[[Nope]]",
+                "both": ["[[People/Sven]]", "[[Nope]]"],
+                "who.role": "dev",
+            })
+        );
+
+        let list = evaluate_dql(&paths, r#"LIST who FROM "a""#, None).expect("DQL should evaluate");
+        assert_eq!(list.rows[0]["value"], "[[People/Sven]]");
     }
 
     #[test]

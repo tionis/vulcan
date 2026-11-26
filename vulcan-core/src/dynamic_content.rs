@@ -1443,7 +1443,7 @@ fn inline_value(value: &Value) -> String {
     match value {
         Value::Null => NULL_MARKDOWN.to_string(),
         Value::String(text) if text.is_empty() => NULL_MARKDOWN.to_string(),
-        Value::String(text) => text.replace('\n', " "),
+        Value::String(text) => link_markdown(text).unwrap_or_else(|| text.replace('\n', " ")),
         Value::Bool(flag) => flag.to_string(),
         Value::Number(number) => format_number(number),
         Value::Array(items) if items.is_empty() => NULL_MARKDOWN.to_string(),
@@ -1454,6 +1454,25 @@ fn inline_value(value: &Value) -> String {
             .join(", "),
         Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
     }
+}
+
+/// A wikilink as Dataview writes one: with its display text, or else the
+/// target's file name and any subpath (`[[People/Sven|Sven]]`,
+/// `[[Note#Plan|Note > Plan]]`).
+fn link_markdown(text: &str) -> Option<String> {
+    let link = crate::expression::functions::parse_wikilink(text)?;
+    if link.display.is_some() || link.path.is_empty() {
+        return Some(text.trim().to_string());
+    }
+    let file_name = link.path.rsplit('/').next().unwrap_or(&link.path);
+    let title = file_name.strip_suffix(".md").unwrap_or(file_name);
+    let inner = text.trim().trim_start_matches('!');
+    let inner = &inner[2..inner.len() - 2];
+    let embed = if link.embed { "!" } else { "" };
+    Some(match link.subpath.as_deref() {
+        Some(subpath) => format!("{embed}[[{inner}|{title} > {subpath}]]"),
+        None => format!("{embed}[[{inner}|{title}]]"),
+    })
 }
 
 /// A number as Dataview shows it: integral floats without a fraction.
@@ -1945,7 +1964,23 @@ mod tests {
         assert_eq!(inline_value(&Value::Null), "-");
         assert_eq!(inline_value(&json!(1.0)), "1");
         assert_eq!(inline_value(&json!(1.5)), "1.5");
-        assert_eq!(inline_value(&json!(["[[A]]", "[[B]]"])), "[[A]], [[B]]");
+        assert_eq!(inline_value(&json!(["[[A]]", "[[B]]"])), "[[A|A]], [[B|B]]");
+        assert_eq!(
+            inline_value(&json!("[[People/Sven]]")),
+            "[[People/Sven|Sven]]"
+        );
+        assert_eq!(
+            inline_value(&json!("[[Sven|the boss]]")),
+            "[[Sven|the boss]]"
+        );
+        assert_eq!(
+            inline_value(&json!("[[Note#Plan]]")),
+            "[[Note#Plan|Note > Plan]]"
+        );
+        assert_eq!(
+            inline_value(&json!("![[Note#^b1]]")),
+            "![[Note#^b1|Note > b1]]"
+        );
     }
 
     #[test]
@@ -1966,7 +2001,7 @@ mod tests {
                 }),
             )],
         );
-        assert_eq!(rendered, "> [!note]\n> - [[A]]\n> - [[B]]\n\nafter\n");
+        assert_eq!(rendered, "> [!note]\n> - [[A|A]]\n> - [[B|B]]\n\nafter\n");
     }
 
     #[test]
@@ -2019,7 +2054,7 @@ mod tests {
         );
         assert_eq!(
             rendered,
-            "**[[Dashboard]]**\n\n- [ ] Write docs\n  - [x] Ship\n"
+            "**[[Dashboard|Dashboard]]**\n\n- [ ] Write docs\n  - [x] Ship\n"
         );
     }
 
@@ -2122,7 +2157,9 @@ mod tests {
         let markdown = &rendered.markdown;
         assert!(markdown.starts_with("---\nstatus: draft\n---\n# Home\n\n"));
         assert!(markdown.contains("Status: draft\n"), "{markdown}");
-        assert!(markdown.contains("| File | status |\n| --- | --- |\n| [[Alpha]] | active |"));
+        assert!(
+            markdown.contains("| File | status |\n| --- | --- |\n| [[Alpha\\|Alpha]] | active |")
+        );
         assert!(
             markdown.contains("- [ ] Alpha task (Alpha.md)"),
             "{markdown}"

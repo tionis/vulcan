@@ -5890,7 +5890,9 @@ mod tests {
         assert!(state.status_bar_line().contains("Preview: rendered"));
         let preview = preview_text(&state.preview_lines());
         assert!(preview.contains("Status: draft"), "{preview}");
-        assert!(preview.contains("Projects/Alpha"), "{preview}");
+        // Links show their title, as Dataview renders them.
+        assert!(preview.contains("Alpha"), "{preview}");
+        assert!(!preview.contains("Projects/Alpha"), "{preview}");
         assert!(!preview.contains("```"), "{preview}");
 
         let action = state.handle_key(ctrl('v'));

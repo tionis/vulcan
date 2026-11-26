@@ -5031,7 +5031,7 @@ fn note_get_evaluate_replaces_dynamic_content() {
     assert_eq!(json["metadata"]["dataview_js"], "off");
     assert!(content.contains("Status: draft"), "{content}");
     assert!(
-        content.contains("| [[Private/Secret]] | classified |"),
+        content.contains("| [[Private/Secret\\|Secret]] | classified |"),
         "{content}"
     );
     assert!(
@@ -5265,7 +5265,7 @@ fn exports_evaluate_dynamic_content_on_request() {
     ]);
     assert!(evaluated.contains("Status: draft"), "{evaluated}");
     assert!(
-        evaluated.contains("| [[Private/Secret]] | classified |"),
+        evaluated.contains("| [[Private/Secret\\|Secret]] | classified |"),
         "{evaluated}"
     );
     assert!(!evaluated.contains("```dataview"), "{evaluated}");
@@ -5413,10 +5413,7 @@ fn render_evaluates_vault_notes_unless_raw() {
     let markdown = json["markdown"].as_str().unwrap();
     assert!(markdown.contains("Status: draft"), "{markdown}");
     let rendered = json["rendered"].as_str().unwrap();
-    assert!(
-        rendered.contains("│ Private/Secret │ classified │"),
-        "{rendered}"
-    );
+    assert!(rendered.contains("│ Secret │ classified │"), "{rendered}");
     assert!(!rendered.contains("TABLE status"), "{rendered}");
 
     let raw = vulcan_json(&vault_root, &["render", "--raw", dashboard]);
@@ -11311,7 +11308,7 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
     assert!(stdout.contains("| File | status | priority |"));
     assert!(stdout.contains("| --- | --- | --- |"));
     // Integral numbers print as Dataview shows them.
-    assert!(stdout.contains("| [[Projects/Alpha]] | active | 1 |"));
+    assert!(stdout.contains("| [[Projects/Alpha\\|Alpha]] | active | 1 |"));
     // Dashboard's `reviewed` is `[true, false]`, so it is not reviewed.
     assert!(!stdout.contains("[[Dashboard]]"));
     assert!(stdout.contains("1 result(s)"));
@@ -11489,7 +11486,7 @@ fn dataview_eval_human_output_shows_unsupported_dql_diagnostics() {
 
     assert!(stdout.contains("File | slug"));
     // Null renders as Dataview's dash.
-    assert!(stdout.contains("[[Projects/Alpha]] | -"));
+    assert!(stdout.contains("[[Projects/Alpha\\|Alpha]] | -"));
     assert!(stdout.contains("> [!warning] Diagnostics"));
     assert!(stdout.contains("unknown method `slugify`"));
 }
@@ -17211,8 +17208,8 @@ fn dataview_query_human_output_respects_display_result_count_setting() {
 
     assert!(stdout.contains("| File | status |"));
     assert!(stdout.contains("| --- | --- |"));
-    assert!(stdout.contains("| [[Projects/Alpha]] | active |"));
-    assert!(stdout.contains("| [[Projects/Beta]] | backlog |"));
+    assert!(stdout.contains("| [[Projects/Alpha\\|Alpha]] | active |"));
+    assert!(stdout.contains("| [[Projects/Beta\\|Beta]] | backlog |"));
     assert!(!stdout.contains("result(s)"));
 }
 
