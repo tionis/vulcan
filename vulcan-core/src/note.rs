@@ -345,6 +345,12 @@ pub fn read_note(
         }
     }
 
+    // Leaving out the frontmatter narrows the selection like the selectors
+    // above, so `lines` and `match` count from the first line after it.
+    if options.no_frontmatter {
+        selected = strip_frontmatter_lines(&selected, outline.frontmatter_span.as_ref());
+    }
+
     if let Some(spec) = options.lines.as_deref() {
         selected = select_line_range(&selected, spec)?;
     }
@@ -357,10 +363,6 @@ pub fn read_note(
             select_matching_lines(&selected, &source_lines, &regex, options.context);
         selected = filtered;
         match_count = hits;
-    }
-
-    if options.no_frontmatter {
-        selected = strip_frontmatter_lines(&selected, outline.frontmatter_span.as_ref());
     }
 
     Ok(build_note_read_selection(
@@ -1047,6 +1049,35 @@ mod tests {
         );
         assert!(selection.has_more_before);
         assert!(selection.has_more_after);
+    }
+
+    #[test]
+    fn line_ranges_count_from_after_the_frontmatter_when_it_is_left_out() {
+        let parsed = parse_document(sample_source(), &VaultConfig::default());
+        let read = |lines: &str, match_pattern: Option<&str>| {
+            read_note(
+                sample_source(),
+                &parsed,
+                &NoteReadOptions {
+                    lines: Some(lines.to_string()),
+                    match_pattern: match_pattern.map(ToOwned::to_owned),
+                    no_frontmatter: true,
+                    ..NoteReadOptions::default()
+                },
+            )
+            .expect("selection should succeed")
+        };
+        let first = read("1-2", None);
+        assert_eq!(first.content, "\nIntro line\n");
+        assert_eq!(
+            first.line_spans,
+            vec![NoteLineSpan {
+                start_line: 4,
+                end_line: 5,
+            }]
+        );
+        // A match over a range of the body never reaches into frontmatter.
+        assert_eq!(read("1-3", Some("status|Intro")).content, "Intro line\n");
     }
 
     #[test]
