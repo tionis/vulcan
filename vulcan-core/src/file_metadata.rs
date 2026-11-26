@@ -290,6 +290,251 @@ fn task_object(
     Value::Object(object)
 }
 
+/// `file.lists` as Dataview serializes it, tasks included: 0-based `line`,
+/// `list` (the line its list starts on), and `parent` (the parent's line,
+/// only when there is one), `blockId` only when set, the item's own fields
+/// without overriding built-in keys, and for tasks `status`, `checked`,
+/// `completed`, and `fullyCompleted` but no page fields. `position` holds
+/// Obsidian's UTF-16 line, column, and offset, and needs the note's
+/// `source`; without it, it is null.
+#[cfg(feature = "js_runtime")]
+#[must_use]
+pub fn dataview_list_objects(note: &NoteRecord, source: Option<&str>) -> Vec<Value> {
+    let mut items = note.list_items.iter().collect::<Vec<_>>();
+    items.sort_by_key(|item| (item.line_number, item.byte_offset));
+    let by_id = items
+        .iter()
+        .map(|item| (item.id.as_str(), *item))
+        .collect::<HashMap<_, _>>();
+    let tasks = note
+        .tasks
+        .iter()
+        .map(|task| (task.list_item_id.as_str(), task))
+        .collect::<HashMap<_, _>>();
+    let mut children = HashMap::<&str, Vec<&NoteListItemRecord>>::new();
+    for item in &items {
+        if let Some(parent) = item.parent_item_id.as_deref() {
+            children.entry(parent).or_default().push(item);
+        }
+    }
+    let lines = source.map(SourceLines::new);
+    let lists = list_start_lines(&items, &by_id, lines.as_ref());
+    let context = DataviewListContext {
+        note,
+        by_id: &by_id,
+        tasks: &tasks,
+        children: &children,
+        lists: &lists,
+        lines: lines.as_ref(),
+    };
+    items.iter().map(|item| context.object(item)).collect()
+}
+
+#[cfg(feature = "js_runtime")]
+struct DataviewListContext<'a> {
+    note: &'a NoteRecord,
+    by_id: &'a HashMap<&'a str, &'a NoteListItemRecord>,
+    tasks: &'a HashMap<&'a str, &'a NoteTaskRecord>,
+    children: &'a HashMap<&'a str, Vec<&'a NoteListItemRecord>>,
+    lists: &'a HashMap<&'a str, i64>,
+    lines: Option<&'a SourceLines<'a>>,
+}
+
+#[cfg(feature = "js_runtime")]
+impl DataviewListContext<'_> {
+    fn object(&self, item: &NoteListItemRecord) -> Value {
+        let note = self.note;
+        let line = item.line_number - 1;
+        let section = section_link(&note.document_path, item.section_heading.as_deref())
+            .unwrap_or_else(|| synthetic_file_link(&note.document_path, &note.file_ext));
+        let children = self
+            .children
+            .get(item.id.as_str())
+            .map_or_default(|children| children.iter().map(|child| self.object(child)).collect());
+        let task = self.tasks.get(item.id.as_str());
+
+        let mut object = Map::new();
+        object.insert("symbol".to_string(), Value::String(item.symbol.clone()));
+        object.insert(
+            "link".to_string(),
+            Value::String(list_item_link(note, item)),
+        );
+        object.insert("section".to_string(), Value::String(section));
+        object.insert("text".to_string(), Value::String(item.text.clone()));
+        object.insert("tags".to_string(), json_string_array(item.tags.clone()));
+        object.insert("line".to_string(), Value::Number(line.into()));
+        object.insert(
+            "lineCount".to_string(),
+            Value::Number(item.line_count.into()),
+        );
+        object.insert(
+            "list".to_string(),
+            Value::Number(
+                self.lists
+                    .get(item.id.as_str())
+                    .copied()
+                    .unwrap_or(line)
+                    .into(),
+            ),
+        );
+        object.insert(
+            "outlinks".to_string(),
+            json_string_array(item.outlinks.clone()),
+        );
+        object.insert(
+            "path".to_string(),
+            Value::String(note.document_path.clone()),
+        );
+        object.insert("children".to_string(), Value::Array(children));
+        object.insert("task".to_string(), Value::Bool(task.is_some()));
+        object.insert("annotated".to_string(), Value::Bool(item.annotated));
+        object.insert(
+            "position".to_string(),
+            self.lines
+                .map_or(Value::Null, |lines| lines.position(line, item.line_count)),
+        );
+        if let Some(parent) = item
+            .parent_item_id
+            .as_deref()
+            .and_then(|parent| self.by_id.get(parent))
+        {
+            object.insert(
+                "parent".to_string(),
+                Value::Number((parent.line_number - 1).into()),
+            );
+        }
+        if let Some(block_id) = &item.block_id {
+            object.insert("blockId".to_string(), Value::String(block_id.clone()));
+        }
+        let fields = task.map_or(&item.properties, |task| &task.properties);
+        for (key, value) in fields {
+            object.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        if let Some(task) = task {
+            object.insert(
+                "status".to_string(),
+                Value::String(task.status_char.clone()),
+            );
+            object.insert("checked".to_string(), Value::Bool(task.checked));
+            object.insert("completed".to_string(), Value::Bool(task.completed));
+            object.insert(
+                "fullyCompleted".to_string(),
+                Value::Bool(task.completed && self.descendant_tasks_completed(item)),
+            );
+            for key in ["created", "due", "completion", "start", "scheduled"] {
+                if let Some(value) = task.properties.get(key) {
+                    object.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+        Value::Object(object)
+    }
+
+    fn descendant_tasks_completed(&self, item: &NoteListItemRecord) -> bool {
+        self.children.get(item.id.as_str()).is_none_or(|children| {
+            children.iter().all(|child| {
+                self.tasks
+                    .get(child.id.as_str())
+                    .is_none_or(|task| task.completed)
+                    && self.descendant_tasks_completed(child)
+            })
+        })
+    }
+}
+
+/// Each item's list: the 0-based line where its run of list items starts.
+/// Nested items share their parent's list; a root item continues the
+/// previous list when only blank lines (or, without the source, nothing)
+/// separate them.
+#[cfg(feature = "js_runtime")]
+fn list_start_lines<'a>(
+    items: &[&'a NoteListItemRecord],
+    by_id: &HashMap<&str, &NoteListItemRecord>,
+    lines: Option<&SourceLines<'_>>,
+) -> HashMap<&'a str, i64> {
+    let mut lists = HashMap::new();
+    let mut current: Option<(i64, i64)> = None;
+    for item in items {
+        let line = item.line_number - 1;
+        let end = line + item.line_count.max(1) - 1;
+        let parent_list = item
+            .parent_item_id
+            .as_deref()
+            .and_then(|parent| by_id.get(parent))
+            .and_then(|parent| lists.get(parent.id.as_str()).copied());
+        let start = match (parent_list, current) {
+            (Some(start), _) => start,
+            (None, Some((start, previous_end)))
+                if (previous_end + 1..line)
+                    .all(|gap| lines.is_some_and(|lines| lines.is_blank(gap))) =>
+            {
+                start
+            }
+            _ => line,
+        };
+        lists.insert(item.id.as_str(), start);
+        current = Some((
+            start,
+            current.map_or(end, |(_, previous)| previous.max(end)),
+        ));
+    }
+    lists
+}
+
+/// A note's lines with their UTF-16 offsets, as Obsidian positions count.
+#[cfg(feature = "js_runtime")]
+struct SourceLines<'a> {
+    lines: Vec<(&'a str, usize)>,
+}
+
+#[cfg(feature = "js_runtime")]
+impl<'a> SourceLines<'a> {
+    fn new(source: &'a str) -> Self {
+        let mut offset = 0;
+        let lines = source
+            .split('\n')
+            .map(|line| {
+                let start = offset;
+                offset += line.encode_utf16().count() + 1;
+                (line.strip_suffix('\r').unwrap_or(line), start)
+            })
+            .collect();
+        Self { lines }
+    }
+
+    fn is_blank(&self, line: i64) -> bool {
+        usize::try_from(line)
+            .ok()
+            .and_then(|line| self.lines.get(line))
+            .is_some_and(|(text, _)| text.trim().is_empty())
+    }
+
+    /// Obsidian's position for a list item: from its marker (after any
+    /// indentation and `>` quoting) to the end of its last line.
+    fn position(&self, line: i64, line_count: i64) -> Value {
+        let at = |line: i64| {
+            usize::try_from(line)
+                .ok()
+                .and_then(|line| self.lines.get(line))
+        };
+        let end_line = line + line_count.max(1) - 1;
+        let (Some((text, start_offset)), Some((end_text, end_offset))) = (at(line), at(end_line))
+        else {
+            return Value::Null;
+        };
+        let col = text
+            .chars()
+            .take_while(|ch| ch.is_whitespace() || *ch == '>')
+            .map(char::len_utf16)
+            .sum::<usize>();
+        let end_col = end_text.encode_utf16().count();
+        serde_json::json!({
+            "start": { "line": line, "col": col, "offset": start_offset + col },
+            "end": { "line": end_line, "col": end_col, "offset": end_offset + end_col },
+        })
+    }
+}
+
 fn task_fully_completed(
     task: &NoteTaskRecord,
     task_by_id: &HashMap<&str, &NoteTaskRecord>,
@@ -670,6 +915,149 @@ mod tests {
             tasks[0]["recurrenceAnchor"],
             Value::String("2026-02-15".to_string())
         );
+    }
+
+    #[cfg(feature = "js_runtime")]
+    fn dataview_list_item(
+        id: &str,
+        line: i64,
+        parent: Option<&str>,
+        task: bool,
+    ) -> NoteListItemRecord {
+        NoteListItemRecord {
+            id: id.to_string(),
+            text: format!("item {id}"),
+            tags: vec![],
+            outlinks: vec![],
+            line_number: line,
+            line_count: 1,
+            byte_offset: 0,
+            section_heading: Some("Lists".to_string()),
+            parent_item_id: parent.map(str::to_string),
+            is_task: task,
+            block_id: None,
+            annotated: false,
+            symbol: "-".to_string(),
+            properties: Map::new(),
+        }
+    }
+
+    #[cfg(feature = "js_runtime")]
+    fn dataview_task(id: &str, item: &str, line: i64, status: &str) -> NoteTaskRecord {
+        NoteTaskRecord {
+            id: id.to_string(),
+            list_item_id: item.to_string(),
+            status_char: status.to_string(),
+            status_name: String::new(),
+            status_type: String::new(),
+            status_next_symbol: None,
+            checked: status != " ",
+            completed: status == "x",
+            text: String::new(),
+            byte_offset: 0,
+            parent_task_id: None,
+            section_heading: Some("Lists".to_string()),
+            line_number: line,
+            properties: Map::new(),
+        }
+    }
+
+    #[cfg(feature = "js_runtime")]
+    const DATAVIEW_LIST_SOURCE: &str = concat!(
+        "# Lists\n",
+        "- Plain [kind:: note] 🎉\n",
+        "\t- [x] Done ^done\n",
+        "\t\t- [ ] Open [due:: 2026-04-01]\n",
+        "\n",
+        "- After blank\n",
+        "Paragraph\n",
+        "- New list\n",
+    );
+
+    /// The note behind [`DATAVIEW_LIST_SOURCE`].
+    #[cfg(feature = "js_runtime")]
+    fn dataview_list_note() -> NoteRecord {
+        let mut note = note_record();
+        let mut plain = dataview_list_item("a", 2, None, false);
+        plain.properties = Map::from_iter([
+            ("kind".to_string(), Value::String("note".to_string())),
+            (
+                "text".to_string(),
+                Value::String("not the text".to_string()),
+            ),
+        ]);
+        let mut done = dataview_list_item("b", 3, Some("a"), true);
+        done.block_id = Some("done".to_string());
+        note.list_items = vec![
+            plain,
+            done,
+            dataview_list_item("c", 4, Some("b"), true),
+            dataview_list_item("d", 6, None, false),
+            dataview_list_item("e", 8, None, false),
+        ];
+        let mut open = dataview_task("t2", "c", 4, " ");
+        open.properties =
+            Map::from_iter([("due".to_string(), Value::String("2026-04-01".to_string()))]);
+        note.tasks = vec![dataview_task("t1", "b", 3, "x"), open];
+        note
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn dataview_list_objects_follow_dataview_serialization() {
+        let items = dataview_list_objects(&dataview_list_note(), Some(DATAVIEW_LIST_SOURCE));
+        assert_eq!(items.len(), 5);
+        let plain = &items[0];
+        assert_eq!(plain["line"], 1);
+        assert_eq!(plain["list"], 1);
+        assert_eq!(plain["section"], "[[projects/2026-04-18-note#Lists]]");
+        assert_eq!(plain["kind"], "note");
+        assert_eq!(plain["text"], "item a");
+        assert_eq!(plain["task"], false);
+        assert!(plain.get("parent").is_none());
+        assert!(plain.get("blockId").is_none());
+        assert!(plain.get("status").is_none());
+        assert_eq!(plain["children"][0]["line"], 2);
+
+        let done = &items[1];
+        assert_eq!(done["parent"], 1);
+        assert_eq!(done["blockId"], "done");
+        assert_eq!(done["link"], "[[projects/2026-04-18-note#^done]]");
+        assert_eq!(done["status"], "x");
+        assert_eq!(done["completed"], true);
+        // Its open subtask keeps it from being fully completed.
+        assert_eq!(done["fullyCompleted"], false);
+        // Tasks carry their own fields but not the page's.
+        assert!(done.get("reviewed").is_none());
+        assert!(done.get("statusName").is_none());
+        assert_eq!(items[2]["due"], "2026-04-01");
+        assert_eq!(items[2]["checked"], false);
+
+        // A blank line continues a list; other text starts a new one.
+        assert_eq!(items[3]["list"], 1);
+        assert_eq!(items[4]["list"], 7);
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn dataview_list_positions_count_utf16_from_the_source() {
+        let note = dataview_list_note();
+        let items = dataview_list_objects(&note, Some(DATAVIEW_LIST_SOURCE));
+        assert_eq!(
+            items[0]["position"],
+            serde_json::json!({
+                "start": { "line": 1, "col": 0, "offset": 8 },
+                "end": { "line": 1, "col": 24, "offset": 32 },
+            })
+        );
+        assert_eq!(
+            items[1]["position"]["start"],
+            serde_json::json!({ "line": 2, "col": 1, "offset": 34 })
+        );
+
+        let without_source = dataview_list_objects(&note, None);
+        assert!(without_source[0]["position"].is_null());
+        assert_eq!(without_source[3]["list"], 5);
     }
 
     #[test]

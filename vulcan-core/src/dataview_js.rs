@@ -2497,7 +2497,7 @@ function __vulcanOutlink(text, origin) {
 
 const __vulcanListItemPlainKeys = new Set([
   "text", "visual", "symbol", "path", "status", "statusName", "statusType", "statusNext",
-  "taskSource", "blockId", "tags", "line", "lineCount", "parent", "list",
+  "taskSource", "blockId", "tags", "line", "lineCount", "parent", "list", "position",
 ]);
 
 function __vulcanReviveListItem(item, origin) {
@@ -2517,6 +2517,16 @@ function __vulcanReviveListItem(item, origin) {
     } else {
       revived[key] = __vulcanReviveFieldValue(value, origin);
     }
+  }
+  // Dataview's deprecated aliases, kept for older scripts.
+  if ("children" in revived && !("subtasks" in revived)) {
+    revived.subtasks = revived.children;
+  }
+  if ("task" in revived && !("real" in revived)) {
+    revived.real = revived.task;
+  }
+  if ("section" in revived && !("header" in revived)) {
+    revived.header = revived.section;
   }
   return revived;
 }
@@ -5459,7 +5469,14 @@ globalThis.this = dv.current();
                         &ctx,
                         |note_index| select_pages(&pages_state, note_index, source.as_deref()),
                         |note_index, selected| {
-                            to_json_string(&ctx, pages_for_paths(note_index, &selected))
+                            to_json_string(
+                                &ctx,
+                                pages_for_paths(
+                                    note_index,
+                                    &selected,
+                                    Some(pages_state.paths.vault_root()),
+                                ),
+                            )
                         },
                     )
                 }),
@@ -5524,7 +5541,9 @@ globalThis.this = dv.current();
                         |note_index, resolved| {
                             to_json_string(
                                 &ctx,
-                                note_index.note(&resolved).map_or(Value::Null, page_object),
+                                note_index.note(&resolved).map_or(Value::Null, |note| {
+                                    page_object(note, Some(single_page_state.paths.vault_root()))
+                                }),
                             )
                         },
                     )
@@ -6522,8 +6541,8 @@ globalThis.this = dv.current();
         let parsed = parse_document(&source, &config);
         let outline = crate::outline_note(&source, &parsed);
         Ok(serde_json::json!({
-            "page": page_object(note),
-            "file": dataview_file_object(note),
+            "page": page_object(note, Some(paths.vault_root())),
+            "file": dataview_file_object(note, Some(paths.vault_root())),
             "frontmatter": note.frontmatter.clone(),
             "content": source,
             "html": render_note_html(paths, &path, &source).html,
@@ -6593,7 +6612,7 @@ globalThis.this = dv.current();
                         "note": resolved_target_path
                             .as_deref()
                             .and_then(|target| note_by_path(note_index, target))
-                            .map_or(Value::Null, page_object),
+                            .map_or(Value::Null, |note| page_object(note, Some(paths.vault_root()))),
                     }))
                 })
                 .collect(),
@@ -6610,7 +6629,7 @@ globalThis.this = dv.current();
                         "displayText": record.display_text,
                         "context": record.context,
                         "note": note_by_path(note_index, &source_path)
-                            .map_or(Value::Null, page_object),
+                            .map_or(Value::Null, |note| page_object(note, Some(paths.vault_root()))),
                     }))
                 })
                 .collect(),
@@ -6655,7 +6674,7 @@ globalThis.this = dv.current();
                     continue;
                 }
                 if let Some(related_note) = note_by_path(note_index, &related) {
-                    neighbors.push(page_object(related_note));
+                    neighbors.push(page_object(related_note, Some(paths.vault_root())));
                     queue.push_back((related.clone(), current_depth + 1));
                 }
             }
@@ -7730,7 +7749,7 @@ globalThis.this = dv.current();
             .note(path)
             .ok_or_else(|| DataviewJsError::Message(format!("note is not indexed: {path}")))?;
         Ok(serde_json::json!({
-            "note": page_object(note),
+            "note": page_object(note, Some(state.paths.vault_root())),
         }))
     }
 
@@ -8077,11 +8096,16 @@ globalThis.this = dv.current();
         Ok((IndexNeed::Paths(selected.clone()), selected))
     }
 
-    fn pages_for_paths(note_index: &JsNoteIndex, paths: &[String]) -> Vec<Value> {
+    /// Page objects for `paths`; list and task positions need `vault_root`.
+    fn pages_for_paths(
+        note_index: &JsNoteIndex,
+        paths: &[String],
+        vault_root: Option<&Path>,
+    ) -> Vec<Value> {
         let mut pages = paths
             .iter()
             .filter_map(|path| note_index.note(path))
-            .map(page_object)
+            .map(|note| page_object(note, vault_root))
             .collect::<Vec<_>>();
         pages.sort_by(|left, right| {
             compare_json_ordering(
@@ -8104,7 +8128,7 @@ globalThis.this = dv.current();
     /// Page objects for `paths` without [`LAZY_FILE_FIELDS`], from stored
     /// fields only.
     fn lazy_pages_for_paths(note_index: &JsNoteIndex, paths: &[String]) -> Vec<Value> {
-        let mut pages = pages_for_paths(note_index, paths);
+        let mut pages = pages_for_paths(note_index, paths, None);
         for page in &mut pages {
             if let Some(Value::Object(file)) = page.get_mut("file") {
                 for key in LAZY_FILE_FIELDS {
@@ -8149,16 +8173,32 @@ globalThis.this = dv.current();
                 .ok_or_else(|| DataviewJsError::Message("unknown page set".to_string()))?;
             note_index.hydrate(state, IndexNeed::Paths(selection))?;
         }
-        Ok(note_index
-            .note(path)
-            .map_or(Value::Null, |note| dataview_file_field(note, key)))
+        Ok(note_index.note(path).map_or(Value::Null, |note| {
+            dataview_file_field(note, key, Some(state.paths.vault_root()))
+        }))
     }
 
     /// A `file` field as Dataview reports it: tags carry `#` and come in
     /// Dataview's order, body tags before frontmatter tags, and `tags` adds
-    /// each tag's parents after it.
-    fn dataview_file_field(note: &NoteRecord, key: &str) -> Value {
+    /// each tag's parents after it; lists and tasks are shaped as Dataview
+    /// serializes them, with positions read from the note under
+    /// `vault_root`.
+    fn dataview_file_field(note: &NoteRecord, key: &str, vault_root: Option<&Path>) -> Value {
         match key {
+            "lists" | "tasks" => {
+                let source = vault_root.and_then(|root| {
+                    secure_read_to_string(root, Path::new(&note.document_path)).ok()
+                });
+                let items = crate::file_metadata::dataview_list_objects(note, source.as_deref());
+                Value::Array(if key == "tasks" {
+                    items
+                        .into_iter()
+                        .filter(|item| item["task"] == Value::Bool(true))
+                        .collect()
+                } else {
+                    items
+                })
+            }
             "etags" => Value::Array(
                 dataview_explicit_tags(note)
                     .into_iter()
@@ -8185,12 +8225,12 @@ globalThis.this = dv.current();
         }
     }
 
-    fn dataview_file_object(note: &NoteRecord) -> Value {
+    fn dataview_file_object(note: &NoteRecord, vault_root: Option<&Path>) -> Value {
         let mut object = FileMetadataResolver::object(note);
         if let Value::Object(fields) = &mut object {
-            for key in ["tags", "etags"] {
+            for key in ["tags", "etags", "lists", "tasks"] {
                 if fields.contains_key(key) {
-                    fields.insert(key.to_string(), dataview_file_field(note, key));
+                    fields.insert(key.to_string(), dataview_file_field(note, key, vault_root));
                 }
             }
         }
@@ -8260,7 +8300,11 @@ globalThis.this = dv.current();
         let resolved_path = resolve_note_reference(paths, file)
             .map(|resolved| resolved.path)
             .or_else(|_| normalize_note_path_for_write(paths, file))?;
-        Ok(note_by_path(note_index, &resolved_path).map_or(Value::Null, page_object))
+        Ok(
+            note_by_path(note_index, &resolved_path).map_or(Value::Null, |note| {
+                page_object(note, Some(paths.vault_root()))
+            }),
+        )
     }
 
     fn note_by_path<'a>(
@@ -8270,13 +8314,13 @@ globalThis.this = dv.current();
         note_index.values().find(|note| note.document_path == path)
     }
 
-    fn page_object(note: &NoteRecord) -> Value {
+    fn page_object(note: &NoteRecord, vault_root: Option<&Path>) -> Value {
         let mut fields = note
             .properties
             .as_object()
             .cloned()
             .unwrap_or_else(Map::new);
-        fields.insert("file".to_string(), dataview_file_object(note));
+        fields.insert("file".to_string(), dataview_file_object(note, vault_root));
         Value::Object(fields)
     }
 
@@ -8303,7 +8347,12 @@ globalThis.this = dv.current();
         };
         let events = load_events_for_periodic_note(paths, &path)
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        Ok(decorate_daily_page_object(note, &normalized_date, events))
+        Ok(decorate_daily_page_object(
+            note,
+            &normalized_date,
+            events,
+            paths.vault_root(),
+        ))
     }
 
     fn load_daily_range_objects(
@@ -8321,8 +8370,9 @@ globalThis.this = dv.current();
         Ok(daily_notes
             .into_iter()
             .filter_map(|note| {
-                note_by_path(note_index, &note.path)
-                    .map(|record| decorate_daily_page_object(record, &note.date, note.events))
+                note_by_path(note_index, &note.path).map(|record| {
+                    decorate_daily_page_object(record, &note.date, note.events, paths.vault_root())
+                })
             })
             .collect())
     }
@@ -8331,8 +8381,9 @@ globalThis.this = dv.current();
         note: &NoteRecord,
         date: &str,
         events: Vec<crate::PeriodicEvent>,
+        vault_root: &Path,
     ) -> Value {
-        let mut page = page_object(note);
+        let mut page = page_object(note, Some(vault_root));
         if let Value::Object(ref mut fields) = page {
             fields.insert(
                 "events".to_string(),
@@ -9180,6 +9231,66 @@ globalThis.this = dv.current();
             assert_eq!(value["dueDate"], 4);
             assert_eq!(value["emoji"], "gifts");
             assert_eq!(value["accented"], "un jeu de console");
+        }
+
+        #[test]
+        fn dataviewjs_list_items_follow_dataview() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const eager = dv.page("Dashboard").file;
+                const lazy = dv.pages().where((page) => page.file.name === "Dashboard")[0].file;
+                const [item, nested] = eager.lists;
+                const [write, ship] = eager.tasks;
+                ({
+                  item: [item.line, item.list, item.symbol, "parent" in item, item.kind],
+                  nested: [nested.line, nested.parent, nested.symbol, nested.blockId, nested.link.subpath],
+                  aliases: [item.subtasks === item.children, item.real, item.header.subpath, item.header.type],
+                  position: item.position,
+                  lazySame: JSON.stringify(lazy.lists.array()) === JSON.stringify(eager.lists.array()),
+                  write: [write.status, write.due.toISODate(), write.fullyCompleted, "status" in item],
+                  ship: [ship.parent, ship.owner.path, ship.completed, "reviewed" in ship],
+                })
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            let value = result.value.expect("script value");
+            assert_eq!(
+                value["item"],
+                serde_json::json!([18, 18, "-", false, "note"])
+            );
+            assert_eq!(
+                value["nested"],
+                serde_json::json!([19, 18, "1.", "list-child", "list-child"])
+            );
+            assert_eq!(
+                value["aliases"],
+                serde_json::json!([true, false, "Lists", "header"])
+            );
+            assert_eq!(
+                value["position"],
+                serde_json::json!({
+                    "start": { "line": 18, "col": 0, "offset": 258 },
+                    "end": { "line": 18, "col": 64, "offset": 322 },
+                })
+            );
+            assert_eq!(value["lazySame"], true);
+            assert_eq!(
+                value["write"],
+                serde_json::json!([" ", "2026-04-01", false, false])
+            );
+            assert_eq!(
+                value["ship"],
+                serde_json::json!([22, "People/Bob.md", true, false])
+            );
         }
 
         #[test]
@@ -11429,22 +11540,6 @@ shell = "allow"
         /// entry once its fix lands: the test fails when a listed path no longer differs.
         const PROBE_KNOWN_DIVERGENCES: &[&str] = &[
             ".behaviour.queryMarkdown",
-            ".lists[0].keys",
-            ".lists[0].parent",
-            ".lists[1].keys",
-            ".lists[1].parent",
-            ".lists[2].keys",
-            ".lists[3].keys",
-            ".lists[3].parent",
-            ".lists[4].keys",
-            ".lists[4].parent",
-            ".lists[5].keys",
-            ".lists[5].parent",
-            ".lists[6].keys",
-            ".lists[6].parent",
-            ".lists[7].keys",
-            ".lists[7].parent",
-            ".lists[8].keys",
             ".pageKeys.Inline",
             ".pageKeys.Inline Date",
             ".pageKeys.Inline Duration",
@@ -11463,10 +11558,6 @@ shell = "allow"
             ".pageValues.inline duration",
             ".pageValues.inline link",
             ".pageValues.inline number",
-            ".tasks[0].fields",
-            ".tasks[1].fields",
-            ".tasks[2].fields",
-            ".tasks[3].fields",
         ];
 
         #[test]
