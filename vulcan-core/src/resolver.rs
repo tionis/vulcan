@@ -559,6 +559,17 @@ fn is_explicit_relative(target: &str) -> bool {
     target.starts_with("./") || target.starts_with("../")
 }
 
+/// The vault path an explicitly relative target (`./` or `../`) written in
+/// `source_path` names, or `None` for other targets and for ones that climb
+/// above the vault root.
+pub(crate) fn explicit_relative_path(source_path: &str, target: &str) -> Option<String> {
+    if !is_explicit_relative(target) {
+        return None;
+    }
+    let source_dir = source_directory(source_path);
+    (!escapes_vault_root(&source_dir, target)).then(|| normalize_joined_path(&source_dir, target))
+}
+
 fn matches_exact_path(document: &ResolverDocument, target: &str) -> bool {
     let document_path = normalize_path(&document.path);
     let document_path_no_ext = strip_markdown_extension(&document_path);

@@ -67,7 +67,9 @@ pub struct NoteIdentity<'a> {
 }
 
 /// The path a link `target` written in `source_path` resolves to among
-/// `identities`: an exact path (with or without `.md`), then a lookup key,
+/// `identities`: for a `./` or `../` target, only the path it names relative
+/// to the source (as the link index resolves it); otherwise an exact path
+/// (with or without `.md`), then a lookup key,
 /// then the basename or alias match nearest to the source folder (basenames
 /// before aliases, then folder distance, then path).
 pub fn resolve_identity<'a, I: Iterator<Item = NoteIdentity<'a>>>(
@@ -79,6 +81,17 @@ pub fn resolve_identity<'a, I: Iterator<Item = NoteIdentity<'a>>>(
     let target = target.trim();
     let target_no_ext = target.trim_end_matches(".md");
     let target_basename = target_no_ext.rsplit('/').next().unwrap_or(target_no_ext);
+
+    if target.starts_with("./") || target.starts_with("../") {
+        let joined = crate::resolver::explicit_relative_path(source_path, target)?;
+        let joined_no_ext = joined.trim_end_matches(".md");
+        return identities()
+            .find(|identity| identity.path == joined)
+            .or_else(|| {
+                identities().find(|identity| identity.path.trim_end_matches(".md") == joined_no_ext)
+            })
+            .map(|identity| identity.path);
+    }
 
     if let Some(identity) = identities()
         .find(|identity| identity.path == target)

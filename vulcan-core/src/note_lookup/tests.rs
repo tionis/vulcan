@@ -151,3 +151,35 @@ fn load_failures_are_reported_not_hidden() {
     ));
     assert!(lookup.take_error().is_none());
 }
+
+#[test]
+fn explicit_relative_targets_resolve_against_the_source_folder() {
+    let notes = ["People/Sven.md", "a/b/Sven.md", "a/Other.md"]
+        .map(|path| {
+            let mut record = note(path);
+            record.file_name = path
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .trim_end_matches(".md")
+                .to_string();
+            (path.to_string(), record)
+        })
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let resolve = |source: &str, target: &str| {
+        notes
+            .resolve(source, target)
+            .map(|note| note.document_path.as_str())
+    };
+
+    assert_eq!(
+        resolve("a/b/Debt.md", "../../People/Sven"),
+        Some("People/Sven.md")
+    );
+    assert_eq!(resolve("a/b/Debt.md", "./Sven.md"), Some("a/b/Sven.md"));
+    assert_eq!(resolve("a/b/Debt.md", "../Other"), Some("a/Other.md"));
+    // A relative target that names no note does not fall back to the name.
+    assert_eq!(resolve("a/b/Debt.md", "../Sven"), None);
+    assert_eq!(resolve("a/b/Debt.md", "../../../People/Sven"), None);
+}
