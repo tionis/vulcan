@@ -6494,42 +6494,35 @@ fn parses_help_and_describe_format_commands() {
             bind: "127.0.0.1:9123".to_string(),
             endpoint: "/custom-mcp".to_string(),
             auth_token: Some("secret-token".to_string()),
-            public_url: None,
-            oauth_issuer: None,
-            oauth_audience: Vec::new(),
-            oauth_jwks_url: None,
-            oauth_allowed_sub: Vec::new(),
-            oauth_allowed_email: Vec::new(),
-            oauth_local_client_id: None,
-            oauth_local_redirect_uri: Vec::new(),
-            oauth_local_client_secret: None,
-            oauth_local_approval_token: None,
-            oauth_local_subject: None,
-            oauth_local_email: None,
-            oauth_dcr: false,
-            oauth_dcr_allowed_redirect_host: Vec::new(),
-            oauth_indieauth_authorization_endpoint: None,
-            oauth_indieauth_token_endpoint: None,
-            oauth_indieauth_client_id: None,
-            oauth_indieauth_redirect_uri: None,
-            oauth_indieauth_me: None,
-            oauth_local_user: Vec::new(),
+            removed_oauth: cli::RemovedMcpOAuthArgs::default(),
         }
     );
     assert_eq!(mcp.permissions.as_deref(), Some("readonly"));
 }
 
 #[test]
-fn explicit_mcp_oauth_subject_remains_a_parsed_option() {
-    let explicit_subject = Cli::try_parse_from(["vulcan", "mcp", "--oauth-local-subject", "alice"])
-        .expect("explicit MCP OAuth subject should parse");
-    assert!(matches!(
-        explicit_subject.command,
-        Command::Mcp {
-            oauth_local_subject: Some(ref subject),
-            ..
-        } if subject == "alice"
-    ));
+fn removed_mcp_oauth_flags_still_parse_so_they_can_be_refused() {
+    let removed = Cli::try_parse_from([
+        "vulcan",
+        "mcp",
+        "--transport",
+        "http",
+        "--oauth-local-subject",
+        "alice",
+        "--oauth-issuer",
+        "https://auth.example.test/",
+    ])
+    .expect("removed MCP OAuth flags should still parse");
+    let Command::Mcp { removed_oauth, .. } = removed.command else {
+        panic!("expected the mcp command");
+    };
+    assert!(removed_oauth.any());
+    assert_eq!(removed_oauth.oauth_local_subject.as_deref(), Some("alice"));
+    let plain = Cli::try_parse_from(["vulcan", "mcp"]).unwrap();
+    let Command::Mcp { removed_oauth, .. } = plain.command else {
+        panic!("expected the mcp command");
+    };
+    assert!(!removed_oauth.any());
 }
 
 #[test]

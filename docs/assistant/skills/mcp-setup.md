@@ -1,7 +1,7 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, which tools a connection sees, remote HTTPS setup, credential migration, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 20
+version: 21
 tools:
   - mcp
   - describe
@@ -37,7 +37,7 @@ debugging, and which tools a connection sees (its permission profile).
 ## Guardrails
 
 - Do not expose a no-auth public MCP server for a private vault.
-- Local stdio and loopback HTTP, with an optional static token (`--auth-token`, sent only as `Authorization: Bearer`; the old `X-Vulcan-Token` header is not read), work without the `oauth` build feature. OAuth flags and named remotes require that feature; do not pass `--oauth-local-subject` merely to start local HTTP. For direct IndieAuth, leave that flag unset to use the authenticated identity unless intentionally overriding it.
+- Local stdio and loopback HTTP, with an optional static token (`--auth-token`, sent only as `Authorization: Bearer`; the old `X-Vulcan-Token` header is not read), work without the `oauth` build feature. OAuth is served only by named remotes, which need that feature: the direct `--public-url`/`--oauth-*` flags of `vulcan mcp` and external OIDC resource-server mode were removed, and passing one is refused with a pointer to `vulcan mcp remote`. Static token, loopback, and named remote are the three HTTP auth modes.
 - Keep Vulcan bound to loopback or a private interface behind the HTTPS front door unless you have a deliberate deployment reason.
 - For browser-based local HTTP harnesses, send a valid `Origin` header containing only the scheme, host, and optional port. Vulcan accepts loopback origins (`localhost`, `127.0.0.1`, or `[::1]`) on loopback listeners and the public URL's origin, and rejects origins with paths, credentials, queries, or fragments (403). An accepted Origin does not replace the MCP token or OAuth grant.
 - The reverse proxy may forward request bodies length-delimited or chunked, up to 4 MiB. It must pass the public host in `Host` or rewrite it to the listener's IP address (or `localhost` on a loopback bind); any other host name is refused with 421 so a web page cannot reach the listener through DNS rebinding. Repeated `Authorization`, `Host`, `Origin`, `Content-Length`, session or protocol headers fail before authentication or tool dispatch.
@@ -55,7 +55,7 @@ debugging, and which tools a connection sees (its permission profile).
 - An authorization-code response of HTTP 503 `temporarily_unavailable` means the listener has reached its pending-code limit. Wait for unfinished attempts to expire, then restart authorization and consent; do not retry an undisclosed or consumed code or widen vault permissions.
 - A browser-authorization HTTP 503 `temporarily_unavailable` means that listener has reached its pending-login or pending-consent limit. Wait for unfinished attempts to expire and start authorization again. A submitted consent transaction is single-use: replaying an approval or denial cannot create another connection.
 - Vulcan accepts only its advertised OAuth scopes and requires the authorization `resource` to match the exact public MCP URL. A scope or resource error is an authentication configuration problem, not a reason to widen the permission profile.
-- If IndieAuth returns an unauthorized subject, use the subject shown in Vulcan's callback error to correct `--oauth-indieauth-me` or an explicit `--oauth-local-user` binding.
+- If IndieAuth returns an unauthorized subject, use the subject shown in Vulcan's callback error to correct the remote's identity (`vulcan mcp remote set <name> --identity <url>`).
 - IndieAuth profile/metadata discovery is bounded and does not follow redirects. If startup reports an identity redirect, set the named remote's identity to the final canonical HTTPS URL; do not extend startup timeouts or weaken HTTPS checks to hide a broken identity URL.
 - Reject the consent page if its client, identity, resource, vault, or permission profile are unexpected. IndieAuth login authenticates the person; the separate Vulcan consent action authorizes the MCP connection.
 - Named remote definitions are device-global (`[[mcp_remote]]` in `daemon.toml`) and never copied through vault sync. If `daemon.toml` names a `managed_by` owner, CLI edits are refused with the TOML to add to that owner's source; change the source instead of passing `--force-local-edit`, which the next render reverts. Vault permission profiles remain in `.vulcan/config.toml`; grants, refresh-token families, revocations, and per-remote OAuth secrets remain device-local outside the rebuildable cache.

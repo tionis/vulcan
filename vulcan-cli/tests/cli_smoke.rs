@@ -18396,7 +18396,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(mcp_skill.contains("Never delete fingerprint receipts"));
     assert!(mcp_skill.contains("restore the exact protected credential"));
     assert!(mcp_skill.contains("Local stdio and loopback HTTP"));
-    assert!(mcp_skill.contains("leave that flag unset to use the authenticated identity"));
+    assert!(mcp_skill
+        .contains("Static token, loopback, and named remote are the three HTTP auth modes"));
     assert!(mcp_skill.contains("vulcan daemon start --detach"));
     assert!(mcp_skill.contains("Stop the remote before `remote set` or `remote remove`"));
     assert!(mcp_skill.contains("A denied endpoint does not change suggestion state"));
@@ -34839,6 +34840,47 @@ fn mcp_rejects_the_removed_tool_pack_flags_with_an_explanation() {
             .stderr(predicate::str::contains(
                 "the permission profile alone decides",
             ));
+    }
+}
+
+#[test]
+fn mcp_refuses_the_removed_direct_oauth_flags_and_points_at_named_remotes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    for args in [
+        &[
+            "mcp",
+            "--transport",
+            "http",
+            "--oauth-issuer",
+            "https://auth.example.test/",
+        ][..],
+        &[
+            "mcp",
+            "--transport",
+            "http",
+            "--public-url",
+            "https://wiki.example.test/mcp",
+        ][..],
+        &[
+            "mcp",
+            "--transport",
+            "http",
+            "--oauth-local-approval-token",
+            "secret",
+        ][..],
+        &["mcp", "--transport", "http", "--oauth-dcr"][..],
+    ] {
+        Command::cargo_bin("vulcan")
+            .unwrap()
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("served by named remotes"))
+            .stderr(predicate::str::contains("vulcan mcp remote init"));
     }
 }
 

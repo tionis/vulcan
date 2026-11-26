@@ -117,7 +117,7 @@ pub fn handle_mcp_http_connection<C: McpRequestCore>(
     #[cfg(not(feature = "oauth"))]
     let oauth_enabled = false;
     #[cfg(feature = "oauth")]
-    let local_oauth = matches!(context.oauth, Some(McpOAuthMode::Local(_)));
+    let local_oauth = context.oauth.is_some();
     #[cfg(not(feature = "oauth"))]
     let local_oauth = false;
     #[cfg(feature = "oauth")]
@@ -765,10 +765,7 @@ fn oauth_error_response(
 
 #[cfg(feature = "oauth")]
 fn oauth_protected_resource_metadata_url(oauth: &McpOAuthMode) -> &str {
-    match oauth {
-        McpOAuthMode::External(external) => external.protected_resource_metadata_url(),
-        McpOAuthMode::Local(local) => local.protected_resource_metadata_url(),
-    }
+    oauth.protected_resource_metadata_url()
 }
 
 #[cfg(feature = "oauth")]

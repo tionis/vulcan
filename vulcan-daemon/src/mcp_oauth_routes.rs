@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::Value;
-use vulcan_core::{LocalOAuthIssuer, OAuthResourceServer};
+use vulcan_core::LocalOAuthIssuer;
 
 use crate::mcp_http_codec::{McpHttpRequest, McpHttpResponse};
 use crate::mcp_http_routes::McpHttpRoute;
@@ -13,12 +13,9 @@ use crate::mcp_oauth_policy::SUPPORTED_MCP_OAUTH_SCOPES;
 use crate::mcp_oauth_registration::register_mcp_oauth_client;
 use crate::mcp_oauth_token::McpLocalTokenEndpoint;
 
-pub enum McpOAuthRoutes<'a> {
-    Local(Box<McpLocalOAuthRoutes<'a>>),
-    External(&'a OAuthResourceServer),
-}
-
-pub struct McpLocalOAuthRoutes<'a> {
+/// The OAuth routes of a listener whose authorization server is Vulcan's own
+/// issuer.
+pub struct McpOAuthRoutes<'a> {
     pub issuer: &'a LocalOAuthIssuer,
     pub authorize: McpAuthorizeEndpoint<'a>,
     pub consent: McpConsentEndpoint<'a>,
@@ -34,78 +31,40 @@ impl McpOAuthRoutes<'_> {
         match route {
             McpHttpRoute::AuthorizationServerMetadata => self.authorization_server_metadata(),
             McpHttpRoute::ProtectedResourceMetadata => self.protected_resource_metadata(),
-            McpHttpRoute::LocalOAuthRegister => {
-                let Self::Local(local) = self else {
-                    unreachable!("local OAuth route requires local issuer");
-                };
-                let McpLocalOAuthRoutes {
-                    authorize,
-                    dcr_enabled,
-                    allowed_redirect_hosts,
-                    refresh_supported,
-                    ..
-                } = local.as_ref();
-                register_mcp_oauth_client(
-                    request,
-                    authorize.clients,
-                    *dcr_enabled,
-                    allowed_redirect_hosts,
-                    *refresh_supported,
-                )
-            }
+            McpHttpRoute::LocalOAuthRegister => register_mcp_oauth_client(
+                request,
+                self.authorize.clients,
+                self.dcr_enabled,
+                self.allowed_redirect_hosts,
+                self.refresh_supported,
+            ),
             McpHttpRoute::LocalOAuthAuthorize => self
-                .local_authorize()
+                .authorize
                 .authorize(&request.method, &parse_oauth_params(&request.query)),
             McpHttpRoute::LocalOAuthIndieAuthCallback => self
-                .local_authorize()
+                .authorize
                 .callback(&request.method, &parse_oauth_params(&request.query)),
-            McpHttpRoute::LocalOAuthToken => {
-                let Self::Local(local) = self else {
-                    unreachable!("local OAuth route requires local issuer");
-                };
-                local.token.handle(request, &parse_form(&request.body))
-            }
-            McpHttpRoute::LocalOAuthConsent => {
-                let Self::Local(local) = self else {
-                    unreachable!("local OAuth route requires local issuer");
-                };
-                local
-                    .consent
-                    .handle(&request.method, &parse_form(&request.body))
-            }
+            McpHttpRoute::LocalOAuthToken => self.token.handle(request, &parse_form(&request.body)),
+            McpHttpRoute::LocalOAuthConsent => self
+                .consent
+                .handle(&request.method, &parse_form(&request.body)),
             _ => unreachable!("non-OAuth route passed to OAuth handler"),
         }
     }
 
-    fn local_authorize(&self) -> &McpAuthorizeEndpoint<'_> {
-        let Self::Local(local) = self else {
-            unreachable!("local OAuth route requires local issuer");
-        };
-        &local.authorize
-    }
-
     fn authorization_server_metadata(&self) -> McpHttpResponse {
-        let body = match self {
-            Self::External(server) => server.authorization_server_metadata().clone(),
-            Self::Local(local) => {
-                let mut metadata = local.issuer.authorization_server_metadata().clone();
-                if !local.refresh_supported {
-                    metadata["grant_types_supported"] = serde_json::json!(["authorization_code"]);
-                }
-                metadata
-            }
-        };
-        json_response(&body)
+        let mut metadata = self.issuer.authorization_server_metadata().clone();
+        if !self.refresh_supported {
+            metadata["grant_types_supported"] = serde_json::json!(["authorization_code"]);
+        }
+        json_response(&metadata)
     }
 
     fn protected_resource_metadata(&self) -> McpHttpResponse {
-        let (resource, authorization_server) = match self {
-            Self::External(server) => (server.public_url(), server.authorization_server_issuer()),
-            Self::Local(local) => (local.issuer.public_url(), local.issuer.public_url()),
-        };
+        let public_url = self.issuer.public_url();
         json_response(&serde_json::json!({
-            "resource": resource,
-            "authorization_servers": [authorization_server],
+            "resource": public_url,
+            "authorization_servers": [public_url],
             "bearer_methods_supported": ["header"],
             "scopes_supported": SUPPORTED_MCP_OAUTH_SCOPES,
         }))

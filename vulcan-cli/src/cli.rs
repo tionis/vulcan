@@ -9267,112 +9267,66 @@ Examples:
             help = "Token HTTP requests must send as `Authorization: Bearer <token>`"
         )]
         auth_token: Option<String>,
-        #[arg(
-            long,
-            help = "Public HTTPS URL for this MCP endpoint, used in OAuth protected-resource metadata"
-        )]
-        public_url: Option<String>,
-        #[arg(
-            long,
-            help = "OIDC issuer URL for HTTP OAuth bearer-token validation, e.g. an Authentik provider issuer"
-        )]
-        oauth_issuer: Option<String>,
-        #[arg(
-            long,
-            help = "Expected OAuth access-token audience; repeat for multiple accepted audiences"
-        )]
-        oauth_audience: Vec<String>,
-        #[arg(
-            long,
-            help = "Override JWKS URL; defaults to issuer OpenID configuration discovery"
-        )]
-        oauth_jwks_url: Option<String>,
-        #[arg(
-            long,
-            help = "Allowed OAuth subject claim; repeat to allow multiple users"
-        )]
-        oauth_allowed_sub: Vec<String>,
-        #[arg(
-            long,
-            help = "Allowed OAuth email claim; repeat to allow multiple users"
-        )]
-        oauth_allowed_email: Vec<String>,
-        #[arg(
-            long,
-            env = "VULCAN_MCP_OAUTH_CLIENT_ID",
-            help = "Static OAuth client id for Vulcan's built-in MCP OAuth issuer"
-        )]
-        oauth_local_client_id: Option<String>,
-        #[arg(
-            long,
-            help = "Exact HTTPS redirect URI registered for the static local OAuth client; repeat for multiple URIs"
-        )]
-        oauth_local_redirect_uri: Vec<String>,
-        #[arg(
-            long,
-            env = "VULCAN_MCP_OAUTH_CLIENT_SECRET",
-            hide_env_values = true,
-            help = "Optional static OAuth client/signing secret override for Vulcan's built-in MCP OAuth issuer"
-        )]
-        oauth_local_client_secret: Option<String>,
-        #[arg(
-            long,
-            env = "VULCAN_MCP_OAUTH_APPROVAL_TOKEN",
-            hide_env_values = true,
-            help = "Browser approval token required by Vulcan's built-in MCP OAuth issuer"
-        )]
-        oauth_local_approval_token: Option<String>,
-        #[arg(
-            long,
-            help = "Subject claim for Vulcan's built-in MCP OAuth issuer; defaults to local-user unless IndieAuth selects the identity"
-        )]
-        oauth_local_subject: Option<String>,
-        #[arg(
-            long,
-            help = "Optional email claim used by Vulcan's built-in MCP OAuth issuer"
-        )]
-        oauth_local_email: Option<String>,
-        #[arg(
-            long,
-            help = "Enable dynamic client registration for Vulcan's built-in MCP OAuth issuer"
-        )]
-        oauth_dcr: bool,
-        #[arg(
-            long,
-            help = "Restrict OAuth clients (registered or identified by a metadata document URL) to HTTPS redirects on this host or its subdomains; repeat for multiple hosts. Without it any valid redirect is allowed: HTTPS, loopback http, or an app scheme, and consent shows where it goes"
-        )]
-        oauth_dcr_allowed_redirect_host: Vec<String>,
-        #[arg(
-            long,
-            help = "Override the discovered upstream IndieAuth authorization endpoint"
-        )]
-        oauth_indieauth_authorization_endpoint: Option<String>,
-        #[arg(
-            long,
-            help = "Override the discovered upstream IndieAuth token endpoint"
-        )]
-        oauth_indieauth_token_endpoint: Option<String>,
-        #[arg(
-            long,
-            help = "Client id Vulcan uses when authenticating users with the upstream IndieAuth server"
-        )]
-        oauth_indieauth_client_id: Option<String>,
-        #[arg(
-            long,
-            help = "Redirect URI registered with the upstream IndieAuth server; defaults to /oauth/indieauth/callback on --public-url origin"
-        )]
-        oauth_indieauth_redirect_uri: Option<String>,
-        #[arg(
-            long,
-            help = "IndieAuth identity URL used for discovery and login; with --permissions and no explicit user bindings, this identity is automatically allowed"
-        )]
-        oauth_indieauth_me: Option<String>,
-        #[arg(
-            long,
-            help = "Allowed local OAuth user binding as subject=permission-profile or subject=permission-profile,email; repeat for multiple users"
-        )]
-        oauth_local_user: Vec<String>,
+        /// Removed: direct OAuth on `vulcan mcp`; rejected with an explanation.
+        #[command(flatten)]
+        removed_oauth: RemovedMcpOAuthArgs,
     },
+}
+
+/// Flags of the removed direct OAuth modes of `vulcan mcp --transport http`
+/// (Vulcan's issuer run directly, or an external OIDC provider). They are
+/// still parsed, hidden, so using one gets an explanation rather than an
+/// unknown-flag error: OAuth is served by named remotes now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+pub struct RemovedMcpOAuthArgs {
+    #[arg(long, hide = true)]
+    pub public_url: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_issuer: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_audience: Vec<String>,
+    #[arg(long, hide = true)]
+    pub oauth_jwks_url: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_allowed_sub: Vec<String>,
+    #[arg(long, hide = true)]
+    pub oauth_allowed_email: Vec<String>,
+    #[arg(long, hide = true)]
+    pub oauth_local_client_id: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_local_redirect_uri: Vec<String>,
+    #[arg(long, hide = true)]
+    pub oauth_local_client_secret: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_local_approval_token: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_local_subject: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_local_email: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_dcr: bool,
+    #[arg(long, hide = true)]
+    pub oauth_dcr_allowed_redirect_host: Vec<String>,
+    #[arg(long, hide = true)]
+    pub oauth_indieauth_authorization_endpoint: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_indieauth_token_endpoint: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_indieauth_client_id: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_indieauth_redirect_uri: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_indieauth_me: Option<String>,
+    #[arg(long, hide = true)]
+    pub oauth_local_user: Vec<String>,
+}
+
+impl RemovedMcpOAuthArgs {
+    /// Whether any removed flag was given.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        *self != Self::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

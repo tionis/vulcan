@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use ulid::Ulid;
 #[cfg(feature = "oauth")]
-use vulcan_core::{LocalOAuthIssuer, OAuthResourceServer};
+use vulcan_core::LocalOAuthIssuer;
 
 use crate::http_policy::{mcp_origin_allowed, mcp_public_origin_allowed};
 use crate::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
@@ -17,23 +17,10 @@ use crate::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 use crate::mcp_remote_runtime::{NamedMcpRuntime, NamedTokenRequest};
 use crate::mcp_session::McpSessionAuthority;
 
+/// The listener's OAuth authorization server: Vulcan's own issuer, which
+/// named remotes run. (External resource-server mode was removed.)
 #[cfg(feature = "oauth")]
-#[derive(Debug, Clone)]
-pub enum McpOAuthMode {
-    External(Arc<OAuthResourceServer>),
-    Local(Arc<LocalOAuthIssuer>),
-}
-
-#[cfg(feature = "oauth")]
-impl McpOAuthMode {
-    #[must_use]
-    pub fn public_url(&self) -> &str {
-        match self {
-            Self::External(server) => server.public_url(),
-            Self::Local(issuer) => issuer.public_url(),
-        }
-    }
-}
+pub type McpOAuthMode = Arc<LocalOAuthIssuer>;
 
 #[derive(Clone, Copy)]
 pub struct McpHttpAuthOptions<'a> {
@@ -92,26 +79,15 @@ pub fn authenticate_mcp_http_request(
     if let Some(oauth) = options.oauth {
         let token = bearer_token(headers)
             .ok_or_else(|| oauth_error("missing OAuth bearer token", false))?;
-        match oauth {
-            McpOAuthMode::External(server) => {
-                let identity = server
-                    .validate_bearer_token(&token)
-                    .map_err(|error| oauth_error(error.to_string(), true))?;
-                subject = Some(identity.subject);
-                scopes = identity.scopes;
-            }
-            McpOAuthMode::Local(issuer) => {
-                let identity = issuer
-                    .validate_bearer_token(&token)
-                    .map_err(|error| oauth_error(error.to_string(), true))?;
-                subject = Some(identity.subject);
-                client_id = identity.client_id;
-                scopes = identity.scopes;
-                grant_id = identity.grant_id;
-                if permission_profile.is_none() {
-                    permission_profile = identity.permission_profile;
-                }
-            }
+        let identity = oauth
+            .validate_bearer_token(&token)
+            .map_err(|error| oauth_error(error.to_string(), true))?;
+        subject = Some(identity.subject);
+        client_id = identity.client_id;
+        scopes = identity.scopes;
+        grant_id = identity.grant_id;
+        if permission_profile.is_none() {
+            permission_profile = identity.permission_profile;
         }
         credential = token;
     }
@@ -129,7 +105,7 @@ pub fn authenticate_mcp_http_request(
         credential = actual;
     }
     #[cfg(feature = "oauth")]
-    let public_url = options.oauth.map(McpOAuthMode::public_url);
+    let public_url = options.oauth.map(|oauth| oauth.public_url());
     #[cfg(not(feature = "oauth"))]
     let public_url = None;
     if headers.get("origin").is_some_and(|origin| {
@@ -251,7 +227,7 @@ mod tests {
         let token = issuer
             .issue_access_token_for_authorization(subject, "client", &scopes, None)
             .unwrap();
-        let oauth = McpOAuthMode::Local(issuer);
+        let oauth: McpOAuthMode = issuer;
         let authenticate = |headers: &BTreeMap<String, String>| {
             let mut policy = options();
             policy.auth_token = None;

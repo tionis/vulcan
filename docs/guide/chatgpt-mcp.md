@@ -58,8 +58,7 @@ client registration validation, 15-minute access tokens, rotating refresh tokens
 token-family revocation, and bearer-token validation. The upstream IndieAuth hop also uses PKCE.
 IndieAuth authenticates the human; it does not itself grant vault access.
 Registered OAuth redirect URIs may be any HTTPS URL, `http` to a loopback address, or a private-use
-app scheme, without credentials or fragments; `--oauth-dcr-allowed-redirect-host` (or a named
-remote's `redirect_hosts`) restricts them to HTTPS on listed hosts. The consent page shows where the
+app scheme, without credentials or fragments; a named remote's `redirect_hosts` restricts them to HTTPS on listed hosts. The consent page shows where the
 authorization goes. Existing query parameters are preserved when Vulcan redirects with an
 authorization code.
 At the token endpoint, dynamically registered clients must use their declared authentication method:
@@ -107,13 +106,14 @@ A mismatched, unavailable, or malformed credential fails closed without provider
 automatic permission repair. Ordinary local stdio and advanced direct HTTP configurations retain
 their existing storage behavior; migration does not ingest environment-variable credentials.
 
-The long-form direct flags remain available for debugging, generic local HTTP clients, external
-OIDC, and compatibility. `vulcan mcp` without a management subcommand remains the daemon-independent
-stdio default and does not require a named remote or browser login.
+OAuth is served only by named remotes: the direct `--public-url` and `--oauth-*` flags of
+`vulcan mcp` and the external OIDC resource-server mode were removed, and passing one of those
+flags is refused with a pointer to `vulcan mcp remote`. `vulcan mcp` without a management
+subcommand remains the daemon-independent stdio default and does not require a named remote or
+browser login.
 
-For external OIDC resource-server mode, use `--oauth-issuer`, `--oauth-audience`, and an allowed subject or email. This keeps Authentik as the token issuer, but ChatGPT compatibility can vary by provider metadata and token-exchange behavior.
-
-`--auth-token` remains useful for private/internal clients that can set a shared bearer token or `x-vulcan-token`. It is mutually exclusive with direct OAuth mode and is not a ChatGPT-compatible public auth mechanism.
+`--auth-token` remains useful for private/internal clients that can send a shared token as
+`Authorization: Bearer`. It is not a ChatGPT-compatible public auth mechanism.
 
 Foreground HTTP MCP starts a background vault watcher; resident mode uses the daemon's vault
 observation runtime. Both run incremental scans after filesystem changes. Use `index_scan` when

@@ -5130,31 +5130,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref bind,
             ref endpoint,
             ref auth_token,
-            ref public_url,
-            ref oauth_issuer,
-            ref oauth_audience,
-            ref oauth_jwks_url,
-            ref oauth_allowed_sub,
-            ref oauth_allowed_email,
-            ref oauth_local_client_id,
-            ref oauth_local_redirect_uri,
-            ref oauth_local_client_secret,
-            ref oauth_local_approval_token,
-            ref oauth_local_subject,
-            ref oauth_local_email,
-            oauth_dcr,
-            ref oauth_dcr_allowed_redirect_host,
-            ref oauth_indieauth_authorization_endpoint,
-            ref oauth_indieauth_token_endpoint,
-            ref oauth_indieauth_client_id,
-            ref oauth_indieauth_redirect_uri,
-            ref oauth_indieauth_me,
-            ref oauth_local_user,
+            ref removed_oauth,
         } => {
             reject_removed_tool_pack_flags(
                 removed_tool_pack.as_ref(),
                 removed_tool_pack_mode.as_ref(),
             )?;
+            reject_removed_mcp_oauth_flags(removed_oauth)?;
             if let Some(command) = command {
                 return commands::mcp_remote::handle_mcp_command(cli, command);
             }
@@ -5169,27 +5151,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     bind: bind.clone(),
                     endpoint: endpoint.clone(),
                     auth_token: auth_token.clone(),
-                    public_url: public_url.clone(),
-                    oauth_issuer: oauth_issuer.clone(),
-                    oauth_audience: oauth_audience.clone(),
-                    oauth_jwks_url: oauth_jwks_url.clone(),
-                    oauth_allowed_sub: oauth_allowed_sub.clone(),
-                    oauth_allowed_email: oauth_allowed_email.clone(),
-                    oauth_local_client_id: oauth_local_client_id.clone(),
-                    oauth_local_redirect_uri: oauth_local_redirect_uri.clone(),
-                    oauth_local_client_secret: oauth_local_client_secret.clone(),
-                    oauth_local_approval_token: oauth_local_approval_token.clone(),
-                    oauth_local_subject: oauth_local_subject.clone(),
-                    oauth_local_email: oauth_local_email.clone(),
-                    oauth_dcr,
-                    oauth_dcr_allowed_redirect_host: oauth_dcr_allowed_redirect_host.clone(),
-                    oauth_indieauth_authorization_endpoint: oauth_indieauth_authorization_endpoint
-                        .clone(),
-                    oauth_indieauth_token_endpoint: oauth_indieauth_token_endpoint.clone(),
-                    oauth_indieauth_client_id: oauth_indieauth_client_id.clone(),
-                    oauth_indieauth_redirect_uri: oauth_indieauth_redirect_uri.clone(),
-                    oauth_indieauth_me: oauth_indieauth_me.clone(),
-                    oauth_local_user: oauth_local_user.clone(),
+                    public_url: None,
+                    oauth_local_client_secret: None,
+                    oauth_local_subject: None,
+                    oauth_dcr_allowed_redirect_host: Vec::new(),
+                    oauth_indieauth_authorization_endpoint: None,
+                    oauth_indieauth_token_endpoint: None,
+                    oauth_indieauth_me: None,
                     instance_id: None,
                     oauth_storage_dir: None,
                     oauth_credentials: None,
@@ -10867,6 +10835,17 @@ fn append_change_rows(rows: &mut Vec<Value>, anchor: &str, kind: ChangeKind, ite
 
 #[cfg(test)]
 mod tests;
+
+/// Direct OAuth on `vulcan mcp --transport http` was removed: Vulcan's issuer
+/// is served by named remotes, and external resource-server mode is gone.
+fn reject_removed_mcp_oauth_flags(removed: &cli::RemovedMcpOAuthArgs) -> Result<(), CliError> {
+    if removed.any() {
+        return Err(CliError::operation(
+            "`--public-url` and the `--oauth-*` flags were removed from `vulcan mcp`: OAuth (IndieAuth sign-in and consent) is served by named remotes. Set one up with `vulcan mcp remote init <name> --wiki <id> --public-url <https-url> --identity <indieauth-url>` and run it with `vulcan mcp remote run <name>` (see `vulcan help mcp-remotes`), or keep `vulcan mcp --transport http` with `--auth-token` for scripts.",
+        ));
+    }
+    Ok(())
+}
 
 /// `--tool-pack` and `--tool-pack-mode` were removed with tool packs; say so
 /// instead of failing on an unknown flag, since MCP client configurations

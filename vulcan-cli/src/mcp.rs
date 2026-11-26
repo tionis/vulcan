@@ -48,15 +48,10 @@ use vulcan_app::mcp_session_protocol::{McpProtocolCore, McpProtocolHost};
 use vulcan_core::pkce_s256_challenge;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::ClientIdMetadataDocument;
-#[cfg(feature = "oauth")]
-use vulcan_core::LocalOAuthUserConfig;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::PermissionGuard;
 #[cfg(feature = "oauth")]
-use vulcan_core::{
-    discover_indieauth_endpoints, LocalOAuthIssuer, LocalOAuthIssuerConfig, OAuthResourceServer,
-    OAuthResourceServerConfig,
-};
+use vulcan_core::{discover_indieauth_endpoints, LocalOAuthIssuer, LocalOAuthIssuerConfig};
 use vulcan_core::{VaultPaths, WatchOptions};
 use vulcan_daemon::host::{
     HostSupervisor, RestartPolicy, ServiceDefinition, ServiceId, ServiceLifecycleState,
@@ -68,8 +63,6 @@ use vulcan_daemon::hosted_executor::HostedExecutionError;
 use vulcan_daemon::hosted_executor::HostedExecutor;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::hosted_jobs::HostedJobLedger;
-#[cfg(feature = "oauth")]
-use vulcan_daemon::http_policy::mcp_oauth_redirect_uri_valid;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_execution::HostedMcpExecution;
 #[cfg(all(test, feature = "oauth"))]
@@ -162,28 +155,26 @@ pub(crate) struct McpHttpOptions {
     pub bind: String,
     pub endpoint: String,
     pub auth_token: Option<String>,
+    // Set only for a named remote, whose listener runs Vulcan's OAuth issuer
+    // with IndieAuth sign-in; `vulcan mcp --transport http` has no OAuth.
     #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub public_url: Option<String>,
-    pub oauth_issuer: Option<String>,
-    pub oauth_audience: Vec<String>,
-    pub oauth_jwks_url: Option<String>,
-    pub oauth_allowed_sub: Vec<String>,
-    pub oauth_allowed_email: Vec<String>,
-    pub oauth_local_client_id: Option<String>,
+    /// Overrides the issuer's stored client secret (tests).
     #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
-    pub oauth_local_redirect_uri: Vec<String>,
     pub oauth_local_client_secret: Option<String>,
-    pub oauth_local_approval_token: Option<String>,
+    /// Overrides the subject tokens are issued to; defaults to the identity.
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_local_subject: Option<String>,
-    pub oauth_local_email: Option<String>,
-    pub oauth_dcr: bool,
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_dcr_allowed_redirect_host: Vec<String>,
+    /// Override the discovered sign-in endpoints (tests).
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_indieauth_authorization_endpoint: Option<String>,
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_indieauth_token_endpoint: Option<String>,
-    pub oauth_indieauth_client_id: Option<String>,
-    pub oauth_indieauth_redirect_uri: Option<String>,
+    /// The named remote's sign-in identity; with it the listener runs OAuth.
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_indieauth_me: Option<String>,
-    pub oauth_local_user: Vec<String>,
     pub instance_id: Option<Ulid>,
     #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub oauth_storage_dir: Option<PathBuf>,
@@ -412,25 +403,12 @@ fn run_named_mcp_remote_with_endpoints(
         endpoint,
         auth_token: None,
         public_url: Some(remote.public_url.clone()),
-        oauth_issuer: None,
-        oauth_audience: Vec::new(),
-        oauth_jwks_url: None,
-        oauth_allowed_sub: Vec::new(),
-        oauth_allowed_email: Vec::new(),
-        oauth_local_client_id: None,
-        oauth_local_redirect_uri: Vec::new(),
         oauth_local_client_secret: None,
-        oauth_local_approval_token: None,
         oauth_local_subject: None,
-        oauth_local_email: None,
-        oauth_dcr: true,
         oauth_dcr_allowed_redirect_host: remote.redirect_hosts.clone(),
         oauth_indieauth_authorization_endpoint: indieauth_endpoints.map(|item| item.0.clone()),
         oauth_indieauth_token_endpoint: indieauth_endpoints.map(|item| item.1.clone()),
-        oauth_indieauth_client_id: None,
-        oauth_indieauth_redirect_uri: None,
         oauth_indieauth_me: Some(identity.clone()),
-        oauth_local_user: Vec::new(),
         instance_id: Some(remote.instance_id),
         oauth_storage_dir: Some(storage_dir),
         oauth_credentials: Some(vulcan_daemon::mcp_credentials::McpRemoteCredentials::at(
@@ -797,9 +775,7 @@ fn run_mcp_http_server_inner(
 ) -> Result<(), CliError> {
     let _sync_host = install_mcp_sync_host();
     #[cfg(feature = "oauth")]
-    let oauth = build_mcp_oauth_validator(paths, requested_profile, options)?;
-    #[cfg(not(feature = "oauth"))]
-    reject_mcp_oauth_options_when_disabled(options)?;
+    let oauth = build_mcp_oauth_validator(paths, options)?;
     #[cfg(feature = "oauth")]
     let auth_enabled = options.auth_token.is_some() || oauth.is_some();
     #[cfg(not(feature = "oauth"))]
@@ -856,12 +832,12 @@ fn run_mcp_http_server_inner(
             #[cfg(feature = "oauth")]
             oauth_pending_consent: Arc::new(Mutex::new(BTreeMap::new())),
             #[cfg(feature = "oauth")]
-            oauth_dcr_enabled: options.oauth_dcr,
+            oauth_dcr_enabled: options.oauth_indieauth_me.is_some(),
             #[cfg(feature = "oauth")]
             // Empty means any valid redirect; consent shows where it goes.
             oauth_dcr_allowed_redirect_hosts: options.oauth_dcr_allowed_redirect_host.clone(),
             #[cfg(feature = "oauth")]
-            oauth_local_redirect_uris: options.oauth_local_redirect_uri.clone(),
+            oauth_local_redirect_uris: Vec::new(),
             #[cfg(feature = "oauth")]
             oauth_indieauth: build_indieauth_config(options)?,
             #[cfg(feature = "oauth")]
@@ -1314,181 +1290,48 @@ fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr
     Ok(addr)
 }
 
-#[allow(clippy::too_many_lines)]
+/// The OAuth issuer of a named remote's listener: Vulcan's own, with `IndieAuth`
+/// sign-in for its identity and open client registration. Other listeners
+/// have no OAuth.
 #[cfg(feature = "oauth")]
 fn build_mcp_oauth_validator(
     paths: &VaultPaths,
-    requested_profile: Option<&str>,
     options: &McpHttpOptions,
 ) -> Result<Option<McpOAuthMode>, CliError> {
-    let local_requested = options.oauth_local_client_id.is_some()
-        || !options.oauth_local_redirect_uri.is_empty()
-        || options.oauth_local_client_secret.is_some()
-        || options.oauth_local_approval_token.is_some()
-        || options.oauth_dcr
-        || options.oauth_indieauth_authorization_endpoint.is_some()
-        || options.oauth_indieauth_token_endpoint.is_some()
-        || options.oauth_indieauth_me.is_some();
-    if local_requested {
-        if options.oauth_issuer.is_some() || options.auth_token.is_some() {
-            return Err(CliError::operation(
-                "local MCP OAuth issuer is mutually exclusive with --oauth-issuer and --auth-token",
-            ));
-        }
-        let public_url = options.public_url.as_deref().ok_or_else(|| {
-            CliError::operation("--public-url is required when using local MCP OAuth issuer")
-        })?;
-        let client_id = options
-            .oauth_local_client_id
-            .as_deref()
-            .unwrap_or("vulcan-mcp");
-        if options.oauth_local_client_id.is_some()
-            && (options.oauth_local_redirect_uri.is_empty()
-                || !options
-                    .oauth_local_redirect_uri
-                    .iter()
-                    .all(|uri| mcp_oauth_redirect_uri_valid(uri)))
-        {
-            return Err(CliError::operation(
-                "static local OAuth clients require at least one valid --oauth-local-redirect-uri",
-            ));
-        }
-        let client_secret = match options.oauth_local_client_secret.as_deref() {
-            Some(secret) => secret.to_string(),
-            None if options.oauth_dcr => load_or_create_local_oauth_issuer_secret(paths, options)?,
-            None => {
-                return Err(CliError::operation(
-                    "--oauth-local-client-secret is required unless --oauth-dcr is enabled",
-                ))
-            }
-        };
-        let approval_token = options.oauth_local_approval_token.as_deref().unwrap_or("");
-        if approval_token.is_empty()
-            && options.oauth_indieauth_authorization_endpoint.is_none()
-            && options.oauth_indieauth_me.is_none()
-        {
-            return Err(CliError::operation(
-                "--oauth-local-approval-token is required unless IndieAuth is configured",
-            ));
-        }
-        let implicit_indieauth_subject = if options.oauth_local_user.is_empty()
-            && options.oauth_local_subject.is_none()
-            && requested_profile.is_some()
-        {
-            options.oauth_indieauth_me.as_deref()
-        } else {
-            None
-        };
-        if options.oauth_indieauth_me.is_some()
-            && options.oauth_local_user.is_empty()
-            && options.oauth_local_subject.is_none()
-            && requested_profile.is_none()
-        {
-            return Err(CliError::operation(
-                "single-user IndieAuth requires --permissions <profile>; alternatively add \
-                 --oauth-local-user <subject>=<profile> for per-user permissions",
-            ));
-        }
-        let subject = options
-            .oauth_local_subject
-            .as_deref()
-            .or(implicit_indieauth_subject)
-            .unwrap_or("local-user");
-        return LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
-            public_url: public_url.to_string(),
-            client_id: client_id.to_string(),
-            client_secret,
-            signing_key: load_or_create_local_oauth_signing_key(paths, options)?,
-            approval_token: approval_token.to_string(),
-            subject: subject.to_string(),
-            email: options.oauth_local_email.clone(),
-            users: parse_local_oauth_users(&options.oauth_local_user)?,
-            dcr_enabled: options.oauth_dcr,
-        })
-        .map(Arc::new)
-        .map(McpOAuthMode::Local)
-        .map(Some)
-        .map_err(CliError::operation);
-    }
-
-    let Some(issuer) = options.oauth_issuer.as_deref() else {
-        if options.public_url.is_some()
-            || !options.oauth_audience.is_empty()
-            || options.oauth_jwks_url.is_some()
-            || !options.oauth_allowed_sub.is_empty()
-            || !options.oauth_allowed_email.is_empty()
-        {
-            return Err(CliError::operation(
-                "--oauth-issuer is required when using MCP OAuth options",
-            ));
-        }
+    let Some(identity) = options.oauth_indieauth_me.as_deref() else {
         return Ok(None);
     };
     if options.auth_token.is_some() {
         return Err(CliError::operation(
-            "--auth-token and --oauth-issuer are mutually exclusive for direct MCP HTTP auth",
+            "a named remote's OAuth cannot be combined with --auth-token",
         ));
     }
     let public_url = options
         .public_url
         .as_deref()
-        .ok_or_else(|| CliError::operation("--public-url is required when using --oauth-issuer"))?;
-    if !public_url.starts_with("https://") {
-        return Err(CliError::operation(
-            "--public-url must be an HTTPS URL for MCP OAuth",
-        ));
-    }
-    if options.oauth_audience.is_empty() {
-        return Err(CliError::operation(
-            "--oauth-audience is required when using --oauth-issuer",
-        ));
-    }
-    if options.oauth_allowed_sub.is_empty() && options.oauth_allowed_email.is_empty() {
-        return Err(CliError::operation(
-            "at least one --oauth-allowed-sub or --oauth-allowed-email is required",
-        ));
-    }
-
-    OAuthResourceServer::from_config(OAuthResourceServerConfig {
-        issuer: issuer.to_string(),
-        audiences: options.oauth_audience.clone(),
-        jwks_url: options.oauth_jwks_url.clone(),
-        allowed_subs: options.oauth_allowed_sub.clone(),
-        allowed_emails: options.oauth_allowed_email.clone(),
+        .ok_or_else(|| CliError::operation("a named remote needs its public URL"))?;
+    let client_secret = match options.oauth_local_client_secret.as_deref() {
+        Some(secret) => secret.to_string(),
+        None => load_or_create_local_oauth_issuer_secret(paths, options)?,
+    };
+    LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
         public_url: public_url.to_string(),
+        client_id: "vulcan-mcp".to_string(),
+        client_secret,
+        signing_key: load_or_create_local_oauth_signing_key(paths, options)?,
+        approval_token: String::new(),
+        subject: options
+            .oauth_local_subject
+            .as_deref()
+            .unwrap_or(identity)
+            .to_string(),
+        email: None,
+        users: Vec::new(),
+        dcr_enabled: true,
     })
     .map(Arc::new)
-    .map(McpOAuthMode::External)
     .map(Some)
     .map_err(CliError::operation)
-}
-
-#[cfg(not(feature = "oauth"))]
-fn reject_mcp_oauth_options_when_disabled(options: &McpHttpOptions) -> Result<(), CliError> {
-    let oauth_requested = options.oauth_issuer.is_some()
-        || !options.oauth_audience.is_empty()
-        || options.oauth_jwks_url.is_some()
-        || !options.oauth_allowed_sub.is_empty()
-        || !options.oauth_allowed_email.is_empty()
-        || options.oauth_local_client_id.is_some()
-        || options.oauth_local_client_secret.is_some()
-        || options.oauth_local_approval_token.is_some()
-        || options.oauth_local_subject.is_some()
-        || options.oauth_local_email.is_some()
-        || options.oauth_dcr
-        || !options.oauth_dcr_allowed_redirect_host.is_empty()
-        || options.oauth_indieauth_authorization_endpoint.is_some()
-        || options.oauth_indieauth_token_endpoint.is_some()
-        || options.oauth_indieauth_client_id.is_some()
-        || options.oauth_indieauth_redirect_uri.is_some()
-        || options.oauth_indieauth_me.is_some()
-        || !options.oauth_local_user.is_empty();
-    if oauth_requested {
-        return Err(CliError::operation(
-            "MCP OAuth requires a build with the `oauth` feature enabled",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(all(test, feature = "oauth"))]
@@ -1606,10 +1449,7 @@ fn create_named_connection_grant(
     pending: &LocalOAuthPendingConsent,
     params: &BTreeMap<String, String>,
 ) -> Result<Option<String>, McpHttpResponse> {
-    let issuer = match context.oauth.as_ref().expect("OAuth test context") {
-        McpOAuthMode::Local(issuer) => issuer,
-        McpOAuthMode::External(_) => unreachable!("named grants require local issuer"),
-    };
+    let issuer = context.oauth.as_ref().expect("OAuth test context");
     local_consent_endpoint(context, issuer).create_named_grant(pending, params)
 }
 
@@ -1796,14 +1636,8 @@ fn build_indieauth_config(
         .as_deref()
         .ok_or_else(|| CliError::operation("--public-url is required with IndieAuth options"))?;
     let origin = public_url_origin_for_cli(public_url)?;
-    let client_id = options
-        .oauth_indieauth_client_id
-        .clone()
-        .unwrap_or_else(|| origin.clone());
-    let redirect_uri = options
-        .oauth_indieauth_redirect_uri
-        .clone()
-        .unwrap_or_else(|| format!("{origin}/oauth/indieauth/callback"));
+    let redirect_uri = format!("{origin}/oauth/indieauth/callback");
+    let client_id = origin;
     Ok(Some(LocalOAuthIndieAuthConfig {
         authorization_endpoint,
         token_endpoint,
@@ -1820,29 +1654,6 @@ fn public_url_origin_for_cli(public_url: &str) -> Result<String, CliError> {
     };
     let host = rest.split('/').next().unwrap_or(rest);
     Ok(format!("{scheme}://{host}"))
-}
-
-#[cfg(feature = "oauth")]
-fn parse_local_oauth_users(users: &[String]) -> Result<Vec<LocalOAuthUserConfig>, CliError> {
-    users
-        .iter()
-        .map(|entry| {
-            let (subject, rest) = entry
-                .split_once('=')
-                .ok_or_else(|| CliError::operation("OAuth users must be subject=profile"))?;
-            if subject.is_empty() || rest.is_empty() {
-                return Err(CliError::operation("OAuth users must be subject=profile"));
-            }
-            let (profile, email) = rest
-                .split_once(',')
-                .map_or((rest, None), |(profile, email)| (profile, Some(email)));
-            Ok(LocalOAuthUserConfig {
-                subject: subject.to_string(),
-                email: email.map(ToOwned::to_owned),
-                permission_profile: Some(profile.to_string()),
-            })
-        })
-        .collect()
 }
 
 #[cfg(all(test, feature = "oauth"))]

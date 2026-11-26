@@ -24,7 +24,7 @@ use crate::{
     mcp_oauth_clients::OAuthClientRegistry,
     mcp_oauth_codes::McpAuthorizationCodeMap,
     mcp_oauth_consent::McpConsentEndpoint,
-    mcp_oauth_routes::{McpLocalOAuthRoutes, McpOAuthRoutes},
+    mcp_oauth_routes::McpOAuthRoutes,
     mcp_oauth_token::McpLocalTokenEndpoint,
     mcp_remote_runtime::NamedMcpRuntime,
 };
@@ -119,7 +119,7 @@ impl<C> McpHttpHost<C> {
     pub fn public_url(&self) -> Option<&str> {
         #[cfg(feature = "oauth")]
         {
-            self.oauth.as_ref().map(McpOAuthMode::public_url)
+            self.oauth.as_ref().map(|oauth| oauth.public_url())
         }
         #[cfg(not(feature = "oauth"))]
         {
@@ -149,17 +149,14 @@ impl<C> McpHttpHost<C> {
     #[cfg(feature = "oauth")]
     #[must_use]
     pub fn oauth_routes(&self, exchange: IndieAuthExchange) -> Option<McpOAuthRoutes<'_>> {
-        self.oauth.as_ref().map(|oauth| match oauth {
-            McpOAuthMode::External(server) => McpOAuthRoutes::External(server),
-            McpOAuthMode::Local(issuer) => McpOAuthRoutes::Local(Box::new(McpLocalOAuthRoutes {
-                issuer,
-                authorize: self.authorize_endpoint(issuer, exchange),
-                consent: self.consent_endpoint(issuer),
-                token: self.token_endpoint(issuer),
-                dcr_enabled: self.oauth_dcr_enabled,
-                allowed_redirect_hosts: &self.oauth_dcr_allowed_redirect_hosts,
-                refresh_supported: self.named_runtime.is_some(),
-            })),
+        self.oauth.as_deref().map(|issuer| McpOAuthRoutes {
+            issuer,
+            authorize: self.authorize_endpoint(issuer, exchange),
+            consent: self.consent_endpoint(issuer),
+            token: self.token_endpoint(issuer),
+            dcr_enabled: self.oauth_dcr_enabled,
+            allowed_redirect_hosts: &self.oauth_dcr_allowed_redirect_hosts,
+            refresh_supported: self.named_runtime.is_some(),
         })
     }
 
@@ -385,7 +382,7 @@ mod tests {
             })
             .unwrap(),
         );
-        listener.oauth = Some(McpOAuthMode::Local(issuer.clone()));
+        listener.oauth = Some(issuer.clone());
         let clone = listener.clone();
         assert!(Arc::ptr_eq(&listener.oauth_codes, &clone.oauth_codes));
         assert!(Arc::ptr_eq(
@@ -393,9 +390,7 @@ mod tests {
             &clone.oauth_pending_consent
         ));
         let routes = listener.oauth_routes(default_indieauth_exchange).unwrap();
-        let McpOAuthRoutes::Local(ref local) = routes else {
-            panic!("local routes");
-        };
+        let local = &routes;
         assert_eq!(
             local.authorize.requested_profile.as_deref(),
             Some("readonly")
