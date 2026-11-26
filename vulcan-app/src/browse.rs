@@ -744,6 +744,18 @@ pub fn is_git_repo(vault_root: &std::path::Path) -> bool {
     core_is_git_repo(vault_root)
 }
 
+/// The cache stores index times as Unix seconds; reports give RFC 3339 UTC.
+fn scan_timestamp(indexed_at: &str) -> String {
+    indexed_at
+        .parse::<i64>()
+        .ok()
+        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+        .map_or_else(
+            || indexed_at.to_string(),
+            |time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )
+}
+
 pub fn build_vault_status_report(paths: &VaultPaths) -> Result<VaultStatusReport, AppError> {
     let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
         .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
@@ -755,6 +767,7 @@ pub fn build_vault_status_report(paths: &VaultPaths) -> Result<VaultStatusReport
             })
             .ok()
             .flatten()
+            .map(|indexed_at| scan_timestamp(&indexed_at))
     });
 
     let (git_branch, git_dirty, git_staged, git_unstaged, git_untracked) =
@@ -1235,7 +1248,13 @@ mod tests {
         assert_eq!(report.note_count, 1);
         assert_eq!(report.attachment_count, 0);
         assert!(report.cache_bytes > 0);
-        assert!(report.last_scan.is_some());
+        let last_scan = report.last_scan.as_deref().expect("last scan");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(last_scan).is_ok(),
+            "{last_scan}"
+        );
+        assert_eq!(super::scan_timestamp("1795701858"), "2026-11-26T14:04:18Z");
+        assert_eq!(super::scan_timestamp("not a number"), "not a number");
     }
 
     #[test]
