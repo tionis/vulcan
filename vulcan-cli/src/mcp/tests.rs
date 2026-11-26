@@ -160,7 +160,7 @@ fn restricted_mcp_read_reports_exclude_denied_task_paths() {
 }
 
 #[test]
-fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
+fn http_sessions_reject_cross_subject_grant_and_remote_but_follow_token_refresh() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
     let core = McpServerCore::new(&paths, Some("readonly")).expect("MCP core");
@@ -221,7 +221,7 @@ fn http_sessions_reject_cross_subject_grant_remote_and_token_reuse() {
         vec!["mcp:tools".to_string()],
         "replacement-token",
     );
-    assert!(!session.authority.matches(&replacement_token));
+    assert!(session.authority.matches(&replacement_token));
 }
 
 #[cfg(feature = "oauth")]
@@ -757,9 +757,8 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .as_str()
         .expect("first refreshed access token");
     assert_ne!(foreground_first_refreshed_access, foreground_consent_token);
-    assert_named_listener_rejects_foreign_credential(
+    assert_named_listener_keeps_session_after_refresh(
         address,
-        &foreground_consent_token,
         foreground_first_refreshed_access,
         &consent_session,
     );
@@ -1222,9 +1221,8 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .as_str()
         .expect("resident refreshed access token");
     assert_ne!(resident_refreshed_access, resident_consent_token);
-    assert_named_listener_rejects_foreign_credential(
+    assert_named_listener_keeps_session_after_refresh(
         address,
-        &resident_consent_token,
         resident_refreshed_access,
         &resident_consent_session,
     );
@@ -1697,6 +1695,31 @@ fn named_listener_method_with_params(
     response
 }
 
+/// A refreshed access token for the same grant keeps using its session.
+#[cfg(feature = "oauth")]
+fn assert_named_listener_keeps_session_after_refresh(
+    address: SocketAddr,
+    refreshed_token: &str,
+    session: &str,
+) {
+    let tools = named_listener_tools(address, "parity", refreshed_token, session);
+    assert!(tools.starts_with("HTTP/1.1 200"), "{tools}");
+    let mut stream = TcpStream::connect(address).expect("named listener active");
+    stream
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
+        .expect("session response timeout");
+    write!(
+        stream,
+        "DELETE /parity HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {refreshed_token}\r\nMcp-Session-Id: {session}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("session delete request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("session delete response");
+    assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+}
+
 #[cfg(feature = "oauth")]
 fn assert_named_listener_rejects_foreign_credential(
     address: SocketAddr,
@@ -1710,10 +1733,8 @@ fn assert_named_listener_rejects_foreign_credential(
         named_listener_tools(address, "parity", peer_token, &peer_session)
             .starts_with("HTTP/1.1 200")
     );
-    assert!(
-        named_listener_tools(address, "parity", peer_token, owner_session)
-            .starts_with("HTTP/1.1 403")
-    );
+    let foreign = named_listener_tools(address, "parity", peer_token, owner_session);
+    assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
     for method in ["GET", "DELETE"] {
         let mut stream = TcpStream::connect(address).expect("named listener active");
         stream

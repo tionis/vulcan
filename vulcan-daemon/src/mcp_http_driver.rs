@@ -687,7 +687,15 @@ pub fn handle_mcp_http_sse<C: McpRequestCore>(
                 .attenuate_profile()
                 .is_ok()
     })?;
-    if end == McpSseEnd::RetireSession {
+    // A grant-bound session outlives the token its stream was opened with:
+    // the client reconnects with a refreshed token, and every POST checks
+    // the grant again. Other sessions end with their credential.
+    let retire = match end {
+        McpSseEnd::RetireSession => true,
+        McpSseEnd::AuthorityLapsed => !session.authority.is_granted(),
+        McpSseEnd::Disconnected => false,
+    };
+    if retire {
         context.sessions.retire(session_id);
     }
     Ok(())

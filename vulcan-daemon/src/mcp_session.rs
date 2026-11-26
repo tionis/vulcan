@@ -650,9 +650,29 @@ impl McpSessionAuthority {
         }
     }
 
+    /// Whether a request may use a session admitted under this authority.
+    ///
+    /// A session bound to a grant follows the grant, not the access token: a
+    /// client that refreshes its token keeps its session, as long as every
+    /// other boundary (remote, listener, client, subject, vault, audience,
+    /// profile and scopes) is unchanged. Other sessions need the same
+    /// credential.
     #[must_use]
     pub fn matches(&self, request: &Self) -> bool {
+        if self.grant_id.is_some() && self.grant_id == request.grant_id {
+            let mut same_credential = request.clone();
+            same_credential
+                .credential_fingerprint
+                .clone_from(&self.credential_fingerprint);
+            return *self == same_credential;
+        }
         self == request
+    }
+
+    /// Whether this authority comes from a stored grant.
+    #[must_use]
+    pub fn is_granted(&self) -> bool {
+        self.grant_id.is_some()
     }
 
     /// Who owns the operations this caller starts: the connection grant when
@@ -731,12 +751,51 @@ mod tests {
             Ulid::new(),
             "token-a"
         )));
-        assert!(!expected.matches(&authority(
+        // A refreshed token for the same grant keeps the session.
+        assert!(expected.matches(&authority(
             instance,
             "https://id.example/alice",
             grant,
             "token-b"
         )));
+        assert!(!expected.matches(&authority(
+            Ulid::new(),
+            "https://id.example/alice",
+            grant,
+            "token-b"
+        )));
+    }
+
+    #[test]
+    fn a_refreshed_token_reaches_its_grants_session() {
+        let instance = Ulid::new();
+        let grant = Ulid::new();
+        let registry = McpSessionRegistry::<()>::new();
+        let original = authority(instance, "https://id.example/alice", grant, "token-a");
+        registry
+            .admit(
+                "session".into(),
+                Arc::new(McpHttpSession::new((), original)),
+            )
+            .unwrap();
+        let refreshed = authority(instance, "https://id.example/alice", grant, "token-b");
+        assert!(registry.authorized("session", &refreshed, true).is_ok());
+        let other_grant = authority(instance, "https://id.example/alice", Ulid::new(), "token-b");
+        assert!(matches!(
+            registry.authorized("session", &other_grant, true),
+            Err(SessionLookupError::AuthorityMismatch)
+        ));
+    }
+
+    #[test]
+    fn sessions_without_a_grant_need_the_same_credential() {
+        let instance = Ulid::new();
+        let direct = |credential: &str| {
+            McpSessionAuthority::direct(instance, credential, None, None, None, vec!["mcp".into()])
+        };
+        assert!(direct("token-a").matches(&direct("token-a")));
+        assert!(!direct("token-a").matches(&direct("token-b")));
+        assert!(!direct("token-a").is_granted());
     }
 
     #[test]
@@ -925,7 +984,7 @@ mod tests {
             registry.resolve_http(&request, None, &owner, || Ok::<_, ()>(())),
             Err(SessionResolutionError::MissingSessionId)
         ));
-        let other = authority(instance, "https://id.example/alice", grant, "token-b");
+        let other = authority(instance, "https://id.example/bob", grant, "token-b");
         assert!(matches!(
             registry.resolve_http(&request, Some(&admitted.id), &other, || Ok::<_, ()>(())),
             Err(SessionResolutionError::Lookup(

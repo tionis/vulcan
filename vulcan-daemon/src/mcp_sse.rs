@@ -19,8 +19,11 @@ const MCP_SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpSseEnd {
-    /// The session expired or its original authority became invalid.
+    /// The session expired.
     RetireSession,
+    /// The credential that opened the stream is no longer valid (expired,
+    /// revoked, or its profile is gone).
+    AuthorityLapsed,
     /// The session was already closed and its subscriber channel disconnected.
     Disconnected,
 }
@@ -62,7 +65,7 @@ fn run_mcp_sse<C>(
         // Check after receiving, before sending: a grant can be revoked while
         // the subscriber is parked or while an event is queued.
         if !authority_valid() {
-            return Ok(McpSseEnd::RetireSession);
+            return Ok(McpSseEnd::AuthorityLapsed);
         }
         match next_event {
             Ok(message) => {
@@ -123,7 +126,7 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap();
-        assert_eq!(end, McpSseEnd::RetireSession);
+        assert_eq!(end, McpSseEnd::AuthorityLapsed);
         assert!(output.is_empty());
     }
 
@@ -155,7 +158,7 @@ mod tests {
             Duration::from_millis(2),
         )
         .unwrap();
-        assert_eq!(end, McpSseEnd::RetireSession);
+        assert_eq!(end, McpSseEnd::AuthorityLapsed);
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("notifications/tools/list_changed"));
         assert!(output.contains("notifications/resources/list_changed"));
