@@ -918,6 +918,9 @@ function __vulcanNormalizeComparable(value) {
   if (value instanceof Date) {
     return value.toISOString();
   }
+  if (value instanceof VulcanDateTime) {
+    return value.toISO();
+  }
   if (value && typeof value === "object" && value.__vulcanDuration === true) {
     return value.millis;
   }
@@ -1086,9 +1089,9 @@ function __vulcanReviveFileMetadata(file) {
       revived[key] = new DataArray(descriptor.value);
     }
   }
-  for (const key of ["day", "mday", "cday"]) {
-    if (typeof revived[key] === "string") {
-      const millis = __vulcan_date_millis(revived[key]);
+  for (const key of ["day", "mday", "cday", "mtime", "ctime"]) {
+    if (typeof revived[key] === "string" || typeof revived[key] === "number") {
+      const millis = __vulcanDateMillis(revived[key]);
       if (millis != null) {
         revived[key] = new VulcanDateTime(new Date(millis));
       }
@@ -1401,6 +1404,7 @@ function __vulcanReduceOperator(left, right, operand) {
   }
 }
 
+// Luxon's DateTime over a wall-clock time kept in UTC.
 class VulcanDateTime {
   constructor(date) {
     this._date = new Date(date.getTime());
@@ -1413,6 +1417,18 @@ class VulcanDateTime {
     return new VulcanDateTime(new Date());
   }
 
+  static local(...parts) {
+    if (parts.length === 0) {
+      return VulcanDateTime.now();
+    }
+    const [year, month = 1, day = 1, hour = 0, minute = 0, second = 0, millisecond = 0] = parts;
+    return VulcanDateTime.fromObject({ year, month, day, hour, minute, second, millisecond });
+  }
+
+  static utc(...parts) {
+    return VulcanDateTime.local(...parts);
+  }
+
   static fromISO(value) {
     const millis = __vulcan_date_millis(String(value));
     return millis == null ? null : new VulcanDateTime(new Date(millis));
@@ -1420,6 +1436,10 @@ class VulcanDateTime {
 
   static fromMillis(value) {
     return new VulcanDateTime(new Date(Number(value)));
+  }
+
+  static fromSeconds(value) {
+    return VulcanDateTime.fromMillis(Number(value) * 1000);
   }
 
   static fromJSDate(value) {
@@ -1441,71 +1461,165 @@ class VulcanDateTime {
     return new VulcanDateTime(date);
   }
 
+  static isDateTime(value) {
+    return value instanceof VulcanDateTime;
+  }
+
+  static max(...dates) {
+    return dates.reduce((best, date) => (best === undefined || date > best ? date : best), undefined);
+  }
+
+  static min(...dates) {
+    return dates.reduce((best, date) => (best === undefined || date < best ? date : best), undefined);
+  }
+
+  get isValid() {
+    return !Number.isNaN(this._date.getTime());
+  }
+
   toISO() {
     return this._date.toISOString();
+  }
+
+  toISODate() {
+    return this.toFormat("yyyy-MM-dd");
+  }
+
+  toISOTime() {
+    return this._date.toISOString().slice(11);
+  }
+
+  toString() {
+    return this.toISO();
+  }
+
+  toJSON() {
+    return this.toISO();
+  }
+
+  valueOf() {
+    return this.toMillis();
   }
 
   toMillis() {
     return this._date.getTime();
   }
 
+  toSeconds() {
+    return this.toMillis() / 1000;
+  }
+
   toJSDate() {
     return new Date(this._date.getTime());
+  }
+
+  toObject() {
+    return {
+      year: this.year,
+      month: this.month,
+      day: this.day,
+      hour: this.hour,
+      minute: this.minute,
+      second: this.second,
+      millisecond: this.millisecond,
+    };
   }
 
   toFormat(format) {
     return __vulcan_format_date(this.toMillis(), String(format));
   }
 
+  toLocaleString() {
+    return this.toFormat("M/d/yyyy");
+  }
+
+  toLocal() {
+    return this;
+  }
+
+  toUTC() {
+    return this;
+  }
+
+  setZone() {
+    return this;
+  }
+
+  // Calendar units move the calendar (a month later is the same day of the
+  // next month, clamped); the rest add their length.
   plus(value) {
-    const millis = __vulcanDurationMillis(value);
-    return new VulcanDateTime(new Date(this.toMillis() + (millis ?? 0)));
+    const duration = __vulcanToDuration(value);
+    const date = this.toJSDate();
+    const months = duration.years * 12 + duration.quarters * 3 + duration.months;
+    if (months !== 0) {
+      const day = date.getUTCDate();
+      date.setUTCDate(1);
+      date.setUTCMonth(date.getUTCMonth() + months);
+      const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+      date.setUTCDate(Math.min(day, lastDay));
+    }
+    const rest = duration.set({ years: 0, quarters: 0, months: 0 }).toMillis();
+    return new VulcanDateTime(new Date(date.getTime() + rest));
   }
 
   minus(value) {
-    const millis = __vulcanDurationMillis(value);
-    return new VulcanDateTime(new Date(this.toMillis() - (millis ?? 0)));
+    return this.plus(__vulcanToDuration(value).negate());
+  }
+
+  diff(other, unit = "milliseconds") {
+    const millis = this.toMillis() - __vulcanDateMillis(other);
+    const units = (Array.isArray(unit) ? unit : [unit]).map(__vulcanDurationUnit);
+    return VulcanDuration.fromMillis(millis).shiftTo(...units);
+  }
+
+  diffNow(unit = "milliseconds") {
+    return this.diff(VulcanDateTime.now(), unit);
+  }
+
+  equals(other) {
+    return other instanceof VulcanDateTime && this.toMillis() === other.toMillis();
+  }
+
+  hasSame(other, unit) {
+    return this.startOf(unit).toMillis() === other.startOf(unit).toMillis();
   }
 
   startOf(unit) {
     const date = this.toJSDate();
-    const normalized = String(unit).toLowerCase();
-    if (normalized === "day") {
+    const normalized = String(unit).toLowerCase().replace(/s$/, "");
+    if (normalized === "year") {
+      date.setUTCMonth(0, 1);
+      date.setUTCHours(0, 0, 0, 0);
+    } else if (normalized === "quarter") {
+      date.setUTCMonth(Math.floor(date.getUTCMonth() / 3) * 3, 1);
       date.setUTCHours(0, 0, 0, 0);
     } else if (normalized === "month") {
       date.setUTCDate(1);
-      date.setUTCHours(0, 0, 0, 0);
-    } else if (normalized === "year") {
-      date.setUTCMonth(0, 1);
       date.setUTCHours(0, 0, 0, 0);
     } else if (normalized === "week") {
       const weekday = (date.getUTCDay() + 6) % 7;
       date.setUTCDate(date.getUTCDate() - weekday);
       date.setUTCHours(0, 0, 0, 0);
+    } else if (normalized === "day") {
+      date.setUTCHours(0, 0, 0, 0);
+    } else if (normalized === "hour") {
+      date.setUTCMinutes(0, 0, 0);
+    } else if (normalized === "minute") {
+      date.setUTCSeconds(0, 0);
+    } else if (normalized === "second") {
+      date.setUTCMilliseconds(0);
     }
     return new VulcanDateTime(date);
   }
 
   endOf(unit) {
-    const normalized = String(unit).toLowerCase();
-    const start = this.startOf(unit);
-    if (normalized === "day") {
-      return start.plus(VulcanDuration.fromObject({ days: 1 })).minus(1);
+    const normalized = String(unit).toLowerCase().replace(/s$/, "");
+    const step = { year: { years: 1 }, quarter: { months: 3 }, month: { months: 1 }, week: { weeks: 1 },
+      day: { days: 1 }, hour: { hours: 1 }, minute: { minutes: 1 }, second: { seconds: 1 } }[normalized];
+    if (step === undefined) {
+      return this;
     }
-    if (normalized === "month") {
-      const date = start.toJSDate();
-      date.setUTCMonth(date.getUTCMonth() + 1);
-      return new VulcanDateTime(date).minus(1);
-    }
-    if (normalized === "year") {
-      const date = start.toJSDate();
-      date.setUTCFullYear(date.getUTCFullYear() + 1);
-      return new VulcanDateTime(date).minus(1);
-    }
-    if (normalized === "week") {
-      return start.plus(VulcanDuration.fromObject({ weeks: 1 })).minus(1);
-    }
-    return start;
+    return this.startOf(unit).plus(step).minus({ milliseconds: 1 });
   }
 
   set(value = {}) {
@@ -1522,8 +1636,16 @@ class VulcanDateTime {
     return new VulcanDateTime(date);
   }
 
+  get(unit) {
+    return this[unit];
+  }
+
   get year() {
     return this._date.getUTCFullYear();
+  }
+
+  get quarter() {
+    return Math.floor(this._date.getUTCMonth() / 3) + 1;
   }
 
   get month() {
@@ -1553,58 +1675,584 @@ class VulcanDateTime {
   get weekday() {
     return ((this._date.getUTCDay() + 6) % 7) + 1;
   }
+
+  get weekNumber() {
+    return Number(this.toFormat("W"));
+  }
+
+  get weekYear() {
+    return Number(this.toFormat("kkkk"));
+  }
+
+  get ordinal() {
+    return Number(this.toFormat("o"));
+  }
+
+  get daysInMonth() {
+    return new Date(Date.UTC(this.year, this.month, 0)).getUTCDate();
+  }
+
+  get daysInYear() {
+    return new Date(Date.UTC(this.year, 1, 29)).getUTCMonth() === 1 ? 366 : 365;
+  }
+
+  get monthLong() {
+    return this.toFormat("MMMM");
+  }
+
+  get monthShort() {
+    return this.toFormat("MMM");
+  }
+
+  get weekdayLong() {
+    return this.toFormat("EEEE");
+  }
+
+  get weekdayShort() {
+    return this.toFormat("EEE");
+  }
+
+  get zoneName() {
+    return "UTC";
+  }
+
+  get offset() {
+    return 0;
+  }
 }
 
+// Dataview's date grammar, the whole string: YYYY-MM, then optionally -DD,
+// THH, :mm, :ss, .SSS in turn, and a zone only after the seconds.
+const __vulcanDatePattern =
+  /^(\d{4})-(\d{2})(?:-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d{3}))?([+-]\d{1,2}(?::\d{2})?|Z|\[[0-9A-Za-z+,\-./]+\])?)?)?)?)?$/;
+
+function __vulcanParseDataviewDate(text) {
+  const match = typeof text === "string" ? __vulcanDatePattern.exec(text) : null;
+  if (!match) {
+    return null;
+  }
+  const [year, month, day = 1, hour = 0, minute = 0, second = 0, millisecond = 0] = match
+    .slice(1, 8)
+    .map((part) => (part === undefined ? undefined : Number(part)));
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, millisecond));
+  // Luxon refuses out-of-range parts rather than rolling them over.
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    return null;
+  }
+  return new VulcanDateTime(date);
+}
+
+// Luxon's units, largest first, and its casual conversion matrix (a month
+// is 30 days, a year 365).
+const __vulcanDurationUnits = [
+  "years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds",
+];
+const __vulcanDurationMillisPer = {
+  years: 365 * 86400000,
+  quarters: 91 * 86400000,
+  months: 30 * 86400000,
+  weeks: 7 * 86400000,
+  days: 86400000,
+  hours: 3600000,
+  minutes: 60000,
+  seconds: 1000,
+  milliseconds: 1,
+};
+const __vulcanDurationMatrix = {
+  years: { quarters: 4, months: 12, weeks: 52 },
+  quarters: { months: 3, weeks: 13 },
+  months: { weeks: 4 },
+};
+
+function __vulcanDurationFactor(larger, smaller) {
+  return (
+    __vulcanDurationMatrix[larger]?.[smaller] ??
+    __vulcanDurationMillisPer[larger] / __vulcanDurationMillisPer[smaller]
+  );
+}
+
+function __vulcanDurationUnit(unit) {
+  const name = String(unit);
+  const plural = name.endsWith("s") ? name : `${name}s`;
+  if (!__vulcanDurationUnits.includes(plural)) {
+    throw new Error(`Invalid unit ${unit}`);
+  }
+  return plural;
+}
+
+// Luxon's Duration: an amount per unit, as given.
 class VulcanDuration {
-  constructor(millis, text) {
-    this.__vulcanDuration = true;
-    this.millis = Number(millis) || 0;
-    this.text = text ?? `${this.millis}ms`;
+  constructor(values = {}) {
+    this.values = values;
+    this.isLuxonDuration = true;
+  }
+
+  static fromObject(object = {}) {
+    const values = {};
+    for (const [unit, amount] of Object.entries(object ?? {})) {
+      if (amount != null) {
+        values[__vulcanDurationUnit(unit)] = Number(amount);
+      }
+    }
+    return new VulcanDuration(values);
   }
 
   static fromMillis(value) {
-    return new VulcanDuration(Number(value) || 0, `${Number(value) || 0}ms`);
+    return new VulcanDuration({ milliseconds: Number(value) || 0 });
   }
 
-  static fromISO(value) {
-    const millis = __vulcan_duration_millis(String(value));
-    return millis == null ? null : new VulcanDuration(millis, String(value));
+  static fromISO(text) {
+    const match =
+      /^(-)?P(?:(-?\d+(?:[.,]\d+)?)Y)?(?:(-?\d+(?:[.,]\d+)?)M)?(?:(-?\d+(?:[.,]\d+)?)W)?(?:(-?\d+(?:[.,]\d+)?)D)?(?:T(?:(-?\d+(?:[.,]\d+)?)H)?(?:(-?\d+(?:[.,]\d+)?)M)?(?:(-?\d+(?:[.,]\d+)?)S)?)?$/.exec(
+        String(text)
+      );
+    if (!match || match.slice(2).every((part) => part === undefined)) {
+      return null;
+    }
+    const sign = match[1] ? -1 : 1;
+    const values = {};
+    ["years", "months", "weeks", "days", "hours", "minutes", "seconds"].forEach((unit, offset) => {
+      const part = match[offset + 2];
+      if (part !== undefined) {
+        values[unit] = sign * Number(part.replace(",", "."));
+      }
+    });
+    if (values.seconds !== undefined && !Number.isInteger(values.seconds)) {
+      const whole = Math.trunc(values.seconds);
+      values.milliseconds = Math.round((values.seconds - whole) * 1000);
+      values.seconds = whole;
+    }
+    return new VulcanDuration(values);
   }
 
-  static fromObject(value = {}) {
-    const millis =
-      Number(value.millisecond ?? value.milliseconds ?? 0) +
-      Number(value.second ?? value.seconds ?? 0) * 1000 +
-      Number(value.minute ?? value.minutes ?? 0) * 60 * 1000 +
-      Number(value.hour ?? value.hours ?? 0) * 60 * 60 * 1000 +
-      Number(value.day ?? value.days ?? 0) * 24 * 60 * 60 * 1000 +
-      Number(value.week ?? value.weeks ?? 0) * 7 * 24 * 60 * 60 * 1000 +
-      Number(value.month ?? value.months ?? 0) * 30 * 24 * 60 * 60 * 1000 +
-      Number(value.year ?? value.years ?? 0) * 365 * 24 * 60 * 60 * 1000;
-    return new VulcanDuration(millis);
+  static isDuration(value) {
+    return value instanceof VulcanDuration;
+  }
+
+  get(unit) {
+    return this.values[__vulcanDurationUnit(unit)] ?? 0;
+  }
+
+  get years() { return this.get("years"); }
+  get quarters() { return this.get("quarters"); }
+  get months() { return this.get("months"); }
+  get weeks() { return this.get("weeks"); }
+  get days() { return this.get("days"); }
+  get hours() { return this.get("hours"); }
+  get minutes() { return this.get("minutes"); }
+  get seconds() { return this.get("seconds"); }
+  get milliseconds() { return this.get("milliseconds"); }
+  get isValid() { return true; }
+
+  toObject() {
+    return { ...this.values };
   }
 
   toMillis() {
-    return this.millis;
+    return this.as("milliseconds");
   }
 
+  valueOf() {
+    return this.toMillis();
+  }
+
+  as(unit) {
+    const target = __vulcanDurationUnit(unit);
+    return Object.entries(this.values).reduce(
+      (total, [name, amount]) =>
+        total + (amount * __vulcanDurationMillisPer[name]) / __vulcanDurationMillisPer[target],
+      0
+    );
+  }
+
+  // Luxon's shiftTo: re-express the amount in `units`; larger units roll
+  // down, and leftovers become a fraction of the smallest unit asked for.
+  shiftTo(...requested) {
+    const units = requested.map(__vulcanDurationUnit);
+    if (units.length === 0) {
+      return this;
+    }
+    const built = {};
+    const accumulated = {};
+    let lastUnit;
+    for (const unit of __vulcanDurationUnits) {
+      if (units.includes(unit)) {
+        lastUnit = unit;
+        let own = 0;
+        for (const [larger, amount] of Object.entries(accumulated)) {
+          own += __vulcanDurationFactor(larger, unit) * amount;
+          accumulated[larger] = 0;
+        }
+        own += this.values[unit] ?? 0;
+        const whole = Math.trunc(own);
+        built[unit] = whole;
+        accumulated[unit] = (own * 1000 - whole * 1000) / 1000;
+      } else if (this.values[unit] !== undefined) {
+        accumulated[unit] = this.values[unit];
+      }
+    }
+    for (const [unit, amount] of Object.entries(accumulated)) {
+      if (amount !== 0) {
+        built[lastUnit] +=
+          unit === lastUnit ? amount : amount / __vulcanDurationFactor(lastUnit, unit);
+      }
+    }
+    return new VulcanDuration(built).normalize();
+  }
+
+  shiftToAll() {
+    return this.shiftTo(
+      "years", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds"
+    );
+  }
+
+  // Carry whole overflow of each unit into the next larger unit present.
+  normalize() {
+    const values = { ...this.values };
+    const present = __vulcanDurationUnits.filter((unit) => values[unit] !== undefined);
+    for (let index = present.length - 1; index > 0; index -= 1) {
+      const smaller = present[index];
+      const larger = present[index - 1];
+      const factor = __vulcanDurationFactor(larger, smaller);
+      const carry = Math.trunc(values[smaller] / factor);
+      if (carry !== 0) {
+        values[larger] += carry;
+        values[smaller] -= carry * factor;
+      }
+    }
+    return new VulcanDuration(values);
+  }
+
+  plus(other) {
+    const added = __vulcanToDuration(other);
+    const values = { ...this.values };
+    for (const [unit, amount] of Object.entries(added.values)) {
+      values[unit] = (values[unit] ?? 0) + amount;
+    }
+    return new VulcanDuration(values);
+  }
+
+  minus(other) {
+    return this.plus(__vulcanToDuration(other).negate());
+  }
+
+  negate() {
+    const values = {};
+    for (const [unit, amount] of Object.entries(this.values)) {
+      values[unit] = amount === 0 ? 0 : -amount;
+    }
+    return new VulcanDuration(values);
+  }
+
+  mapUnits(mapper) {
+    const values = {};
+    for (const [unit, amount] of Object.entries(this.values)) {
+      values[unit] = mapper(amount, unit.slice(0, -1));
+    }
+    return new VulcanDuration(values);
+  }
+
+  set(values) {
+    return new VulcanDuration({ ...this.values, ...VulcanDuration.fromObject(values).values });
+  }
+
+  equals(other) {
+    return other instanceof VulcanDuration && this.toMillis() === other.toMillis();
+  }
+
+  // Luxon's toFormat: the duration shifted to the units the format names.
   toFormat(format) {
-    return __vulcan_format_duration(this.millis, String(format));
+    const tokenUnits = {
+      S: "milliseconds", s: "seconds", m: "minutes", h: "hours", d: "days",
+      w: "weeks", M: "months", y: "years",
+    };
+    const tokens = [];
+    const chars = [...String(format)];
+    for (let index = 0; index < chars.length; ) {
+      if (chars[index] === "'") {
+        let literal = "";
+        index += 1;
+        while (index < chars.length && chars[index] !== "'") {
+          literal += chars[index];
+          index += 1;
+        }
+        index += 1;
+        tokens.push({ literal: true, text: literal });
+        continue;
+      }
+      let count = 1;
+      while (chars[index + count] === chars[index]) {
+        count += 1;
+      }
+      tokens.push({ literal: false, text: chars[index].repeat(count) });
+      index += count;
+    }
+    const units = tokens
+      .filter((token) => !token.literal && tokenUnits[token.text[0]])
+      .map((token) => tokenUnits[token.text[0]]);
+    const shifted = this.shiftTo(...units);
+    return tokens
+      .map((token) => {
+        const unit = token.literal ? undefined : tokenUnits[token.text[0]];
+        if (!unit) {
+          return token.text;
+        }
+        const amount = Math.trunc(shifted.get(unit));
+        const digits = String(Math.abs(amount)).padStart(token.text.length, "0");
+        return amount < 0 ? `-${digits}` : digits;
+      })
+      .join("");
   }
 
-  plus(value) {
-    const millis = __vulcanDurationMillis(value);
-    return new VulcanDuration(this.millis + (millis ?? 0));
+  toISO() {
+    const values = this.values;
+    let date = "";
+    let time = "";
+    if (values.years) date += `${values.years}Y`;
+    if (values.months || values.quarters) date += `${(values.months ?? 0) + (values.quarters ?? 0) * 3}M`;
+    if (values.weeks) date += `${values.weeks}W`;
+    if (values.days) date += `${values.days}D`;
+    if (values.hours) time += `${values.hours}H`;
+    if (values.minutes) time += `${values.minutes}M`;
+    if (values.seconds || values.milliseconds) {
+      time += `${Math.round(((values.seconds ?? 0) + (values.milliseconds ?? 0) / 1000) * 1000) / 1000}S`;
+    }
+    if (date === "" && time === "") {
+      return "PT0S";
+    }
+    return `P${date}${time === "" ? "" : `T${time}`}`;
   }
 
-  minus(value) {
-    const millis = __vulcanDurationMillis(value);
-    return new VulcanDuration(this.millis - (millis ?? 0));
+  toJSON() {
+    return this.toISO();
   }
 
   toString() {
-    return this.text;
+    return this.toISO();
   }
+
+  // Luxon's toHuman, in English: each unit with its amount.
+  toHuman() {
+    return Object.entries(this.values)
+      .map(([unit, amount]) => `${amount} ${Math.abs(amount) === 1 ? unit.slice(0, -1) : unit}`)
+      .join(", ");
+  }
+
+  // Vulcan's interchange shape for the Rust evaluator.
+  get __vulcanDuration() {
+    return true;
+  }
+
+  get millis() {
+    return this.toMillis();
+  }
+
+  get text() {
+    return __vulcanMinimalDuration(this);
+  }
+}
+
+// Dataview's renderMinimalDuration: the normalized nonzero units, in words.
+function __vulcanMinimalDuration(duration) {
+  const values = Object.fromEntries(
+    Object.entries(duration.shiftToAll().values).filter(([, amount]) => amount !== 0)
+  );
+  return new VulcanDuration(values).toHuman();
+}
+
+function __vulcanToDuration(value) {
+  if (value instanceof VulcanDuration) {
+    return value;
+  }
+  if (typeof value === "number") {
+    return VulcanDuration.fromMillis(value);
+  }
+  if (value && typeof value === "object") {
+    if (value.__vulcanDuration === true && typeof value.millis === "number") {
+      return VulcanDuration.fromMillis(value.millis);
+    }
+    return VulcanDuration.fromObject(value);
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    const parsed = __vulcanParseDuration(text) ?? VulcanDuration.fromISO(text);
+    if (parsed !== null) {
+      return parsed;
+    }
+    const millis = __vulcan_duration_millis(text);
+    return millis == null ? new VulcanDuration() : VulcanDuration.fromMillis(millis);
+  }
+  return new VulcanDuration();
+}
+
+const __vulcanDurationTypes = {
+  year: "years", years: "years", yr: "years", yrs: "years",
+  month: "months", months: "months", mo: "months", mos: "months",
+  week: "weeks", weeks: "weeks", wk: "weeks", wks: "weeks", w: "weeks",
+  day: "days", days: "days", d: "days",
+  hour: "hours", hours: "hours", hr: "hours", hrs: "hours", h: "hours",
+  minute: "minutes", minutes: "minutes", min: "minutes", mins: "minutes", m: "minutes",
+  second: "seconds", seconds: "seconds", sec: "seconds", secs: "seconds", s: "seconds",
+};
+const __vulcanDurationTypePattern = Object.keys(__vulcanDurationTypes)
+  .sort((left, right) => right.length - left.length)
+  .join("|");
+const __vulcanDurationPart = new RegExp(
+  `(-?[0-9]+(?:\\.[0-9]+)?)\\s*(${__vulcanDurationTypePattern})`,
+  "y"
+);
+
+// Dataview's duration grammar: `<number> <unit>` parts separated by commas
+// or spaces, the whole string, summed unit by unit.
+function __vulcanParseDuration(text) {
+  if (typeof text !== "string") {
+    return null;
+  }
+  const values = {};
+  let index = 0;
+  let parts = 0;
+  while (index < text.length || parts === 0) {
+    if (parts > 0) {
+      const separator = /\s*,\s*|\s*/y;
+      separator.lastIndex = index;
+      separator.exec(text);
+      index = separator.lastIndex;
+    }
+    __vulcanDurationPart.lastIndex = index;
+    const match = __vulcanDurationPart.exec(text);
+    if (!match) {
+      return null;
+    }
+    const unit = __vulcanDurationTypes[match[2]];
+    values[unit] = (values[unit] ?? 0) + Number(match[1]);
+    index = __vulcanDurationPart.lastIndex;
+    parts += 1;
+  }
+  return new VulcanDuration(values);
+}
+
+// Dataview's frontmatter typing (parseFrontmatter): a whole string that is a
+// date, a duration, or a wikilink becomes one; dates in objects and arrays
+// too. Links stay as written.
+function __vulcanParseFrontmatter(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return (
+      __vulcanParseDataviewDate(value) ??
+      __vulcanParseDuration(value) ??
+      __vulcanParseWikilink(value) ??
+      value
+    );
+  }
+  if (value instanceof Date) {
+    return VulcanDateTime.fromJSDate(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(__vulcanParseFrontmatter);
+  }
+  if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const parsed = {};
+    for (const [key, item] of Object.entries(value)) {
+      parsed[key] = __vulcanParseFrontmatter(item);
+    }
+    return parsed;
+  }
+  return value;
+}
+
+const __vulcanInlineDatePart =
+  /\d{4}-\d{2}(?:-\d{2}(?:T\d{2}(?::\d{2}(?::\d{2}(?:\.\d{3})?(?:[+-]\d{1,2}(?::\d{2})?|Z|\[[0-9A-Za-z+,\-./]+\])?)?)?)?)?/y;
+const __vulcanInlineDurationPart = new RegExp(
+  `-?[0-9]+(?:\\.[0-9]+)?\\s*(?:${__vulcanDurationTypePattern})(?:(?:\\s*,\\s*|\\s*)-?[0-9]+(?:\\.[0-9]+)?\\s*(?:${__vulcanDurationTypePattern}))*`,
+  "y"
+);
+const __vulcanInlineStringPart = /"((?:\\.|[^"\\])*)"/y;
+const __vulcanInlineTagPart =
+  /#[^\u2000-\u206F\u2E00-\u2E7F'!"#$%&()*+,.:;<=>?@^`{|}~\[\]\\\s]*/y;
+const __vulcanInlineLinkPart = /!?\[\[[^\[\]]*?\]\]/uy;
+const __vulcanInlineBoolPart = /true|false|True|False/y;
+const __vulcanInlineNumberPart = /-?[0-9]+(?:\.[0-9]+)?/y;
+const __vulcanInlineNullPart = /null/y;
+
+function __vulcanStickyMatch(pattern, text, index) {
+  pattern.lastIndex = index;
+  const match = pattern.exec(text);
+  return match === null ? null : { match, end: pattern.lastIndex };
+}
+
+// One of Dataview's inline atoms at `index`: the first kind that matches
+// wins, as in its grammar, and a date that is not a real date falls through.
+function __vulcanInlineAtom(text, index) {
+  const date = __vulcanStickyMatch(__vulcanInlineDatePart, text, index);
+  if (date !== null) {
+    const value = __vulcanParseDataviewDate(date.match[0]);
+    if (value !== null) {
+      return { value, end: date.end };
+    }
+  }
+  const duration = __vulcanStickyMatch(__vulcanInlineDurationPart, text, index);
+  if (duration !== null) {
+    return { value: __vulcanParseDuration(duration.match[0]).shiftToAll().normalize(), end: duration.end };
+  }
+  const string = __vulcanStickyMatch(__vulcanInlineStringPart, text, index);
+  if (string !== null) {
+    const value = string.match[1].replace(/\\(.)/g, (_, escaped) =>
+      escaped === '"' || escaped === "\\" ? escaped : `\\${escaped}`
+    );
+    return { value, end: string.end };
+  }
+  const tag = __vulcanStickyMatch(__vulcanInlineTagPart, text, index);
+  if (tag !== null) {
+    return { value: tag.match[0], end: tag.end };
+  }
+  const link = __vulcanStickyMatch(__vulcanInlineLinkPart, text, index);
+  if (link !== null) {
+    return { value: __vulcanParseWikilink(link.match[0]), end: link.end };
+  }
+  const bool = __vulcanStickyMatch(__vulcanInlineBoolPart, text, index);
+  if (bool !== null) {
+    return { value: bool.match[0].toLowerCase() === "true", end: bool.end };
+  }
+  const number = __vulcanStickyMatch(__vulcanInlineNumberPart, text, index);
+  if (number !== null) {
+    return { value: Number.parseFloat(number.match[0]), end: number.end };
+  }
+  const rawNull = __vulcanStickyMatch(__vulcanInlineNullPart, text, index);
+  return rawNull === null ? null : { value: rawNull.match[0], end: rawNull.end };
+}
+
+// Dataview's inline value grammar (dv.parse): one atom, or atoms separated
+// by commas as an array, covering the whole text; anything else stays text.
+function __vulcanParseInlineValue(text) {
+  if (typeof text !== "string") {
+    return text;
+  }
+  const first = __vulcanInlineAtom(text, 0);
+  if (first === null) {
+    return text;
+  }
+  const values = [first.value];
+  let index = first.end;
+  const separator = /\s*,\s*/y;
+  while (index < text.length) {
+    const comma = __vulcanStickyMatch(separator, text, index);
+    const next = comma === null ? null : __vulcanInlineAtom(text, comma.end);
+    if (next === null) {
+      return text;
+    }
+    values.push(next.value);
+    index = next.end;
+  }
+  return values.length === 1 ? values[0] : values;
 }
 
 // Dataview's Link: a file, header, or block reference.
@@ -1784,11 +2432,14 @@ function __vulcanResolvedLink(text, origin) {
   return link === null ? null : link.withPath(__vulcanResolveLinkPath(link.path, origin));
 }
 
-// Field values as Dataview types them: wikilink strings, at any depth,
-// become Links.
+// Field values as Dataview types them: whole-string dates, durations, and
+// wikilinks, at any depth, become DateTimes, Durations, and resolved Links.
 function __vulcanReviveFieldValue(value, origin) {
   if (typeof value === "string") {
-    return __vulcanResolvedLink(value, origin) ?? value;
+    const parsed = __vulcanParseFrontmatter(value);
+    return parsed instanceof Link
+      ? parsed.withPath(__vulcanResolveLinkPath(parsed.path, origin))
+      : parsed;
   }
   if (Array.isArray(value)) {
     return value.map((item) => __vulcanReviveFieldValue(item, origin));
@@ -2552,6 +3203,9 @@ function buildDvFunctions(dv) {
         value,
         format,
         (item, textFormat) => {
+          if (item instanceof VulcanDuration && textFormat != null) {
+            return item.toFormat(String(textFormat));
+          }
           const millis = __vulcanDurationMillis(item);
           return millis == null || textFormat == null
             ? null
@@ -2673,13 +3327,19 @@ const dv = {
   async executeJs(code) {
     return __vulcanPrivateEval(`(async () => {${code}\n})()`);
   },
+  // Results come back typed as page fields are: dates, durations, and
+  // links resolved from the current note.
   evaluate(expression, context) {
-    return JSON.parse(
+    const result = JSON.parse(
       __vulcan_evaluate_json(
         String(expression),
         context == null ? null : __vulcanSerialize(context)
       )
     );
+    if (result.successful) {
+      result.value = __vulcanReviveFieldValue(result.value, dv.currentFilePath);
+    }
+    return result;
   },
   tryEvaluate(expression, context) {
     const result = dv.evaluate(expression, context);
@@ -2755,7 +3415,8 @@ const dv = {
     return raw instanceof DataArray;
   },
   // Dataview's date(): dates pass through, and strings may be the
-  // shorthands `today`, `now`, `sow`, `end-of-month`, and so on.
+  // shorthands `today`, `now`, `sow`, `end-of-month`, and so on. A link
+  // gives the date in its display or path, or its note's `file.day`.
   date(input) {
     if (input == null) {
       return null;
@@ -2763,10 +3424,22 @@ const dv = {
     if (input instanceof VulcanDateTime) {
       return input;
     }
+    if (input instanceof Link) {
+      return (
+        __vulcanParseDataviewDate(input.display) ??
+        __vulcanParseDataviewDate(input.path) ??
+        dv.page(input)?.file?.day ??
+        null
+      );
+    }
     if (typeof input === "string") {
       const shorthand = __vulcan_date_shorthand_millis(input.trim());
       if (shorthand != null) {
         return new VulcanDateTime(new Date(shorthand));
+      }
+      const parsed = __vulcanParseDataviewDate(input.trim());
+      if (parsed !== null) {
+        return parsed;
       }
     }
     const millis = __vulcan_date_millis(
@@ -2774,16 +3447,33 @@ const dv = {
     );
     return millis == null ? null : new VulcanDateTime(new Date(millis));
   },
+  // Dataview's dur(): `3 days`, `1h 30m`, `2 hours, 5 minutes`; an ISO
+  // duration or Vulcan's duration text also works.
   duration(input) {
-    const millis = __vulcan_duration_millis(String(input));
-    return {
-      __vulcanDuration: true,
-      millis,
-      text: String(input),
-      toString() {
-        return this.text;
-      },
-    };
+    return __vulcanVectorizeUnary(input, (item) => {
+      if (item == null) {
+        return null;
+      }
+      if (item instanceof VulcanDuration) {
+        return item;
+      }
+      const text = String(item).trim();
+      const parsed = __vulcanParseDuration(text) ?? VulcanDuration.fromISO(text);
+      if (parsed !== null) {
+        return parsed;
+      }
+      const millis = __vulcan_duration_millis(text);
+      return millis == null ? null : VulcanDuration.fromMillis(millis);
+    });
+  },
+  // Dataview's parse(): the inline-field grammar, so `2026-01-02`,
+  // `3 days`, `[[Note]]`, `#tag`, `true`, `"text"`, and comma lists.
+  parse(value) {
+    return __vulcanParseInlineValue(value);
+  },
+  // Dataview's literal(): frontmatter typing for plain JS values.
+  literal(value) {
+    return __vulcanParseFrontmatter(value);
   },
   compare(left, right) {
     return __vulcan_compare(
@@ -4287,7 +4977,7 @@ const app = {
         name: page.file?.name ?? page.name ?? "",
         basename: page.file?.name ?? page.name ?? "",
         extension: "md",
-        stat: { mtime: page.file?.mtime ?? 0, ctime: 0, size: 0 },
+        stat: { mtime: __vulcanDateMillis(page.file?.mtime) ?? 0, ctime: 0, size: 0 },
       }));
     },
     read(file) {
@@ -8320,6 +9010,87 @@ globalThis.this = dv.current();
         }
 
         #[test]
+        fn dataviewjs_dates_and_durations_are_luxon_like() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r##"
+                const page = dv.current();
+                const { DateTime, Duration } = dv.luxon;
+                const lateJanuary = DateTime.fromObject({ year: 2026, month: 1, day: 31 });
+                ({
+                  month: [page.month instanceof DateTime, page.month.toFormat("yyyy-MM-dd")],
+                  duration: [Duration.isDuration(page.duration), page.duration.as("hours")],
+                  durationFormat: page.duration.toFormat("d'd' h'h'"),
+                  durationShift: page.duration.shiftTo("hours").toObject(),
+                  durationText: String(dv.duration("90 min").shiftToAll().normalize().toHuman()),
+                  durationNull: dv.duration("soon"),
+                  mtimeIsDate: page.file.mtime instanceof DateTime,
+                  monthArithmetic: lateJanuary.plus({ months: 1 }).toISODate(),
+                  diffDays: lateJanuary.diff(DateTime.fromObject({ year: 2026, month: 1, day: 1 }), "days").days,
+                  parse: [
+                    dv.parse("2026-01-02").toISODate(),
+                    dv.parse("3 days").days,
+                    dv.parse("[[People/Bob|Bob]]").display,
+                    dv.parse("#tag/child"),
+                    dv.parse("true"),
+                    dv.parse("1, 2"),
+                    dv.parse('"quoted, text"'),
+                    dv.parse("plain words"),
+                    dv.parse("2026-13-01"),
+                  ],
+                  literal: dv.literal({ when: "2026-02-03", link: "[[People/Bob]]" }).when.month,
+                  evaluated: dv.evaluate("this.month").value.toFormat("MMMM yyyy"),
+                  dateFromLink: dv.date(dv.fileLink("Journal", false, "2026-05-06")).day,
+                  durationformat: dv.func.durationformat(dv.duration("2 hours"), "m 'minutes'"),
+                  rendered: dv.markdownList([page.month]),
+                })
+                "##,
+
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            let value = result.value.expect("script value");
+            assert_eq!(value["month"], serde_json::json!([true, "2026-04-01"]));
+            assert_eq!(value["duration"], serde_json::json!([true, 27]));
+            assert_eq!(value["durationFormat"], "1d 3h");
+            assert_eq!(value["durationShift"], serde_json::json!({ "hours": 27 }));
+            assert_eq!(
+                value["durationText"],
+                "0 years, 0 months, 0 weeks, 0 days, 1 hour, 30 minutes, 0 seconds, 0 milliseconds"
+            );
+            assert!(value["durationNull"].is_null());
+            assert_eq!(value["mtimeIsDate"], true);
+            assert_eq!(value["monthArithmetic"], "2026-02-28");
+            assert_eq!(value["diffDays"], 30);
+            assert_eq!(
+                value["parse"],
+                serde_json::json!([
+                    "2026-01-02",
+                    3,
+                    "Bob",
+                    "#tag/child",
+                    true,
+                    [1, 2],
+                    "quoted, text",
+                    "plain words",
+                    "2026-13-01",
+                ])
+            );
+            assert_eq!(value["literal"], 2);
+            assert_eq!(value["evaluated"], "April 2026");
+            assert_eq!(value["dateFromLink"], 6);
+            assert_eq!(value["durationformat"], "120 minutes");
+            assert_eq!(value["rendered"], "- April 01, 2026\n");
+        }
+
+        #[test]
         fn dataviewjs_links_are_dataview_link_objects() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
@@ -10438,20 +11209,9 @@ shell = "allow"
         /// Paths where Vulcan's run of the probe still differs from Obsidian's. Remove an
         /// entry once its fix lands: the test fails when a listed path no longer differs.
         const PROBE_KNOWN_DIVERGENCES: &[&str] = &[
-            ".behaviour.ctimeKind",
-            ".behaviour.duration",
-            ".behaviour.evaluateLink",
-            ".behaviour.frontmatterDateKind",
             ".behaviour.inlineDurationKind",
-            ".behaviour.mtimeKind",
-            ".behaviour.parseDate",
-            ".behaviour.parseLink",
             ".behaviour.queryMarkdown",
             ".behaviour.whereStatus",
-            ".dvMembers.literal",
-            ".dvMembers.parse",
-            ".fileKeys.ctime",
-            ".fileKeys.mtime",
             ".fileValues.etags",
             ".fileValues.tags",
             ".lists[0].keys",
@@ -10477,8 +11237,6 @@ shell = "allow"
             ".pageKeys.Inline Number",
             ".pageKeys.child",
             ".pageKeys.cost",
-            ".pageKeys.date",
-            ".pageKeys.datetime",
             ".pageKeys.groups",
             ".pageKeys.inline date",
             ".pageKeys.inline duration",
@@ -10498,8 +11256,6 @@ shell = "allow"
             ".pageValues.Inline Number",
             ".pageValues.child",
             ".pageValues.cost",
-            ".pageValues.date",
-            ".pageValues.datetime",
             ".pageValues.groups",
             ".pageValues.inline date",
             ".pageValues.inline duration",
@@ -10512,12 +11268,9 @@ shell = "allow"
             ".pageValues.rep",
             ".pageValues.status",
             ".pageValues.up",
-            ".tasks[0].due",
             ".tasks[0].fields",
-            ".tasks[1].completion",
             ".tasks[1].fields",
             ".tasks[2].fields",
-            ".tasks[3].due",
             ".tasks[3].fields",
         ];
 
