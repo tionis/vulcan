@@ -1167,7 +1167,7 @@ impl McpServerCore {
                 McpProtocolHost {
                     command_help: resolve_command_help_for_mcp,
                     help_candidates: help_topic_completion_candidates,
-                    server_version: env!("CARGO_PKG_VERSION"),
+                    server_version: crate::build_version(),
                 },
             )
             .map_err(permission_error_to_cli)?,
