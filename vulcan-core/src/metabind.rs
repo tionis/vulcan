@@ -333,13 +333,175 @@ pub enum MetaBindDeclaration {
         button: Value,
     },
     /// A `meta-bind-js-view` block.
-    JsView {
-        source: String,
-    },
+    JsView(JsViewDeclaration),
     /// A `meta-bind-embed` block.
     Embed {
         target: String,
     },
+}
+
+/// A `meta-bind-js-view` block: `{target} as name` bindings (also
+/// `{target} and children as name`), an optional `save to {target}` and
+/// `hidden`, then `---` and the code.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JsViewDeclaration {
+    pub bindings: Vec<(String, BindTarget)>,
+    pub save_to: Option<BindTarget>,
+    pub hidden: bool,
+    pub code: String,
+}
+
+/// Parses a `meta-bind-js-view` block's text.
+pub fn parse_js_view(text: &str) -> Result<JsViewDeclaration, String> {
+    let mut lines = text.split_inclusive('\n');
+    let mut declaration = JsViewDeclaration {
+        bindings: Vec::new(),
+        save_to: None,
+        hidden: false,
+        code: String::new(),
+    };
+    let braced = |text: &str| -> Result<BindTarget, String> {
+        let inner = text
+            .trim()
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+            .ok_or_else(|| format!("expected `{{target}}`, not `{}`", text.trim()))?;
+        BindTarget::parse(inner.trim())
+    };
+    let mut separated = false;
+    for line in lines.by_ref() {
+        let line = line.trim();
+        if line == "---" {
+            separated = true;
+            break;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if line == "hidden" {
+            declaration.hidden = true;
+        } else if let Some(target) = line.strip_prefix("save to ") {
+            declaration.save_to = Some(braced(target)?);
+        } else if let Some((target, name)) = line.rsplit_once(" as ") {
+            let target = target.trim();
+            let target = target.strip_suffix(" and children").unwrap_or(target);
+            let name = name.trim();
+            if !is_plain_identifier(name) {
+                return Err(format!("`{name}` is not a variable name"));
+            }
+            declaration
+                .bindings
+                .push((name.to_string(), braced(target)?));
+        } else {
+            return Err(format!(
+                "expected `{{target}} as name`, `save to {{target}}`, or `hidden`, not `{line}`"
+            ));
+        }
+    }
+    if !separated {
+        return Err("a JS view needs a `---` line between its bindings and its code".to_string());
+    }
+    declaration.code = lines.collect();
+    Ok(declaration)
+}
+
+/// Runs `meta-bind-js-view` code for a render, under the render's
+/// `DataviewJS` policy.
+pub trait MetaBindScripts {
+    /// Runs `code` (an async function body) with `context` as its `context`
+    /// constant and Meta Bind's `engine.markdown.create`. `None` when the
+    /// render turns `DataviewJS` off.
+    fn run_js_view(
+        &self,
+        code: &str,
+        context: &Value,
+    ) -> Option<Result<MetaBindScriptValue, String>>;
+}
+
+/// What a script returned.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetaBindScriptValue {
+    /// `engine.markdown.create(text)`.
+    Markdown(String),
+    Value(Value),
+}
+
+/// The JavaScript that runs `code` with `context` and Meta Bind's
+/// `engine.markdown.create`, for [`crate::DataviewJsSession::evaluate_async_function`].
+#[must_use]
+pub fn script_body(code: &str, context: &Value) -> String {
+    format!(
+        "const context = {context};\n\
+         const engine = {{ markdown: {{ create: (text) => ({{ __vulcanMarkdown: String(text) }}) }}, \
+         getPlugin: () => undefined }};\n\
+         return await (async () => {{\n{code}\n}})();"
+    )
+}
+
+/// A script's returned JSON as Meta Bind reads it.
+#[must_use]
+pub fn script_value(value: Option<Value>) -> MetaBindScriptValue {
+    match value {
+        Some(Value::Object(object))
+            if object.len() == 1 && object.contains_key("__vulcanMarkdown") =>
+        {
+            MetaBindScriptValue::Markdown(
+                object["__vulcanMarkdown"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        }
+        value => MetaBindScriptValue::Value(value.unwrap_or(Value::Null)),
+    }
+}
+
+/// [`MetaBindScripts`] over a `DataviewJS` session, started on first use.
+pub struct DataviewJsScripts<'a> {
+    paths: &'a VaultPaths,
+    source_path: Option<&'a str>,
+    options: Option<crate::DataviewJsEvalOptions>,
+    session: std::cell::RefCell<Option<Result<crate::DataviewJsSession, String>>>,
+}
+
+impl<'a> DataviewJsScripts<'a> {
+    /// Scripts that run with `options`, or not at all for `None` (the
+    /// render's policy is `off`).
+    #[must_use]
+    pub fn new(
+        paths: &'a VaultPaths,
+        source_path: Option<&'a str>,
+        options: Option<crate::DataviewJsEvalOptions>,
+    ) -> Self {
+        Self {
+            paths,
+            source_path,
+            options,
+            session: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl MetaBindScripts for DataviewJsScripts<'_> {
+    fn run_js_view(
+        &self,
+        code: &str,
+        context: &Value,
+    ) -> Option<Result<MetaBindScriptValue, String>> {
+        let options = self.options.clone()?;
+        let mut session = self.session.borrow_mut();
+        let session = session.get_or_insert_with(|| {
+            crate::DataviewJsSession::new(self.paths, self.source_path, options)
+                .map_err(|error| error.to_string())
+        });
+        Some(match session {
+            Ok(session) => session
+                .evaluate_async_function(&script_body(code, context))
+                .map(script_value)
+                .map_err(|error| error.to_string()),
+            Err(error) => Err(error.clone()),
+        })
+    }
 }
 
 struct Cursor<'a> {
@@ -1466,6 +1628,9 @@ pub struct MetaBindEnv<'a> {
     /// The vault, for the image files `imageSuggester(optionQuery("folder"))`
     /// offers.
     pub paths: Option<&'a VaultPaths>,
+    /// Runs `meta-bind-js-view` blocks when `metabind.enable_js` is on;
+    /// without it they show a notice.
+    pub scripts: Option<&'a dyn MetaBindScripts>,
 }
 
 impl MetaBindEnv<'_> {
@@ -1529,9 +1694,7 @@ pub fn evaluate_note_fields<S: std::hash::BuildHasher>(
                 .map_err(|error| format!("invalid button YAML: {error}"))
                 .and_then(|yaml| serde_json::to_value(yaml).map_err(|error| error.to_string()))
                 .map(|button| MetaBindDeclaration::Button { button }),
-            MetaBindSourceKind::JsView => Ok(MetaBindDeclaration::JsView {
-                source: raw.text.clone(),
-            }),
+            MetaBindSourceKind::JsView => parse_js_view(&raw.text).map(MetaBindDeclaration::JsView),
             MetaBindSourceKind::Embed => Ok(MetaBindDeclaration::Embed {
                 target: raw.text.trim().to_string(),
             }),
@@ -1603,46 +1766,7 @@ fn render_declaration<S: std::hash::BuildHasher>(
 ) -> MetaBindOutcome {
     match declaration {
         MetaBindDeclaration::Input(input) => {
-            let (input_settings, mut found) = input_settings(input, inline, settings);
-            diagnostics.append(&mut found);
-            let Some(mut input_settings) = input_settings else {
-                return first_error(diagnostics);
-            };
-            if let Some(now) = env.now_ms {
-                input_settings.now_default = now_value(
-                    &input_settings.input_type,
-                    now,
-                    &settings.preferred_date_format,
-                );
-            }
-            add_query_options(&mut input_settings, input, values, env.paths, diagnostics);
-            let stored = match &input.target {
-                Some(target) => {
-                    if matches!(
-                        target.storage,
-                        MetaBindStorage::Memory | MetaBindStorage::GlobalMemory
-                    ) {
-                        diagnostics.push(MetaBindDiagnostic::info(
-                            "memory values last only while Obsidian has the note open",
-                        ));
-                    }
-                    match values.read(target) {
-                        Ok(value) => value,
-                        Err(message) => {
-                            diagnostics.push(MetaBindDiagnostic::error(&message));
-                            return MetaBindOutcome::Error { message };
-                        }
-                    }
-                }
-                None => None,
-            };
-            let value = input_settings.effective_value(stored.as_ref());
-            MetaBindOutcome::Input {
-                display: input_settings.display(&value),
-                target: input.target.as_ref().map(ToString::to_string),
-                settings: Box::new(input_settings),
-                value,
-            }
+            render_input(input, inline, settings, env, values, diagnostics)
         }
         MetaBindDeclaration::View(view) => {
             match render_view(view, settings, config, values, math, diagnostics) {
@@ -1682,9 +1806,15 @@ fn render_declaration<S: std::hash::BuildHasher>(
                 labels: vec![label.to_string()],
             }
         }
-        MetaBindDeclaration::JsView { .. } => MetaBindOutcome::Notice {
-            message: "meta-bind-js-view blocks run in Obsidian".to_string(),
-        },
+        MetaBindDeclaration::JsView(view) => {
+            match render_js_view(view, settings, env, values, diagnostics) {
+                Ok(outcome) => outcome,
+                Err(message) => {
+                    diagnostics.push(MetaBindDiagnostic::error(&message));
+                    MetaBindOutcome::Error { message }
+                }
+            }
+        }
         MetaBindDeclaration::Embed { target } => {
             let inner = target
                 .trim()
@@ -1700,6 +1830,74 @@ fn render_declaration<S: std::hash::BuildHasher>(
             MetaBindOutcome::Embed { target: inner }
         }
     }
+}
+
+/// Runs a JS view with its bound values; its result is saved to `save to`
+/// for the views after it, as view write-backs are.
+fn render_js_view<S: std::hash::BuildHasher>(
+    view: &JsViewDeclaration,
+    settings: &MetaBindConfig,
+    env: &MetaBindEnv<'_>,
+    values: &mut Values<'_, S>,
+    diagnostics: &mut Vec<MetaBindDiagnostic>,
+) -> Result<MetaBindOutcome, String> {
+    if !settings.enable_js {
+        return Ok(MetaBindOutcome::Notice {
+            message: "JS views run when `metabind.enable_js` is on".to_string(),
+        });
+    }
+    let Some(scripts) = env.scripts else {
+        return Ok(MetaBindOutcome::Notice {
+            message: "JS views run only where DataviewJS does".to_string(),
+        });
+    };
+    let mut bound = Map::new();
+    for (name, target) in &view.bindings {
+        if matches!(
+            target.storage,
+            MetaBindStorage::Memory | MetaBindStorage::GlobalMemory
+        ) {
+            diagnostics.push(MetaBindDiagnostic::info(
+                "memory values last only while Obsidian has the note open",
+            ));
+        }
+        bound.insert(name.clone(), values.read(target)?.unwrap_or(Value::Null));
+    }
+    let path = values.source_path.unwrap_or_default();
+    let context = serde_json::json!({
+        "bound": bound,
+        "metadata": { "frontmatter": values.frontmatter },
+        "file": {
+            "path": path,
+            "name": path.rsplit('/').next().unwrap_or(path).trim_end_matches(".md"),
+        },
+    });
+    let Some(result) = scripts.run_js_view(&view.code, &context) else {
+        return Ok(MetaBindOutcome::Notice {
+            message: "DataviewJS is off for this render, so JS views do not run".to_string(),
+        });
+    };
+    let (text, markdown, value) = match result? {
+        MetaBindScriptValue::Markdown(text) => (text.clone(), true, Value::String(text)),
+        MetaBindScriptValue::Value(value) => {
+            let text = match &value {
+                Value::Null => String::new(),
+                Value::String(text) => text.clone(),
+                other => display_value(other),
+            };
+            (text, false, value)
+        }
+    };
+    if let Some(target) = &view.save_to {
+        values.write(target, value.clone());
+    }
+    Ok(MetaBindOutcome::View {
+        view_type: "js".to_string(),
+        text: if view.hidden { String::new() } else { text },
+        markdown,
+        value,
+        write_target: view.save_to.as_ref().map(ToString::to_string),
+    })
 }
 
 /// Now as a date or time input shows it, in the device's time zone.
@@ -1950,6 +2148,56 @@ fn source_selects<S: std::hash::BuildHasher>(
                 || source_selects(right, note, index, source_path)?
         }
     })
+}
+
+fn render_input<S: std::hash::BuildHasher>(
+    input: &InputDeclaration,
+    inline: bool,
+    settings: &MetaBindConfig,
+    env: &MetaBindEnv<'_>,
+    values: &Values<'_, S>,
+    diagnostics: &mut Vec<MetaBindDiagnostic>,
+) -> MetaBindOutcome {
+    let (input_settings, mut found) = input_settings(input, inline, settings);
+    diagnostics.append(&mut found);
+    let Some(mut input_settings) = input_settings else {
+        return first_error(diagnostics);
+    };
+    if let Some(now) = env.now_ms {
+        input_settings.now_default = now_value(
+            &input_settings.input_type,
+            now,
+            &settings.preferred_date_format,
+        );
+    }
+    add_query_options(&mut input_settings, input, values, env.paths, diagnostics);
+    let stored = match &input.target {
+        Some(target) => {
+            if matches!(
+                target.storage,
+                MetaBindStorage::Memory | MetaBindStorage::GlobalMemory
+            ) {
+                diagnostics.push(MetaBindDiagnostic::info(
+                    "memory values last only while Obsidian has the note open",
+                ));
+            }
+            match values.read(target) {
+                Ok(value) => value,
+                Err(message) => {
+                    diagnostics.push(MetaBindDiagnostic::error(&message));
+                    return MetaBindOutcome::Error { message };
+                }
+            }
+        }
+        None => None,
+    };
+    let value = input_settings.effective_value(stored.as_ref());
+    MetaBindOutcome::Input {
+        display: input_settings.display(&value),
+        target: input.target.as_ref().map(ToString::to_string),
+        settings: Box::new(input_settings),
+        value,
+    }
 }
 
 fn first_error(diagnostics: &[MetaBindDiagnostic]) -> MetaBindOutcome {
@@ -2353,18 +2601,18 @@ pub fn view_write_backs(fields: &[MetaBindField]) -> Vec<ViewWriteBack> {
     fields
         .iter()
         .filter_map(|field| {
-            let Some(MetaBindDeclaration::View(view)) = &field.parsed else {
-                return None;
+            let target = match &field.parsed {
+                Some(MetaBindDeclaration::View(view)) => view.write_target.clone()?,
+                Some(MetaBindDeclaration::JsView(view)) => view.save_to.clone()?,
+                _ => return None,
             };
-            let target = view.write_target.clone()?;
             if target.storage != MetaBindStorage::Frontmatter {
                 return None;
             }
-            let value = match &field.outcome {
-                MetaBindOutcome::View { value, .. } => value.clone(),
-                MetaBindOutcome::Hidden if view.view_type != "hidden" => return None,
-                _ => return None,
+            let MetaBindOutcome::View { value, .. } = &field.outcome else {
+                return None;
             };
+            let value = value.clone();
             Some(ViewWriteBack {
                 line_number: field.line_number,
                 target,
@@ -2528,7 +2776,7 @@ mod tests {
 
         let now = shown(&MetaBindEnv {
             now_ms: Some(1_700_000_000_000),
-            paths: None,
+            ..MetaBindEnv::default()
         });
         assert!(now[0].parse::<jiff::civil::Date>().is_ok(), "{now:?}");
         assert!(
@@ -2536,6 +2784,26 @@ mod tests {
             "{now:?}"
         );
         assert_eq!(now[2], "2020-01-02", "a stored value wins over now");
+    }
+
+    #[test]
+    fn js_views_parse_bindings_save_targets_and_code() {
+        let view = parse_js_view(
+            "{number1} as n1\n{Other#list} and children as items\nsave to {result}\nhidden\n---\nreturn 1;\n",
+        )
+        .expect("view");
+        assert_eq!(view.bindings.len(), 2);
+        assert_eq!(view.bindings[1].0, "items");
+        assert_eq!(view.bindings[1].1.to_string(), "Other#list");
+        assert_eq!(view.save_to.expect("save").to_string(), "result");
+        assert!(view.hidden);
+        assert_eq!(view.code, "return 1;\n");
+        assert!(parse_js_view("{a} as a\nreturn 1;").is_err(), "needs ---");
+        assert!(parse_js_view("{a} as not a name\n---\n").is_err());
+        assert_eq!(
+            script_value(Some(serde_json::json!({ "__vulcanMarkdown": "**x**" }))),
+            MetaBindScriptValue::Markdown("**x**".to_string())
+        );
     }
 
     #[test]

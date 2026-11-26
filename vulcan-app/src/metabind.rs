@@ -10,7 +10,8 @@ use serde::Serialize;
 use serde_json::Value;
 use vulcan_core::metabind::{
     fields_in_source, inputs_bound_to, resolve_target_note, view_write_backs,
-    write_target_in_source, BindTarget, MetaBindEnv, MetaBindField, MetaBindStorage,
+    write_target_in_source, BindTarget, DataviewJsScripts, MetaBindEnv, MetaBindField,
+    MetaBindStorage,
 };
 use vulcan_core::{NoteRecord, PermissionGuard, ProfilePermissionGuard, VaultConfig, VaultPaths};
 
@@ -51,13 +52,29 @@ pub struct MetaBindFileWrite {
     pub after: String,
 }
 
-/// The render environment `vulcan metabind` uses: the device clock and the
-/// vault's files.
-fn env(paths: &VaultPaths) -> MetaBindEnv<'_> {
+/// The render environment `vulcan metabind` uses: the device clock, the
+/// vault's files, and JS views under the vault's `DataviewJS` policy
+/// (full evaluation for a trusted vault, the strict sandbox otherwise;
+/// never writing).
+fn env<'a>(paths: &'a VaultPaths, scripts: &'a DataviewJsScripts<'a>) -> MetaBindEnv<'a> {
     MetaBindEnv {
         paths: Some(paths),
+        scripts: Some(scripts),
         ..MetaBindEnv::with_clock()
     }
+}
+
+fn scripts<'a>(
+    paths: &'a VaultPaths,
+    path: &'a str,
+    permission_profile: Option<&str>,
+) -> DataviewJsScripts<'a> {
+    let policy = vulcan_core::vault_dataview_js_policy(paths, None);
+    DataviewJsScripts::new(
+        paths,
+        Some(path),
+        vulcan_core::render_policy_options(policy, permission_profile, false),
+    )
 }
 
 struct Scope {
@@ -106,7 +123,7 @@ pub fn list_metabind_fields(
             scope.note_index.as_ref(),
             Some(path),
             source,
-            &env(paths),
+            &env(paths, &scripts(paths, path, permission_profile)),
         ),
     })
 }
@@ -130,7 +147,7 @@ pub fn plan_metabind_set(
         scope.note_index.as_ref(),
         Some(path),
         source,
-        &env(paths),
+        &env(paths, &scripts(paths, path, permission_profile)),
     );
     let inputs = inputs_bound_to(&fields, &target);
     let Some(first) = inputs.first() else {
@@ -177,7 +194,7 @@ pub fn plan_metabind_apply(
         scope.note_index.as_ref(),
         Some(path),
         source,
-        &env(paths),
+        &env(paths, &scripts(paths, path, permission_profile)),
     );
     let mut plan = MetaBindWritePlan::default();
     let mut sources = BTreeMap::new();
@@ -376,6 +393,26 @@ mod tests {
         assert!(
             plan_metabind_set(&paths, &config, "Hub.md", note, "other", "Cat", None).is_err(),
             "values outside the query are refused"
+        );
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn apply_writes_js_view_results_when_js_is_enabled() {
+        let note = concat!(
+            "---\nprice: 4\n---\n",
+            "```meta-bind-js-view\n{price} as p\nsave to {doubled}\n---\nreturn context.bound.p * 2;\n```\n",
+        );
+        let (_dir, paths) = vault(&[("Shop.md", note)]);
+        let mut config = VaultConfig::default();
+        let plan = plan_metabind_apply(&paths, &config, "Shop.md", note, None).expect("plan");
+        assert!(plan.writes.is_empty(), "JS views need metabind.enable_js");
+        config.metabind.enable_js = true;
+        let plan = plan_metabind_apply(&paths, &config, "Shop.md", note, None).expect("plan");
+        assert!(
+            plan.writes[0].after.contains("doubled: 8"),
+            "{:?}",
+            plan.writes
         );
     }
 

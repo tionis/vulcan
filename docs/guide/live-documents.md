@@ -49,7 +49,20 @@ Health 70%
   for another note's frontmatter. `memory^name` and `globalMemory^name` hold values only while the
   note renders, as they hold them only while Obsidian has it open.
 - **Buttons** show their labels; their actions run in Obsidian. `meta-bind-embed` blocks embed
-  the note they name, and `meta-bind-js-view` blocks show a notice.
+  the note they name.
+- **JS views** (` ```meta-bind-js-view `) run when `metabind.enable_js` is on, wherever DataviewJS
+  runs (in the strict sandbox unless the vault is trusted), and never write. `save to {target}`
+  passes the result on; `vulcan metabind apply` writes it:
+
+  ````markdown
+  ```meta-bind-js-view
+  {price} as price
+  {qty} as qty
+  save to {total}
+  ---
+  return engine.markdown.create(`**${context.bound.price * context.bound.qty}** coins`);
+  ```
+  ````
 - Fields in `metabind.excluded_folders` (`templates` by default) show a notice, so templates keep
   their declarations.
 

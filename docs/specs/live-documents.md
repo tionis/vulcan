@@ -228,8 +228,21 @@ number, unknown template.
   wikilink or URL; `image` embeds one target. `hidden` suppresses output.
 - `BUTTON` and ` meta-bind-button ` render the label with a "buttons run in Obsidian" notice,
   except the button actions listed under "Buttons" below.
-- ` meta-bind-js-view ` blocks render a "runs in Obsidian" notice. `enable_js` is imported so a
-  later slice can run them under the render's DataviewJS policy.
+- ` meta-bind-js-view ` blocks run when `metabind.enable_js` is on (as Meta Bind requires its
+  "enable JS" setting), under the render's DataviewJS policy: not at all for `off`, in the strict
+  sandbox for `static`, at the vault's tier for `on`, and never writing. The block is
+  `{target} as name` lines (`{target} and children as name` reads the same value), optional
+  `save to {target}` and `hidden` lines, `---`, then the code, which runs as an async function
+  body in a DataviewJS session of its own. It sees `context.bound.<name>`,
+  `context.metadata.frontmatter` (with earlier views' write-backs), `context.file.path`/`.name`,
+  `engine.markdown.create(text)` (the result renders as Markdown), and the DataviewJS globals
+  (`dv`, …); Obsidian's `app`, `container`, and `component` are not available. A returned string
+  or number renders as text, a list as a comma list, an object as JSON, nothing as nothing.
+  `save to` passes the result (the Markdown text for `markdown.create`) to later fields and to
+  `vulcan metabind apply`, which writes it; `hidden` shows nothing. `vulcan metabind list` and
+  `apply` use the vault's DataviewJS policy (full evaluation in a trusted vault, the strict
+  sandbox otherwise). With `enable_js` off, or where DataviewJS is off, the block shows a
+  notice. Inline Meta Bind syntax in returned Markdown is not rendered again.
 - ` meta-bind-embed ` transcludes the linked note like a note embed (max depth 8).
 
 ### Editing in place

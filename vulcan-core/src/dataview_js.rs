@@ -220,6 +220,10 @@ impl DataviewJsSession {
     pub fn evaluate_block(&self, _source: &str) -> Result<DataviewJsResult, DataviewJsError> {
         Err(DataviewJsError::Disabled)
     }
+
+    pub fn evaluate_async_function(&self, _body: &str) -> Result<Option<Value>, DataviewJsError> {
+        Err(DataviewJsError::Disabled)
+    }
 }
 
 #[cfg(all(test, not(feature = "js_runtime")))]
@@ -3923,6 +3927,36 @@ globalThis.this = dv.current();
             )?;
             result.outputs.extend(settled.outputs);
             Ok(result)
+        }
+
+        /// Run `body` as the body of an async function and return what it
+        /// returned (awaited), as JSON; `None` for `undefined`. Hosts that
+        /// run scripts with their own globals, such as Meta Bind JS views
+        /// and buttons, declare them at the top of `body`.
+        pub fn evaluate_async_function(
+            &self,
+            body: &str,
+        ) -> Result<Option<Value>, DataviewJsError> {
+            self.evaluate_with_mode(
+                &format!(
+                    "globalThis.__vulcanFnResult = undefined; globalThis.__vulcanFnError = undefined; \
+                     (async () => {{{body}\n}})().then(\
+                     (value) => {{ globalThis.__vulcanFnResult = {{ value }}; }}, \
+                     (error) => {{ globalThis.__vulcanFnError = error; }}); undefined"
+                ),
+                false,
+            )?;
+            Ok(self
+                .evaluate_with_mode(
+                    "(() => { const error = globalThis.__vulcanFnError; \
+                     const result = globalThis.__vulcanFnResult; \
+                     globalThis.__vulcanFnError = undefined; \
+                     globalThis.__vulcanFnResult = undefined; \
+                     if (error !== undefined) throw error; \
+                     return result === undefined ? undefined : result.value; })()",
+                    false,
+                )?
+                .value)
         }
 
         fn evaluate_with_mode(

@@ -220,6 +220,8 @@ pub(crate) fn evaluate_dynamic_regions(
         &mut regions,
     );
 
+    let scripts =
+        crate::metabind::DataviewJsScripts::new(ctx.paths, source_path, dataview_js_options(ctx));
     for field in crate::metabind::evaluate_note_fields(
         ctx.config,
         ctx.note_index,
@@ -230,6 +232,7 @@ pub(crate) fn evaluate_dynamic_regions(
             // value show empty instead of today.
             now_ms: (!ctx.deterministic).then(crate::current_utc_timestamp_ms),
             paths: Some(ctx.paths),
+            scripts: Some(&scripts),
         },
     ) {
         regions.push(DynamicRegion {
@@ -750,17 +753,28 @@ fn evaluate_dataview_js_block(
 /// Evaluation options for the render's `DataviewJS` policy; `None` when it
 /// is off. Renders are always read-only.
 fn dataview_js_options(ctx: &DynamicContentContext<'_>) -> Option<crate::DataviewJsEvalOptions> {
-    match ctx.dataview_js {
+    render_policy_options(ctx.dataview_js, ctx.permission_profile, ctx.deterministic)
+}
+
+/// The `DataviewJS` options a render with `policy` evaluates with; `None`
+/// for `off`. Rendering never writes, whatever the policy.
+#[must_use]
+pub fn render_policy_options(
+    policy: DataviewJsRenderPolicy,
+    permission_profile: Option<&str>,
+    deterministic: bool,
+) -> Option<crate::DataviewJsEvalOptions> {
+    match policy {
         DataviewJsRenderPolicy::Off => None,
         DataviewJsRenderPolicy::Static => Some(crate::DataviewJsEvalOptions {
             sandbox: Some(JsRuntimeSandbox::Strict),
-            deterministic_static: ctx.deterministic,
+            deterministic_static: deterministic,
             read_only: true,
-            permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
+            permission_profile: permission_profile.map(ToOwned::to_owned),
             ..crate::DataviewJsEvalOptions::default()
         }),
         DataviewJsRenderPolicy::On => Some(crate::DataviewJsEvalOptions {
-            permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
+            permission_profile: permission_profile.map(ToOwned::to_owned),
             read_only: true,
             ..crate::DataviewJsEvalOptions::default()
         }),
@@ -2442,6 +2456,44 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("[Heal]"), "{rendered}");
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn meta_bind_js_views_run_under_the_render_policy() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = concat!(
+            "---\nn1: 6\nn2: 7\n---\n",
+            "```meta-bind-js-view\n{n1} as a\n{n2} as b\nsave to {product}\n---\n",
+            "return engine.markdown.create(`**${context.bound.a * context.bound.b}** km`);\n```\n\n",
+            "```meta-bind-js-view\n{n1} as a\nhidden\nsave to {twice}\n---\nreturn context.bound.a * 2;\n```\n\n",
+            "Saved: `VIEW[{product}][text]`, twice `VIEW[{twice}]`.\n",
+        );
+        let render = |policy| {
+            render_evaluated_markdown(
+                &paths,
+                source,
+                &EvaluatedMarkdownOptions {
+                    source_path: Some("Home.md"),
+                    dataview_js: policy,
+                    ..EvaluatedMarkdownOptions::default()
+                },
+            )
+            .markdown
+        };
+        let disabled = render(DataviewJsRenderPolicy::Static);
+        assert!(disabled.contains("metabind.enable_js"), "{disabled}");
+
+        std::fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            "[metabind]\nenable_js = true\n",
+        )
+        .expect("config should write");
+        let on = render(DataviewJsRenderPolicy::Static);
+        assert!(on.contains("---\n**42** km\n"), "{on}");
+        assert!(on.contains("Saved: \\*\\*42\\*\\* km, twice 12."), "{on}");
+        let off = render(DataviewJsRenderPolicy::Off);
+        assert!(off.contains("DataviewJS is off"), "{off}");
     }
 
     #[cfg(feature = "js_runtime")]
