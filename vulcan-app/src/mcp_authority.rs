@@ -107,6 +107,16 @@ impl McpAuthority {
         &self.guard
     }
 
+    /// Whether the vault asks for confirmation before destructive calls
+    /// (`mcp.confirm_destructive`), read as the vault's configuration is now.
+    #[must_use]
+    pub fn confirm_destructive(&self) -> bool {
+        vulcan_core::load_vault_config(&self.paths)
+            .config
+            .mcp
+            .confirm_destructive
+    }
+
     #[must_use]
     pub fn active_tool_names(&self) -> Vec<String> {
         active_tool_names(&self.selection.profile)

@@ -35568,6 +35568,129 @@ fn mcp_ambiguous_notes_ask_clients_that_can_answer() {
     session.finish();
 }
 
+/// With `mcp.confirm_destructive`, a destructive call from a modern client
+/// that can show forms is first asked to confirm; only an accepted retry
+/// changes the vault. Declining, a client without forms and a 2025 client
+/// are refused, and dry runs and ordinary writes are never asked.
+#[test]
+fn mcp_destructive_calls_ask_for_confirmation_when_configured() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[mcp]\nconfirm_destructive = true\n",
+    )
+    .expect("config");
+    fs::write(vault_root.join("Scratch.md"), "Scratch\n").expect("note");
+    run_scan(&vault_root);
+    let meta = |elicitation: bool| {
+        let capabilities = if elicitation {
+            serde_json::json!({"elicitation": {"form": {}}})
+        } else {
+            serde_json::json!({})
+        };
+        serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": capabilities,
+            "io.modelcontextprotocol/clientInfo": {"name": "confirm", "version": "1"},
+        })
+    };
+    let mut session = McpSession::start(&vault_root, &["--permissions", "writer"]);
+    let mut call = |id: u64, params: Value| -> Value {
+        session
+            .send(serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params
+            }))
+            .into_iter()
+            .find(|message| message["id"] == id)
+            .expect("a response")["result"]
+            .clone()
+    };
+    let delete = serde_json::json!({"note": "Scratch.md"});
+
+    let asked = call(
+        1,
+        serde_json::json!({"_meta": meta(true), "name": "note_delete", "arguments": delete}),
+    );
+    assert_eq!(asked["resultType"], "input_required", "{asked}");
+    let request = &asked["inputRequests"]["confirm:destructive"];
+    assert_eq!(request["params"]["mode"], "form");
+    assert!(request["params"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("Scratch.md")));
+    assert!(vault_root.join("Scratch.md").exists());
+
+    let declined = call(
+        2,
+        serde_json::json!({
+            "_meta": meta(true), "name": "note_delete", "arguments": delete,
+            "inputResponses": {"confirm:destructive": {"action": "decline"}}
+        }),
+    );
+    assert_eq!(declined["isError"], true, "{declined}");
+    let unchecked = call(
+        3,
+        serde_json::json!({
+            "_meta": meta(true), "name": "note_delete", "arguments": delete,
+            "inputResponses": {"confirm:destructive": {"action": "accept", "content": {"confirm": false}}}
+        }),
+    );
+    assert_eq!(unchecked["isError"], true, "{unchecked}");
+    let unable = call(
+        4,
+        serde_json::json!({"_meta": meta(false), "name": "note_delete", "arguments": delete}),
+    );
+    assert_eq!(unable["isError"], true, "{unable}");
+    assert!(unable["content"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("confirmation_required")));
+    assert!(vault_root.join("Scratch.md").exists());
+
+    // A dry run is never asked; an ordinary write neither.
+    let preview = call(
+        5,
+        serde_json::json!({"_meta": meta(false), "name": "note_delete", "arguments": {"note": "Scratch.md", "dry_run": true}}),
+    );
+    assert_eq!(preview["isError"], false, "{preview}");
+    let append = call(
+        6,
+        serde_json::json!({"_meta": meta(false), "name": "note_append", "arguments": {"note": "Scratch.md", "text": "More"}}),
+    );
+    assert_eq!(append["isError"], false, "{append}");
+
+    let confirmed = call(
+        7,
+        serde_json::json!({
+            "_meta": meta(true), "name": "note_delete", "arguments": delete,
+            "inputResponses": {"confirm:destructive": {"action": "accept", "content": {"confirm": true}}}
+        }),
+    );
+    assert_eq!(confirmed["isError"], false, "{confirmed}");
+    assert!(!vault_root.join("Scratch.md").exists());
+    session.finish();
+
+    // A 2025 client cannot be asked, so it is refused.
+    fs::write(vault_root.join("Scratch.md"), "Scratch\n").expect("note");
+    let mut legacy = McpSession::start(&vault_root, &["--permissions", "writer"]);
+    legacy.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "old", "version": "1"}}
+    }));
+    let refused = legacy
+        .send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "note_delete", "arguments": {"note": "Scratch.md"}}
+        }))
+        .into_iter()
+        .find(|message| message["id"] == 2)
+        .expect("a response");
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert!(vault_root.join("Scratch.md").exists());
+    legacy.finish();
+}
+
 /// A tool call that sends a progress token gets progress notifications for
 /// it before its response: as lines on stdio, and on HTTP as an event stream
 /// whose last event is the response.

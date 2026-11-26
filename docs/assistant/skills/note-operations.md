@@ -1,7 +1,7 @@
 ---
 name: note-operations
 description: Read, create, append, and patch notes safely through Vulcan instead of raw filesystem edits.
-version: 11
+version: 12
 tools:
   - note_outline
   - note_get
@@ -45,7 +45,7 @@ Use this skill when the task is centered on one note or a small set of notes and
    - If a response may be lost and retried, give `note_append` an `idempotency_key`; a repeat with the same key returns the first result (`replayed: true`) without appending twice.
 5. Use a vault-relative path in `note` when a name or alias is ambiguous.
 6. For attachments and other non-Markdown files use `file_get` (byte slices as UTF-8 or base64, with the file's `content_hash`; follow `next_offset`) and `file_put` (text or base64, at most 10 MiB; refuses Markdown, and replaces an existing file only with `overwrite`, ideally with `expected_hash`). Embed an attachment in a note with `![[path]]`.
-7. Errors carry `error.code`: `invalid_argument` names the argument to fix, `not_found` and `ambiguous` mean the note reference needs a path, `permission_denied` means the profile does not allow it.
+7. Errors carry `error.code`: `invalid_argument` names the argument to fix, `not_found` and `ambiguous` mean the note reference needs a path, `permission_denied` means the profile does not allow it. `confirmation_declined` means the person did not allow an overwrite or delete the vault asks them to confirm: do not retry it unasked. `confirmation_required` means this client cannot show that confirmation; a `dry_run` still works, and the change itself needs a client that can ask.
 <!-- /vulcan:mcp -->
 
 ## Guardrails

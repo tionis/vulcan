@@ -16,7 +16,10 @@ use crate::mcp_assistant::{
 use crate::mcp_authority::{McpAuthority, McpClientAttribution};
 use crate::mcp_discovery::McpDiscovery;
 use crate::mcp_help::HelpTopicReport;
-use crate::mcp_input::{ambiguity_input, apply_input_responses, declares_form_elicitation};
+use crate::mcp_input::{
+    ambiguity_input, apply_input_responses, call_is_destructive, confirmation_input,
+    confirmation_refused, declares_form_elicitation, InputAnswers,
+};
 use crate::mcp_operations::McpOperationLookup;
 use crate::mcp_progress::McpProgress;
 use crate::mcp_protocol::{
@@ -318,22 +321,42 @@ pub fn handle(
     method: &str,
     params: Option<&Value>,
 ) -> Result<Option<Value>, McpMethodError> {
+    let confirm = method == "tools/call"
+        && call_is_destructive(params)
+        && ctx.authority.confirm_destructive();
     if ctx.era == McpEra::Legacy {
+        // A 2025 client is never asked: it cannot answer a form here.
+        if confirm {
+            return Err(McpMethodError::tool(confirmation_refused(params, false)));
+        }
         return dispatch(ctx, method, params);
     }
     // A modern tool call may be a retry answering an input request, and
-    // may be answered with one when it names a note ambiguously.
+    // may be answered with one when it names a note ambiguously or makes a
+    // destructive change the vault asks to confirm.
     let mut call_params = None;
-    let mut declined = false;
+    let mut answers = InputAnswers::default();
     if method == "tools/call" {
         let mut owned = params.cloned().unwrap_or_else(|| json!({}));
-        declined = apply_input_responses(&mut owned);
+        answers = apply_input_responses(&mut owned);
         call_params = Some(owned);
     }
     let params = call_params.as_ref().or(params);
-    let result = dispatch(ctx, method, params);
+    let can_ask = declares_form_elicitation(params);
+    let result = if confirm && answers.confirmed != Some(true) {
+        if can_ask && answers.confirmed.is_none() {
+            return Ok(Some(decorate_modern(
+                ctx,
+                method,
+                confirmation_input(params),
+            )));
+        }
+        Err(McpMethodError::tool(confirmation_refused(params, can_ask)))
+    } else {
+        dispatch(ctx, method, params)
+    };
     if let Err(McpMethodError::Tool { message, .. }) = &result {
-        if method == "tools/call" && !declined && declares_form_elicitation(params) {
+        if method == "tools/call" && !answers.declined_note && can_ask {
             let arguments = params
                 .and_then(|params| params.get("arguments"))
                 .and_then(Value::as_object);

@@ -105,6 +105,13 @@ A note name that matches several notes (`Topic` for both `Archive/Topic.md` and
 `Projects/Topic.md`) is an `ambiguous` error listing the matches. A 2026-07-28 client that can
 show forms asks you which note you meant instead, and continues with your answer.
 
+## Confirming overwrites and deletes
+
+Clients usually ask before a tool marked destructive runs. To have Vulcan ask too, set
+`confirm_destructive = true` under `[mcp]` in the vault's `.vulcan/config.toml`. A 2026-07-28
+client that can show forms (claude.ai does) then asks you to allow each overwrite or delete before
+it happens. Clients that cannot ask are refused those calls, and dry runs always go through.
+
 ## Troubleshooting
 
 | Symptom | Cause |

@@ -5421,6 +5421,22 @@ fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
 }
 
 #[test]
+fn mcp_confirm_destructive_defaults_off_and_local_overrides_shared() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::create_dir_all(temp_dir.path().join(".vulcan")).expect("vulcan dir");
+    assert!(!load_vault_config(&paths).config.mcp.confirm_destructive);
+    fs::write(paths.config_file(), "[mcp]\nconfirm_destructive = true\n").expect("shared");
+    assert!(load_vault_config(&paths).config.mcp.confirm_destructive);
+    fs::write(
+        paths.local_config_file(),
+        "[mcp]\nconfirm_destructive = false\n",
+    )
+    .expect("local");
+    assert!(!load_vault_config(&paths).config.mcp.confirm_destructive);
+}
+
+#[test]
 fn retired_mcp_remote_tool_packs_load_with_a_diagnostic() {
     let temp_dir = TempDir::new().expect("temp dir");
     let vault_root = temp_dir.path();

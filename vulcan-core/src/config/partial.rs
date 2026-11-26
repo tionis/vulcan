@@ -36,6 +36,12 @@ pub(super) struct PartialVulcanConfig {
     pub(super) aliases: Option<BTreeMap<String, String>>,
     pub(super) bot: Option<PartialBotConfig>,
     pub(super) mcp_remote: Option<PartialMcpRemoteConfig>,
+    pub(super) mcp: Option<PartialMcpConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialMcpConfig {
+    pub(super) confirm_destructive: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

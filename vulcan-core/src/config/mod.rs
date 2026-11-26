@@ -2974,6 +2974,19 @@ pub struct VaultConfig {
     pub bot: BotConfig,
     #[serde(default, skip_serializing_if = "VaultMcpRemoteConfig::is_empty")]
     pub mcp_remote: VaultMcpRemoteConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// How Vulcan's MCP server treats this vault's connections (`[mcp]`), whatever
+/// the transport.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpConfig {
+    /// Ask the person to confirm each destructive tool call (overwrite or
+    /// delete) through the client's form, where the client can show one. A
+    /// client that cannot is refused those calls. Dry runs are not asked.
+    #[serde(default)]
+    pub confirm_destructive: bool,
 }
 
 /// The named MCP remote this vault describes (`[mcp_remote]`). It travels
@@ -3179,6 +3192,7 @@ impl Default for VaultConfig {
             aliases: builtin_command_aliases(),
             bot: BotConfig::default(),
             mcp_remote: VaultMcpRemoteConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -5820,6 +5834,13 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
 
     if let Some(aliases) = overrides.aliases {
         config.aliases.extend(aliases);
+    }
+    if let Some(confirm) = overrides
+        .mcp
+        .as_ref()
+        .and_then(|mcp| mcp.confirm_destructive)
+    {
+        config.mcp.confirm_destructive = confirm;
     }
     if let Some(bot) = overrides.bot {
         if let Some(default_capture) = bot.default_capture {

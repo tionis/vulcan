@@ -377,6 +377,9 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # query = 'from notes where file.path matches "^People/"'
 # exclude_callouts = ["internal"]
 
+# [mcp]
+# confirm_destructive = false  # ask before MCP overwrites and deletes; refuses clients that cannot ask
+
 # [web]
 # user_agent = "Vulcan/0.1 (+https://github.com/tionis/vulcan)"
 #

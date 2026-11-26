@@ -1364,6 +1364,14 @@ Named external-content topology, authority, conflict, limit, and scheduling poli
   Preferred command: `vulcan config set`
   Example: `vulcan config set integrations.routes.players.stale_attachment_policy <value>`
 
+### MCP
+
+How Vulcan's MCP server treats this vault's connections.
+
+- `mcp.confirm_destructive` — type: `boolean`; target: `shared|local|device`; default: `false`
+  Ask the person to confirm each destructive MCP tool call (overwrite or delete) through the client's form. Clients that cannot show one (2025 clients, clients without form elicitation) are refused those calls; dry runs are never asked. Off by default, since client approval prompts usually cover them.
+  Example: `vulcan config set mcp.confirm_destructive <value>`
+
 ### MCP Remote
 
 The named MCP remote this vault describes; devices opt in to serve it from daemon.toml.

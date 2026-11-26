@@ -350,7 +350,13 @@ request, keyed `note:<argument>`, offering the candidate paths (at most 25) as a
 The retry carries the arguments, so there is no `requestState`: an accepted answer replaces that
 argument; a declined or cancelled one, or a client without form elicitation, gets the `ambiguous`
 tool error. Destructive operations do not elicit by default (client approval prompts already
-cover them); `mcp.confirm_destructive = true` is to turn that on (not implemented yet).
+cover them). With `mcp.confirm_destructive = true` in the vault's config, a destructive call
+(a tool needing the `destructive` permission, or `file_put` with `overwrite`; never a dry run)
+from a modern client that declares form elicitation answers `input_required` with one form
+request, keyed `confirm:destructive`, holding a boolean `confirm`; only a retry that accepts with
+`confirm: true` runs. A decline, an unchecked box, a client without form elicitation and a 2025
+client get a tool error (`confirmation_declined`, or `confirmation_required` when the client
+cannot ask) and nothing changes. The setting is read per call.
 
 **Progress:** a tool call whose `_meta` carries a `progressToken` (either era) gets
 `notifications/progress` for it while it runs, at most every 250 ms, always increasing, and

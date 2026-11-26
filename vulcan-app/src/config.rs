@@ -1985,6 +1985,11 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
         },
         Some("integrations") => integration_routes_category_descriptor(),
         Some(key @ ("editor" | "bot" | "mcp_remote")) => small_category_descriptor(key),
+        Some("mcp") => CategoryDescriptor {
+            key: "mcp",
+            title: "MCP",
+            description: "How Vulcan's MCP server treats this vault's connections.",
+        },
         Some("site") => CategoryDescriptor {
             key: "site",
             title: "Static Site",
@@ -2087,6 +2092,7 @@ fn config_path_description(path: &str) -> String {
         _ if path.starts_with("templates.") => {
             "Template discovery, file triggers, folder mappings, and shell integration.".to_string()
         }
+        "mcp.confirm_destructive" => "Ask the person to confirm each destructive MCP tool call (overwrite or delete) through the client's form. Clients that cannot show one (2025 clients, clients without form elicitation) are refused those calls; dry runs are never asked. Off by default, since client approval prompts usually cover them.".to_string(),
         "mcp_remote.public_url" => "Public HTTPS URL of this vault's MCP remote. Devices that opt in serve it; a change applies at their next `vulcan daemon apply`.".to_string(),
         "mcp_remote.identity" => "IndieAuth identity URL allowed to approve connections. Each device records the identity it accepted; a changed one waits for `vulcan daemon apply --accept-remote <vault>` there.".to_string(),
         "mcp_remote.ceiling_profile" => "Maximum permission profile for remote connections; must be a built-in (such as `writer`) or defined on the device, so a push cannot widen it. `readonly` when unset.".to_string(),
