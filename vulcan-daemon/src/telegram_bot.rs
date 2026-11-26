@@ -24,10 +24,10 @@ use vulcan_app::chat::reminders::{
 use vulcan_app::chat::state::{ChatStateStore, ReminderLedgerEntry, ReminderState};
 use vulcan_app::chat::validation::chat_validation_check;
 use vulcan_app::chat::{
-    chat_digest, chat_error_text, chat_help_text, chat_undo_id, chat_usage_text,
-    parse_chat_message, run_chat_action, run_chat_attachment, run_chat_command,
+    chat_error_text, chat_help_text, chat_undo_id, chat_usage_text, chat_vault_agenda,
+    parse_chat_message, render_chat_digest, run_chat_action, run_chat_attachment, run_chat_command,
     run_chat_reschedule, run_chat_undo, ChatAction, ChatAttachment, ChatButton, ChatCommand,
-    ChatReply, ChatReplyTarget, ChatVault, CHAT_COMMANDS, CHAT_WHEN_HINT,
+    ChatDigest, ChatReply, ChatReplyTarget, ChatVault, CHAT_COMMANDS, CHAT_WHEN_HINT,
 };
 use vulcan_app::execution::MutationGate;
 use vulcan_app::tasks::ReminderSettings;
@@ -1032,6 +1032,9 @@ impl Bot<'_> {
             else {
                 continue;
             };
+            // Every vault whose local digest time has come and that has not
+            // had today's digest goes into one message.
+            let mut agendas = Vec::new();
             for vault in &user.vaults {
                 let Ok(wiki) = self.user_vault(user, vault.as_str()) else {
                     continue;
@@ -1055,11 +1058,8 @@ impl Bot<'_> {
                 {
                     continue;
                 }
-                match self.with_vault(user, &wiki, |chat| chat_digest(chat, vault.as_str(), now)) {
-                    Ok(Some(reply)) => {
-                        self.send_reply(user.telegram_id, Some(vault.as_str()), &reply);
-                    }
-                    Ok(None) => {}
+                match self.with_vault(user, &wiki, |chat| chat_vault_agenda(chat, now)) {
+                    Ok(agenda) => agendas.push((vault.to_string(), agenda)),
                     Err(error) => {
                         self.status.last_error = Some(format!("digest for {vault}: {error}"));
                     }
@@ -1072,6 +1072,9 @@ impl Bot<'_> {
                 {
                     self.status.last_error = Some(format!("digest state: {error}"));
                 }
+            }
+            if let Some(digest) = render_chat_digest(&agendas) {
+                self.send_digest(user.telegram_id, &digest);
             }
         }
     }
@@ -1258,6 +1261,28 @@ impl Bot<'_> {
         };
         if let Err(error) = result {
             self.status.last_error = Some(format!("reminder ledger: {error}"));
+        }
+    }
+
+    /// Send the morning digest; each Done button acts on its own vault.
+    fn send_digest(&mut self, chat_id: i64, digest: &ChatDigest) {
+        let now = vulcan_core::current_utc_timestamp_ms();
+        let keyboard = digest
+            .buttons
+            .iter()
+            .filter_map(|(vault, button)| {
+                let token = self
+                    .state
+                    .store_action(PLATFORM, chat_id, vault, &button.action, now)
+                    .ok()?;
+                Some(vec![InlineButton {
+                    text: button.label.clone(),
+                    callback_data: format!("{CALLBACK_PREFIX}{token}"),
+                }])
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = self.client.send_message(chat_id, &digest.text, &keyboard) {
+            self.status.last_error = Some(format!("send digest: {error}"));
         }
     }
 

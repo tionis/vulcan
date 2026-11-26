@@ -37,6 +37,7 @@ pub mod keyed_state;
 #[cfg(windows)]
 pub use vulcan_winacl as windows_acl;
 
+pub mod agenda;
 pub mod artifact;
 pub mod background_policy;
 pub mod bases;

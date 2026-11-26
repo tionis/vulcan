@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, schedule vault jobs, and understand trust boundaries. Use when the user asks about registered vaults, daemon.toml, setting up a device (`daemon plan`/`apply`), config, permissions, profiles, access control, sandboxing, trust, scheduled or recurring jobs, the Telegram chat bot, setup, or why a command/tool is denied.
-version: 37
+version: 38
 tools:
   - config_show
   - config_get
@@ -74,7 +74,8 @@ permission profiles, or diagnoses permission and trust failures.
     (the command replaces the user's whole entry, so repeat every flag they should keep; `--alerts`
     sends sync failures and conflicts and needs a daemon restart when it is the first, and also
     reports notes that newly fail mdbase validation,
-    `--digest` sends a daily summary of today's tasks and reminders):
+    `--digest` sends one morning message across the user's vaults: overdue, today's and this
+    week's tasks, today's schedule and reminders, yesterday's completions and the inbox count):
     the profile defaults to `readonly` and must stay within each wiki registration's permissions
     profile, so grant writes with a narrow device-local profile rather than `unrestricted`.
     Restart the daemon, then check `vulcan daemon bot-status`: it shows whether the token

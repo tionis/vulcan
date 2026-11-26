@@ -829,41 +829,180 @@ fn file_names_are_sanitized() {
     assert_eq!(clean.rsplit_once('.').map(|(_, ext)| ext), Some("ogg"));
 }
 
+fn utc_day(offset: i64) -> jiff::civil::Date {
+    jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
+        .checked_add(jiff::Span::new().days(offset))
+        .unwrap()
+}
+
 #[test]
-fn digests_list_todays_tasks_and_remaining_reminders() {
-    let today = chrono::Utc::now().date_naive();
+fn digests_report_the_whole_day_of_a_vault() {
+    let [long_ago, yesterday, today, soon, far] = [-10, -1, 0, 3, 30].map(utc_day);
     let fixture = Fixture::new(
-        "[tasks.reminders]\ntimezone = \"UTC\"\n",
-        &[(
-            "Today.md",
-            &format!(
-                "- [ ] Pay rent 📅 {today}\n- [ ] Call the bank ⏰ {today} 23:59\n- [ ] Next year 📅 2999-01-01\n"
+        "[tasks.reminders]\ntimezone = \"UTC\"\n\
+         [periodic.daily]\nschedule_heading = \"Schedule\"\n\
+         [inbox]\npath = \"Inbox\"\n",
+        &[
+            (
+                "Tasks.md",
+                &format!(
+                    "- [ ] Renew passport 📅 {long_ago}\n\
+                     - [ ] Pay rent 📅 {yesterday}\n\
+                     - [ ] Water plants 📅 {today}\n\
+                     - [ ] Call the bank ⏰ {today} 23:59\n\
+                     - [ ] Book flights 📅 {soon}\n\
+                     - [ ] Next month 📅 {far}\n\
+                     - [x] Filed taxes ✅ {yesterday}\n"
+                ),
             ),
-        )],
+            (
+                &format!("Journal/Daily/{today}.md"),
+                "## Schedule\n- all-day Offsite\n- 09:00 Standup\n",
+            ),
+            ("Inbox.md", "- idea one\n- idea two\n- [x] filed\n"),
+        ],
     );
     let guard = fixture.guard("unrestricted");
     let vault = vault_for(&fixture, &guard, "unrestricted");
-    let now = chrono::Utc::now().timestamp_millis();
-    let digest = chat_digest(&vault, "notes", now)
-        .unwrap()
-        .expect("something to report");
+    let now = jiff::Timestamp::now().as_millisecond();
+    let agenda = chat_vault_agenda(&vault, now).unwrap();
+
+    let titles = |tasks: &[crate::agenda::AgendaTask]| {
+        tasks
+            .iter()
+            .map(|task| task.title.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(titles(&agenda.overdue), ["Renew passport", "Pay rent"]);
+    assert_eq!(
+        agenda
+            .slipping()
+            .map(|task| task.days_late)
+            .collect::<Vec<_>>(),
+        [10]
+    );
+    assert_eq!(titles(&agenda.today_tasks), ["Water plants"]);
+    assert_eq!(titles(&agenda.this_week), ["Book flights"]);
+    assert_eq!(agenda.done_yesterday, ["Filed taxes"]);
+    assert_eq!(agenda.inbox, Some(2));
+    assert_eq!(
+        agenda
+            .events
+            .iter()
+            .map(|event| (event.time.as_deref(), event.title.as_str()))
+            .collect::<Vec<_>>(),
+        [(None, "Offsite"), (Some("09:00"), "Standup")]
+    );
+    assert_eq!(agenda.reminders.len(), 1);
+    assert_eq!(agenda.reminders[0].time, "23:59");
+
+    let digest = render_chat_digest(&[("notes".to_string(), agenda)]).expect("a digest");
     let text = digest.text;
     assert!(text.starts_with("☀️ Today, "), "{text}");
     assert!(
-        text.contains("· notes\n\nDue today (1):\n• Pay rent · Today"),
-        "{text}"
+        !text.contains("📂"),
+        "one vault needs no vault headings: {text}"
     );
-    assert!(
-        text.contains("Reminders today:\n• 23:59 Call the bank"),
-        "{text}"
-    );
-    assert!(!text.contains("Next year"), "{text}");
-    assert_eq!(digest.buttons.len(), 1);
+    for expected in [
+        "Overdue (2):\n• Renew passport · ",
+        " (10 days late)\n• Pay rent · Yesterday\n",
+        "Due today (1):\n• Water plants · Today\n",
+        "Today's plan:\n• Offsite\n• 09:00 Standup\n",
+        "Reminders today:\n• 23:59 Call the bank\n",
+        "Later this week (1):\n• Book flights",
+        "✅ Done yesterday (1): Filed taxes",
+        "📥 2 entries in the inbox",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+    }
+    assert!(!text.contains("Next month"), "{text}");
+    // Done buttons for late and due-today tasks, bound to their vault.
+    assert_eq!(digest.buttons.len(), 3);
+    assert!(digest.buttons.iter().all(|(vault, _)| vault == "notes"));
+}
 
-    let empty = Fixture::new("", &[("Later.md", "- [ ] Next year 📅 2999-01-01\n")]);
-    let guard = empty.guard("unrestricted");
-    let vault = vault_for(&empty, &guard, "unrestricted");
-    assert_eq!(chat_digest(&vault, "notes", now).unwrap(), None);
+#[test]
+fn digests_respect_the_permission_profile() {
+    let today = utc_day(0);
+    let fixture = Fixture::new(
+        "[tasks.reminders]\ntimezone = \"UTC\"\n",
+        &[
+            ("Work/Tasks.md", &format!("- [ ] Ship release 📅 {today}\n")),
+            (
+                "Private/Tasks.md",
+                &format!("- [ ] Secret errand 📅 {today}\n"),
+            ),
+            ("Inbox.md", "- private idea\n"),
+        ],
+    );
+    fs::write(
+        fixture.paths.vulcan_dir().join("config.local.toml"),
+        "[permissions.profiles.work]\nread = { allow = [\"folder:Work/**\"] }\nwrite = \"none\"\n",
+    )
+    .unwrap();
+    let guard = fixture.guard("work");
+    let vault = vault_for(&fixture, &guard, "work");
+    let agenda = chat_vault_agenda(&vault, jiff::Timestamp::now().as_millisecond()).unwrap();
+    assert_eq!(agenda.today_tasks.len(), 1);
+    assert_eq!(agenda.today_tasks[0].title, "Ship release");
+    assert_eq!(agenda.inbox, None, "the inbox note is not readable");
+}
+
+#[test]
+fn digests_merge_vaults_into_one_message() {
+    use crate::agenda::{AgendaTask, VaultAgenda};
+    let today = utc_day(0).to_string();
+    let task = |title: &str| AgendaTask {
+        reference: format!("{title}.md"),
+        title: title.to_string(),
+        date: today.clone(),
+        days_late: 0,
+    };
+    let quiet = VaultAgenda {
+        today: today.clone(),
+        ..VaultAgenda::default()
+    };
+    let vaults = [
+        (
+            "work".to_string(),
+            VaultAgenda {
+                today_tasks: vec![task("Ship release")],
+                ..quiet.clone()
+            },
+        ),
+        ("empty".to_string(), quiet.clone()),
+        (
+            "home".to_string(),
+            VaultAgenda {
+                today_tasks: vec![task("Water plants")],
+                ..quiet.clone()
+            },
+        ),
+    ];
+    let digest = render_chat_digest(&vaults).expect("a digest");
+    assert!(
+        digest
+            .text
+            .contains("📂 work\n\nDue today (1):\n• Ship release"),
+        "{}",
+        digest.text
+    );
+    assert!(digest
+        .text
+        .contains("📂 home\n\nDue today (1):\n• Water plants"));
+    assert!(!digest.text.contains("empty"), "{}", digest.text);
+    assert_eq!(
+        digest
+            .buttons
+            .iter()
+            .map(|(vault, _)| vault.as_str())
+            .collect::<Vec<_>>(),
+        ["work", "home"]
+    );
+    assert_eq!(render_chat_digest(&[("empty".to_string(), quiet)]), None);
+    assert_eq!(render_chat_digest(&[]), None);
 }
 
 #[test]

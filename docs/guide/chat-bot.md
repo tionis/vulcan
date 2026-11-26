@@ -212,9 +212,20 @@ vulcan daemon config set-bot-user 123456789 --wiki notes --profile bot-capture \
   fail validation (note, field, and problem), so a broken date or link is found before a Done
   button trips over it. Each problem is sent once; one that is fixed and comes back is sent again.
   `bot-status` then shows a `Hint:` with the count per vault.
-- `--digest 07:30` sends a morning summary per vault: open tasks due or scheduled up to today,
-  with Done buttons, and the reminders still to come that day. It is sent once a day at or after
-  that time in the vault's reminder timezone, and skipped when there is nothing to report.
+- `--digest 07:30` sends one morning message covering all of the user's vaults, with a heading
+  per vault when there are several. For each vault it lists:
+  - overdue tasks, oldest first, marking those a week or more late with how many days;
+  - tasks due or scheduled today;
+  - the schedule in today's daily note (`periodic.daily.schedule_heading`);
+  - the reminders still to come today;
+  - tasks due or scheduled later this week;
+  - what was completed yesterday;
+  - how many open entries the inbox note holds.
+
+  Overdue and due-today tasks get Done buttons. Everything is read through the user's permission
+  profile, so a vault's digest never shows a note the profile cannot read. Each vault is included
+  once a day at or after that time in its reminder timezone; a vault with nothing to report is
+  left out, and nothing is sent when no vault has anything.
 
 ## Status and troubleshooting
 

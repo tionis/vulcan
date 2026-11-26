@@ -1091,62 +1091,148 @@ fn due_tasks(vault: &ChatVault<'_>, days: u32) -> Result<ChatReply, AppError> {
     })
 }
 
-/// The daily digest of `vault`, named `vault_name`: open tasks due or
-/// scheduled up to today, with Done buttons, and the reminders still to
-/// come today. `None` when there is nothing to report.
-pub fn chat_digest(
+/// One vault's agenda for the morning digest, read through the chat user's
+/// permission profile after bringing the cache up to date.
+pub fn chat_vault_agenda(
     vault: &ChatVault<'_>,
-    vault_name: &str,
     now_ms: i64,
-) -> Result<Option<ChatReply>, AppError> {
-    let due = due_tasks(vault, 0)?;
-    let has_tasks = !due.buttons.is_empty();
-    let timezone =
-        ReminderTimezone::from_config(&load_vault_config(vault.paths).config.tasks.reminders)?;
-    let local_now = timezone.local_datetime(now_ms);
-    let midnight = local_now.date().tomorrow().unwrap_or(local_now.date());
-    // Real minutes to the start of tomorrow, which DST days lengthen or
-    // shorten.
-    let minutes_left = timezone
-        .instant_ms(midnight.to_datetime(Time::midnight()))
-        .map_or(1, |midnight_ms| (midnight_ms - now_ms) / 60_000)
-        .max(1);
-    let report = build_task_reminders_report_with_guard(
-        vault.paths,
-        &format!("{minutes_left}m"),
-        Some(vault.guard),
-    )?;
-    let upcoming = report
-        .reminders
+) -> Result<crate::agenda::VaultAgenda, AppError> {
+    ensure_fresh(vault)?;
+    crate::agenda::build_vault_agenda(vault.paths, vault.guard, now_ms)
+}
+
+/// The morning digest: one message for all of a user's vaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatDigest {
+    pub text: String,
+    /// Done buttons, each with the vault its task lives in.
+    pub buttons: Vec<(String, ChatButton)>,
+}
+
+/// Render the agendas of `vaults` (name and agenda, in order) as one morning
+/// message. Vaults with nothing to report are left out; `None` when none has
+/// anything. Late and due-today tasks get Done buttons.
+#[must_use]
+pub fn render_chat_digest(vaults: &[(String, crate::agenda::VaultAgenda)]) -> Option<ChatDigest> {
+    let reporting = vaults
         .iter()
-        .filter(|reminder| !reminder.overdue)
-        .filter_map(|reminder| {
-            let local = timezone.local_datetime(parse_date_like_string(&reminder.notify_at)?);
-            Some(format!("• {} {}", local.strftime("%H:%M"), reminder.title))
-        })
-        .take(CHAT_LIST_LIMIT)
+        .filter(|(_, agenda)| !agenda.is_empty())
         .collect::<Vec<_>>();
-    if !has_tasks && upcoming.is_empty() {
-        return Ok(None);
+    let today = reporting
+        .first()
+        .and_then(|(_, agenda)| Date::strptime("%Y-%m-%d", &agenda.today).ok())?;
+    let mut lines = vec![format!("☀️ {}", day_heading(today, today))];
+    let mut buttons = Vec::new();
+    for (name, agenda) in &reporting {
+        if reporting.len() > 1 {
+            lines.push(String::new());
+            lines.push(format!("📂 {name}"));
+        }
+        push_agenda_sections(&mut lines, agenda, today);
+        for task in agenda
+            .overdue
+            .iter()
+            .chain(&agenda.today_tasks)
+            .take(CHAT_LIST_LIMIT)
+        {
+            buttons.push((
+                name.clone(),
+                ChatButton {
+                    label: format!("Done: {}", truncate(&task.title, 40)),
+                    action: ChatAction::CompleteTask {
+                        task: task.reference.clone(),
+                        title: task.title.clone(),
+                    },
+                },
+            ));
+        }
     }
-    let mut lines = vec![format!(
-        "☀️ {} · {vault_name}",
-        day_heading(vault.today, vault.today)
-    )];
-    if has_tasks {
-        lines.push(String::new());
-        lines.push(due.text);
-    }
-    if !upcoming.is_empty() {
-        lines.push(String::new());
-        lines.push("Reminders today:".to_string());
-        lines.extend(upcoming);
-    }
-    Ok(Some(ChatReply {
+    Some(ChatDigest {
         text: lines.join("\n"),
-        buttons: due.buttons,
-        ..ChatReply::default()
-    }))
+        buttons,
+    })
+}
+
+/// The sections of one vault's agenda, each after a blank line.
+fn push_agenda_sections(lines: &mut Vec<String>, agenda: &crate::agenda::VaultAgenda, today: Date) {
+    let task_line = |task: &crate::agenda::AgendaTask| {
+        let when = if task.date.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", friendly_task_date(&task.date, today))
+        };
+        let slipping = if task.days_late >= crate::agenda::SLIPPING_AFTER_DAYS {
+            format!(" ({} days late)", task.days_late)
+        } else {
+            String::new()
+        };
+        format!("• {}{when}{slipping}", task.title)
+    };
+    let mut section = |title: String, items: Vec<String>| {
+        if !items.is_empty() {
+            lines.push(String::new());
+            lines.push(title);
+            lines.extend(items);
+        }
+    };
+    let limited = |tasks: &[crate::agenda::AgendaTask]| {
+        let mut items = tasks
+            .iter()
+            .take(CHAT_LIST_LIMIT)
+            .map(task_line)
+            .collect::<Vec<_>>();
+        if tasks.len() > CHAT_LIST_LIMIT {
+            items.push(format!("... and {} more", tasks.len() - CHAT_LIST_LIMIT));
+        }
+        items
+    };
+    section(
+        format!("Overdue ({}):", agenda.overdue.len()),
+        limited(&agenda.overdue),
+    );
+    section(
+        format!("Due today ({}):", agenda.today_tasks.len()),
+        limited(&agenda.today_tasks),
+    );
+    section(
+        "Today's plan:".to_string(),
+        agenda
+            .events
+            .iter()
+            .map(|event| match &event.time {
+                Some(time) => format!("• {time} {}", event.title),
+                None => format!("• {}", event.title),
+            })
+            .collect(),
+    );
+    section(
+        "Reminders today:".to_string(),
+        agenda
+            .reminders
+            .iter()
+            .take(CHAT_LIST_LIMIT)
+            .map(|reminder| format!("• {} {}", reminder.time, reminder.title))
+            .collect(),
+    );
+    section(
+        format!("Later this week ({}):", agenda.this_week.len()),
+        limited(&agenda.this_week),
+    );
+    if !agenda.done_yesterday.is_empty() {
+        lines.push(String::new());
+        lines.push(format!(
+            "✅ Done yesterday ({}): {}",
+            agenda.done_yesterday.len(),
+            truncate(&agenda.done_yesterday.join(", "), 200)
+        ));
+    }
+    if let Some(inbox) = agenda.inbox.filter(|count| *count > 0) {
+        lines.push(String::new());
+        lines.push(format!(
+            "📥 {inbox} {} in the inbox",
+            if inbox == 1 { "entry" } else { "entries" }
+        ));
+    }
 }
 
 fn reminders(vault: &ChatVault<'_>, window: &str) -> Result<ChatReply, AppError> {

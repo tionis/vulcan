@@ -17,6 +17,45 @@ pub fn inbox_path(config: &InboxConfig) -> Result<String, AppError> {
     .map_err(AppError::operation)
 }
 
+/// The open entries in the inbox note `text`: top-level list items, under
+/// `heading` when one is configured, that are not checked-off tasks.
+#[must_use]
+pub fn count_inbox_entries(text: &str, heading: Option<&str>) -> usize {
+    let heading = heading.map(|heading| heading.trim().trim_start_matches('#').trim());
+    let mut inside = heading.is_none();
+    let mut level = 0;
+    let mut count = 0;
+    for line in text.lines() {
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        if hashes > 0 && line[hashes..].starts_with(' ') {
+            if let Some(heading) = heading {
+                if line[hashes..].trim() == heading {
+                    inside = true;
+                    level = hashes;
+                } else if inside && hashes <= level {
+                    inside = false;
+                }
+            }
+            continue;
+        }
+        let Some(item) = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .or_else(|| line.strip_prefix("+ "))
+        else {
+            continue;
+        };
+        let done = item
+            .strip_prefix('[')
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|mark| matches!(mark, 'x' | 'X' | '-'));
+        if inside && !done {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Fill `inbox.format` placeholders (`{text}`, `{date}`, `{time}`,
 /// `{datetime}`).
 #[must_use]
@@ -84,6 +123,16 @@ pub fn write_inbox_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_open_top_level_entries_under_the_heading() {
+        let note = "# Inbox\n\n## Captured\n- one\n  - nested detail\n* two\n- [ ] three\n- [x] filed\n\n## Notes\n- not an entry\n";
+        assert_eq!(super::count_inbox_entries(note, Some("## Captured")), 3);
+        assert_eq!(super::count_inbox_entries(note, Some("Captured")), 3);
+        assert_eq!(super::count_inbox_entries(note, None), 4);
+        assert_eq!(super::count_inbox_entries(note, Some("Missing")), 0);
+        assert_eq!(super::count_inbox_entries("", None), 0);
+    }
 
     #[test]
     fn writing_a_capture_creates_the_inbox_note_and_appends_to_it() {
