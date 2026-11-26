@@ -56,6 +56,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 | `GET /{id}/bases/eval?file=...` | `vulcan bases eval` |
 | `GET /{id}/notes/{path}` | `vulcan note get` (supports `heading`, `section_id`, `block_ref`, `lines`, `match`, `context`, `no_frontmatter`, `raw`) |
 | `GET /{id}/info/{path}` | `vulcan note info` |
+| `GET /{id}/metabind/fields/{path}` | `vulcan metabind list` |
 | `GET /{id}/links/{path}`, `GET /{id}/backlinks/{path}` | `vulcan links`, `vulcan backlinks` |
 | `GET /{id}/graph/stats`, `/graph/hubs`, `/graph/path?from=...&to=...` | `vulcan graph stats|hubs|path` |
 | `GET /{id}/graph/dead-ends`, `/graph/components` | `vulcan graph dead-ends|components` |
@@ -126,6 +127,9 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1
 | `POST /{id}/move` | `vulcan refactor move` | `source`, `destination`, `dry_run` |
 | `POST /{id}/update` | `vulcan note update` and `note unset` | `where` (one or more filters), `set` (properties to write), `unset` (properties to remove), `dry_run` |
 | `POST /{id}/scan` | `vulcan scan` | `full` |
+| `POST /{id}/metabind/set/{path}` | `vulcan metabind set` | `target`, `value` (text, as the input takes it), `dry_run` |
+| `POST /{id}/metabind/apply/{path}` | `vulcan metabind apply` | `dry_run` |
+| `POST /{id}/metabind/press/{path}` | `vulcan metabind press` | `button` (an id) or `line`, `dry_run` |
 | `POST /{id}/vectors/index` | `vulcan vectors index` | `dry_run`, `provider`; needs index permission and network access to the provider |
 
 Every write body also accepts `no_commit`. Writes run under the profile like reads, so a read-only

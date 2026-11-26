@@ -24,20 +24,21 @@ use vulcan_core::{PermissionGuard, ProfilePermissionGuard, VaultPaths, Verbosity
 
 /// What a write workflow receives: the vault, the caller's guard and profile
 /// name, and the request body as a JSON object.
-struct WriteRequest<'a> {
-    paths: &'a VaultPaths,
-    guard: &'a ProfilePermissionGuard,
-    profile: &'a str,
-    body: Map<String, Value>,
+pub(crate) struct WriteRequest<'a> {
+    pub(crate) paths: &'a VaultPaths,
+    pub(crate) guard: &'a ProfilePermissionGuard,
+    pub(crate) profile: &'a str,
+    pub(crate) body: Map<String, Value>,
 }
 
-type WriteWorkflow = Box<dyn FnOnce(WriteRequest<'_>) -> Result<Value, RestError> + Send>;
+pub(crate) type WriteWorkflow =
+    Box<dyn FnOnce(WriteRequest<'_>) -> Result<Value, RestError> + Send>;
 
 /// Runs a write for vault `id`: claims the request's idempotency key, waits
 /// for the vault's mutation permit, runs `workflow`, and records its outcome
 /// so a retry with the same key gets the same response.
 #[allow(clippy::too_many_arguments)]
-async fn write_vault(
+pub(crate) async fn write_vault(
     state: &CompanionHttpState,
     principal: &Principal,
     id: &str,
@@ -178,7 +179,7 @@ fn run_write(
 
 /// Decodes the body into a workflow's arguments, with `note` taken from the
 /// route and any `extra` fields the route fixes.
-fn arguments<T: DeserializeOwned>(
+pub(crate) fn arguments<T: DeserializeOwned>(
     mut body: Map<String, Value>,
     fixed: &[(&str, Value)],
 ) -> Result<T, RestError> {
@@ -208,7 +209,7 @@ fn mcp_failure(error: McpMethodError) -> RestError {
     }
 }
 
-fn report(value: impl serde::Serialize) -> Result<Value, RestError> {
+pub(crate) fn report(value: impl serde::Serialize) -> Result<Value, RestError> {
     serde_json::to_value(value)
         .map_err(|error| RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
 }
@@ -734,7 +735,7 @@ pub(crate) async fn vector_index(
 
 /// Refreshes the cache for the written paths and auto-commits them, as the
 /// CLI does.
-fn finish_mutation(
+pub(crate) fn finish_mutation(
     paths: &VaultPaths,
     profile: &str,
     action: &str,

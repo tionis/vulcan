@@ -88,6 +88,7 @@ pub const REST_VAULT_SEGMENTS: &[&str] = &[
     "move",
     "inbox",
     "scan",
+    "metabind",
     TASK_FEED_SEGMENT,
 ];
 
@@ -168,6 +169,22 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
         .route(
             "/{id}/update",
             axum::routing::post(crate::rest_writes::update),
+        )
+        .route(
+            "/{id}/metabind/fields/{*path}",
+            get(crate::rest_metabind::fields),
+        )
+        .route(
+            "/{id}/metabind/set/{*path}",
+            axum::routing::post(crate::rest_metabind::set),
+        )
+        .route(
+            "/{id}/metabind/apply/{*path}",
+            axum::routing::post(crate::rest_metabind::apply),
+        )
+        .route(
+            "/{id}/metabind/press/{*path}",
+            axum::routing::post(crate::rest_metabind::press),
         )
         .route("/{id}/info/{*path}", get(note_info))
         .route("/{id}/links/{*path}", get(links))
@@ -274,7 +291,7 @@ pub(crate) fn served_vault(
 
 /// Runs `read` on a blocking thread against a served vault, under the
 /// registration's permission profile after an index barrier.
-async fn read_vault<T, F>(
+pub(crate) async fn read_vault<T, F>(
     state: &CompanionHttpState,
     principal: &Principal,
     id: &str,
@@ -1084,6 +1101,11 @@ fn native_route_documents(path_parameter: &Value) -> Vec<(&'static str, &'static
             vec![path_parameter.clone()],
         ),
         (
+            "/{id}/metabind/fields/{path}",
+            "A note's Meta Bind fields with their bound values and allowed values, as `vulcan metabind list` reports them",
+            vec![path_parameter.clone()],
+        ),
+        (
             "/{id}/links/{path}",
             "Outgoing links of a note",
             vec![path_parameter.clone()],
@@ -1220,6 +1242,24 @@ fn add_write_documents(paths: &mut serde_json::Map<String, Value>, id_parameter:
             false,
         ),
         ("/{id}/scan", "post", "Rescan the vault: `full`", false),
+        (
+            "/{id}/metabind/set/{path}",
+            "post",
+            "Write a value to a Meta Bind target, validated by the inputs bound to it (`vulcan metabind set`): `target`, `value`, `dry_run`",
+            true,
+        ),
+        (
+            "/{id}/metabind/apply/{path}",
+            "post",
+            "Write the results of Meta Bind views with write-back targets (`vulcan metabind apply`): `dry_run`",
+            true,
+        ),
+        (
+            "/{id}/metabind/press/{path}",
+            "post",
+            "Press a Meta Bind button (`vulcan metabind press`): `button` (an id) or `line`, `dry_run`",
+            true,
+        ),
     ] {
         let mut parameters = vec![id_parameter.clone(), key.clone()];
         if with_path {
@@ -2069,6 +2109,89 @@ mod tests {
         let (status, found) = get(&served, &device, "/notes/search?q=plumber").await;
         assert_eq!(status, StatusCode::OK, "{found}");
         assert_eq!(hit_paths(&found), [inbox.to_string()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn metabind_routes_list_set_apply_and_press() {
+        let served = served();
+        let device = device(&served);
+        let root = served.temporary.path().join("notes");
+        std::fs::write(
+            root.join("Hero.md"),
+            concat!(
+                "---\nlevel: 2\n---\n",
+                "`INPUT[slider(minValue(1), maxValue(5)):level]` `VIEW[Level {level}][text:label]`\n\n",
+                "```meta-bind-button\nlabel: Max\nid: max\naction:\n",
+                "  type: updateMetadata\n  bindTarget: level\n  value: 5\n```\n",
+            ),
+        )
+        .unwrap();
+        let (status, scanned) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/scan",
+            Some("mb-scan"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{scanned}");
+
+        let (status, fields) = get(&served, &device, "/notes/metabind/fields/Hero.md").await;
+        assert_eq!(status, StatusCode::OK, "{fields}");
+        assert_eq!(fields["fields"][0]["outcome"]["display"], json!("2 / 5"));
+
+        let (status, refused) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/metabind/set/Hero.md",
+            Some("mb-set-0"),
+            json!({ "target": "level", "value": "9" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        let (status, set) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/metabind/set/Hero.md",
+            Some("mb-set-1"),
+            json!({ "target": "level", "value": "3", "no_commit": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{set}");
+        assert_eq!(set["changes"][0]["after"], json!(3));
+        assert!(std::fs::read_to_string(root.join("Hero.md"))
+            .unwrap()
+            .contains("level: 3"));
+
+        let (status, pressed) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/metabind/press/Hero.md",
+            Some("mb-press"),
+            json!({ "button": "max", "no_commit": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{pressed}");
+        assert_eq!(pressed["written"], json!(["Hero.md"]));
+        let (status, applied) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/metabind/apply/Hero.md",
+            Some("mb-apply"),
+            json!({ "no_commit": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{applied}");
+        let hero = std::fs::read_to_string(root.join("Hero.md")).unwrap();
+        assert!(
+            hero.contains("level: 5") && hero.contains("label: Level 5"),
+            "{hero}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

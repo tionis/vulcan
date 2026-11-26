@@ -120,6 +120,8 @@ indexed, under the registration's profile. Their responses are the CLI's JSON re
 - `GET /{id}/notes/{path}`: one note, as `vulcan note get` reads it, with its section, heading,
   block, line, and match selectors.
 - `GET /{id}/info/{path}`: a note's metadata, as `vulcan note info` reports it.
+- `GET /{id}/metabind/fields/{path}`: a note's Meta Bind fields with their values, as
+  `vulcan metabind list --output json` reports them (JS views under the vault's DataviewJS policy).
 - `GET /{id}/links/{path}` and `GET /{id}/backlinks/{path}`: outgoing and incoming links, filtered
   by the profile.
 - `GET /{id}/graph/stats`, `/{id}/graph/hubs`, and `/{id}/graph/path?from=...&to=...`: from the
@@ -191,6 +193,13 @@ its outcome for a later replay.
 - `POST /{id}/update`: `where` filters (at least one), `set` properties, and `unset` properties,
   through `vulcan_app::properties::update_properties_where`. The notes are selected once, before
   any change, and the changes are applied in order and auto-committed together.
+- `POST /{id}/metabind/set/{path}` (`target`, `value`), `/{id}/metabind/apply/{path}`, and
+  `/{id}/metabind/press/{path}` (`button` or a one-based `line`), each with `dry_run`: the
+  `vulcan_app::metabind` workflows behind `vulcan metabind set|apply|press`, answering with their
+  JSON reports. Every written file is checked against the profile's write access. A press's
+  JavaScript actions need a trusted vault and `metabind.enable_js` as on the CLI; edits written
+  before a failing action stay written and are refreshed and committed. They give a web client
+  everything Meta Bind's in-note editing needs; Vulcan has no web UI of its own yet.
 
 Every body accepts `no_commit`. Route-given fields (`note`, `confirm`) are refused in the body.
 

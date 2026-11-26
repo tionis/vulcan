@@ -8763,6 +8763,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 - [x] `vulcan metabind list|set|apply` with validation against the bound inputs and `--dry-run`.
 - [x] LSP code actions and `vulcan.metabind.set` prompts in `vulcan.nvim` and `vulcan.vim`.
 - [x] `vulcan metabind press` (and the `vulcan.metabind.press` editor command) for vault-only button actions; other actions report "runs in Obsidian".
+- [x] Daemon REST routes for web clients: `GET /{id}/metabind/fields/{path}` and `POST /{id}/metabind/{set|apply|press}/{path}`.
 - [x] Run `meta-bind-js-view` blocks under the render's DataviewJS policy where `metabind.enable_js` is on, with `save to` write-backs in `vulcan metabind apply`.
 - [x] Guide (`docs/guide/live-documents.md`), the `dataview-and-bases` skill, tests.
 
