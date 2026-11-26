@@ -8847,7 +8847,9 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.12 Tasks, input requests and progress
 
-- [ ] Tasks extension over the operation ledger; `input_required` for ambiguous notes (and destructive confirmation when configured); progress for scan, sync and land.
+- [x] Tasks extension over the operation records (stdio, and HTTP calls the hosted ledger does not keep): task-capable calls from declaring modern clients become tasks after 5 s; `tasks/get`, `tasks/update` (no input on tasks), `tasks/cancel` (cooperative); -32021 without the extension, -32602 for unknown tasks. Hosted mutations on named remotes keep their durable `status_path`.
+- [ ] `input_required` for ambiguous notes (and destructive confirmation when configured).
+- [ ] Progress for scan, sync and land.
 
 ### 9.43.13 Documentation and acceptance
 

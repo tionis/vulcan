@@ -4,7 +4,7 @@
 use crate::mcp_http_codec::McpHttpRequest;
 use crate::mcp_http_host::McpHttpHost;
 use crate::mcp_session::McpSessionAuthority;
-use crate::mcp_worker::{run_mcp_worker, McpWorkerResult};
+use crate::mcp_worker::{run_mcp_worker, run_mcp_worker_or_background, McpWorkerResult};
 use crate::{
     hosted_executor::{HostedExecutionError, HostedExecutor},
     mcp_hosted::{
@@ -25,6 +25,7 @@ use vulcan_app::mcp_dispatch::{
 };
 use vulcan_app::mcp_operations::{indeterminate_response, McpOperationLookup};
 use vulcan_app::mcp_session_protocol::McpProtocolCore;
+use vulcan_app::mcp_task_ext::{task_after, task_created_response, task_eligible};
 use vulcan_core::{PermissionGrant, VaultPaths};
 
 /// Owned protocol state is supplied by the app, never by CLI options or handlers.
@@ -280,9 +281,11 @@ pub fn process_request_with_timeout<C: McpRequestCore>(
             *core = next;
             messages
         }
-        McpWorkerResult::TimedOut => timeout_response_for_request(&timeout_request, timeout)
-            .into_iter()
-            .collect(),
+        McpWorkerResult::TimedOut | McpWorkerResult::Backgrounded => {
+            timeout_response_for_request(&timeout_request, timeout)
+                .into_iter()
+                .collect()
+        }
         McpWorkerResult::Disconnected => {
             let id = request_id(&timeout_request).unwrap_or(Value::Null);
             vec![jsonrpc_error(
@@ -369,6 +372,17 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
             .operations
             .begin_owned(&authority.operation_owner(), tool)
     });
+    // A task-capable call from a client that declares the tasks extension
+    // becomes a task once it has run for a while, instead of timing out.
+    let background_after = recorded
+        .as_deref()
+        .filter(|_| task_eligible(&request))
+        .map(|record| {
+            http_context
+                .operations
+                .attach_cancellation(record, cancellation.clone());
+            task_after()
+        });
     let records = Arc::clone(&http_context.operations);
     let worker_record = recorded.clone();
     #[cfg(feature = "oauth")]
@@ -376,9 +390,10 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
     #[cfg(not(feature = "oauth"))]
     let named_runtime = false;
     let worker_cancellation = cancellation.clone();
-    let worker_result = run_mcp_worker(
+    let worker_result = run_mcp_worker_or_background(
         "vulcan-mcp-http-request",
         timeout,
+        background_after,
         Some(cancellation),
         move || {
             let result = if let (Some(hosted), Some(dispatch)) = (hosted, dispatch) {
@@ -468,6 +483,24 @@ pub fn process_http_request_with_timeout<C: McpRequestCore>(
                 });
             }
             Ok(timeout_http_result(&timeout_request, timeout))
+        }
+        McpWorkerResult::Backgrounded => {
+            let record = recorded
+                .as_deref()
+                .expect("only recorded calls are backgrounded");
+            let task = http_context
+                .operations
+                .task_owned(&authority.operation_owner(), record)
+                .unwrap_or_else(|| serde_json::json!({ "taskId": record, "status": "working" }));
+            Ok(McpHttpProcessResult {
+                response: Some(task_created_response(
+                    request_id(&timeout_request).unwrap_or(Value::Null),
+                    task,
+                )),
+                notifications: Vec::new(),
+                accepted_notification: false,
+                session_stale: true,
+            })
         }
         McpWorkerResult::Disconnected => {
             if let Some(record) = recorded.as_deref() {

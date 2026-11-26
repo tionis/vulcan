@@ -92,6 +92,7 @@ pub mod mcp_schemas;
 pub mod mcp_session_protocol;
 pub mod mcp_skills;
 pub mod mcp_sync;
+pub mod mcp_task_ext;
 pub mod mcp_tasks;
 pub mod mcp_tool_exec;
 pub mod mcp_web;

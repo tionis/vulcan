@@ -613,6 +613,16 @@ impl McpOperationLookup for McpHttpOperations {
             .and_then(|report| serde_json::to_value(report).ok())
             .or_else(|| self.owned.get(operation_id))
     }
+
+    // Tasks are the calls this listener records; hosted mutations keep their
+    // durable ledger and `status_path` instead.
+    fn task(&self, operation_id: &str) -> Option<Value> {
+        self.owned.task(operation_id)
+    }
+
+    fn cancel(&self, operation_id: &str) -> bool {
+        self.owned.cancel(operation_id)
+    }
 }
 
 fn hosted_operations<C: McpRequestCore>(

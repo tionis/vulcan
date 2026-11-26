@@ -324,11 +324,18 @@ to the caller, as named remotes do today. On stdio every tool call is recorded i
 life of the process, which is as long as its one client lives; `operation_get` reads those
 records and is listed where a transport keeps them: stdio, and HTTP, where each listener records the calls its hosted ledger does not keep, owned by the caller (connection grant, else credential), and `operation_get` reads the ledger first.
 
-**Tasks** (modern clients that declare `io.modelcontextprotocol/tasks`): the task-capable tools
-(`index_scan`, `sync_refresh`, `changeset_land`, `web_fetch`, and `query`/`search` over a
-configurable threshold) return `resultType: "task"` when the call is expected to exceed 5
-seconds or has already run 5 seconds. `tasks/get`, `tasks/update`, `tasks/cancel` read and
-control the ledger entry. Results are kept at least one hour.
+**Tasks** (modern clients that declare `io.modelcontextprotocol/tasks`; the extension is
+declared in `server/discover` where the transport keeps operation records): a call of a
+task-capable tool (`index_scan`, `sync_refresh`, `changeset_land`, `web_fetch`, `query`, `search`)
+still running after 5 seconds answers `resultType: "task"`, and keeps running uncancelled. The
+task id is the call's operation id: `tasks/get` reports `working`, then `completed` with the
+`tools/call` result (tool errors included), `failed` with the JSON-RPC error, or `cancelled`;
+`operation_get` reads the same record. `tasks/cancel` asks the call to stop; a call that has
+started stops only where its tool checks the token, so it may still complete. Vulcan's tasks do
+not ask for input, so `tasks/update` is acknowledged and changes nothing. Records last an hour
+after the call finishes (`ttlMs`), `pollIntervalMs` is 2000; an unknown task is -32602, and a
+client that has not declared the extension gets -32021. On a named remote, a mutation the hosted
+ledger keeps answers as before, with its durable operation id and `status_path`, not as a task.
 
 **Timeouts without tasks:** a call that exceeds `--request-timeout` returns an `indeterminate`
 tool error carrying the operation id; the work either finishes (and `operation_get` reports it)

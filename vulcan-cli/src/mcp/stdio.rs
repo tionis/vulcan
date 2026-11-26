@@ -25,7 +25,8 @@ use vulcan_app::mcp_operations::{
     indeterminate_response, McpOperationLookup, McpOperationRegistry,
 };
 use vulcan_app::mcp_session_protocol::McpProtocolCore;
-use vulcan_daemon::mcp_worker::{run_mcp_worker, McpWorkerResult};
+use vulcan_app::mcp_task_ext::{task_after, task_created_response, task_eligible};
+use vulcan_daemon::mcp_worker::{run_mcp_worker_or_background, McpWorkerResult};
 
 /// Tool calls that may run at once.
 const WORKERS: usize = 4;
@@ -250,19 +251,34 @@ fn run_call(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let operation_id = operations.begin(tool);
+    // A task-capable call from a client that declares the tasks extension
+    // becomes a task once it has run for a while, instead of timing out.
+    let background_after = task_eligible(&request).then(task_after);
     let registry = Arc::clone(operations);
     let call_operation = operation_id.clone();
     let response_id = id.clone();
-    let outcome = run_mcp_worker("vulcan-mcp-request", request_timeout, None, move || {
-        let messages = McpProtocolCore::process_request(&mut worker, request);
-        let response = messages
-            .iter()
-            .find(|message| message.get("id") == Some(&response_id));
-        registry.finish(&call_operation, response);
-        messages
-    });
+    let outcome = run_mcp_worker_or_background(
+        "vulcan-mcp-request",
+        request_timeout,
+        background_after,
+        None,
+        move || {
+            let messages = McpProtocolCore::process_request(&mut worker, request);
+            let response = messages
+                .iter()
+                .find(|message| message.get("id") == Some(&response_id));
+            registry.finish(&call_operation, response);
+            messages
+        },
+    );
     match outcome {
         McpWorkerResult::Completed(messages) => messages,
+        McpWorkerResult::Backgrounded => {
+            let task = operations.task_owned("", &operation_id).unwrap_or_else(
+                || serde_json::json!({ "taskId": operation_id, "status": "working" }),
+            );
+            vec![task_created_response(id, task)]
+        }
         McpWorkerResult::TimedOut => {
             vec![indeterminate_response(id, &operation_id, request_timeout)]
         }

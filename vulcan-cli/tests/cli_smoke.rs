@@ -959,8 +959,18 @@ impl McpSession {
     }
 
     fn start_at(vault_root: &Path, extra_args: &[&str], fixed_now: &str) -> Self {
+        Self::start_with_env(vault_root, extra_args, fixed_now, &[])
+    }
+
+    fn start_with_env(
+        vault_root: &Path,
+        extra_args: &[&str],
+        fixed_now: &str,
+        env: &[(&str, &str)],
+    ) -> Self {
         let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
         command
+            .envs(env.iter().copied())
             .env("VULCAN_FIXED_NOW", fixed_now)
             .args(["--vault", vault_root.to_str().expect("utf-8"), "mcp"])
             .args(extra_args)
@@ -1086,6 +1096,16 @@ impl McpHttpSession {
         auth_token: Option<&str>,
         extra_args: &[&str],
     ) -> Self {
+        Self::start_with_env(vault_root, endpoint, auth_token, extra_args, &[])
+    }
+
+    fn start_with_env(
+        vault_root: &Path,
+        endpoint: &str,
+        auth_token: Option<&str>,
+        extra_args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let bind_addr = listener
             .local_addr()
@@ -1095,6 +1115,7 @@ impl McpHttpSession {
 
         let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
         command
+            .envs(env.iter().copied())
             .env("VULCAN_FIXED_NOW", FIXED_NOW)
             .args(["--vault", vault_root.to_str().expect("utf-8"), "mcp"])
             .args([
@@ -35050,15 +35071,16 @@ fn strip_modern_result_fields(method: &str, modern: bool, response: &mut Value) 
     let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) else {
         return;
     };
-    // Only modern clients are offered the skills extension.
+    // Only modern clients are offered the skills and tasks extensions.
     if let Some(Value::Object(capabilities)) = result.get_mut("capabilities") {
         let extensions = capabilities.remove("extensions");
         if modern {
             assert_eq!(
                 extensions,
-                Some(
-                    serde_json::json!({"io.modelcontextprotocol/skills": {"directoryRead": true}})
-                ),
+                Some(serde_json::json!({
+                    "io.modelcontextprotocol/skills": {"directoryRead": true},
+                    "io.modelcontextprotocol/tasks": {},
+                })),
                 "{method}"
             );
         } else {
@@ -35347,6 +35369,125 @@ fn mcp_tools_list_is_golden_for_every_builtin_profile() {
     }
     golden.insert("unrestricted".to_string(), Value::Array(unrestricted));
     assert_json_snapshot("mcp_tools_by_profile.json", &Value::Object(golden));
+}
+
+/// A long-running call from a client that declares the tasks extension
+/// becomes a task (here at once: the threshold is set to 0 ms), which the
+/// client polls to its result, over stdio and over HTTP.
+#[test]
+fn mcp_long_calls_become_tasks_for_clients_that_declare_them() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let meta = |tasks: bool| {
+        let capabilities = if tasks {
+            serde_json::json!({"extensions": {"io.modelcontextprotocol/tasks": {}}})
+        } else {
+            serde_json::json!({})
+        };
+        serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": capabilities,
+            "io.modelcontextprotocol/clientInfo": {"name": "tasks", "version": "1"},
+        })
+    };
+    let env = [("VULCAN_MCP_TASK_AFTER_MS", "0")];
+    let args = ["--permissions", "unrestricted"];
+    let mut stdio = McpSession::start_with_env(&vault_root, &args, FIXED_NOW, &env);
+    let http = McpHttpSession::start_with_env(&vault_root, "/mcp", None, &args, &env);
+    for transport in ["stdio", "HTTP"] {
+        let mut call = |id: u64, method: &str, params: Value| -> Value {
+            let request = serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": method, "params": params
+            });
+            if transport == "stdio" {
+                stdio
+                    .send(request)
+                    .into_iter()
+                    .find(|message| message["id"] == id)
+                    .expect("a response")
+            } else {
+                http.post(&request, None).json_body()
+            }
+        };
+        let discover = call(
+            1,
+            "server/discover",
+            serde_json::json!({"_meta": meta(true)}),
+        );
+        assert_eq!(
+            discover["result"]["capabilities"]["extensions"]["io.modelcontextprotocol/tasks"],
+            serde_json::json!({}),
+            "{transport}: {discover}"
+        );
+
+        let created = call(
+            2,
+            "tools/call",
+            serde_json::json!({"_meta": meta(true), "name": "index_scan", "arguments": {}}),
+        );
+        let result = &created["result"];
+        assert_eq!(result["resultType"], "task", "{transport}: {created}");
+        assert!(result.get("result").is_none());
+        let task_id = result["taskId"].as_str().expect("task id").to_string();
+        assert!(result["pollIntervalMs"].is_u64());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let finished = loop {
+            let polled = call(
+                3,
+                "tasks/get",
+                serde_json::json!({"_meta": meta(true), "taskId": task_id}),
+            );
+            let task = polled["result"].clone();
+            assert_eq!(task["resultType"], "complete", "{transport}: {polled}");
+            if task["status"] != "working" {
+                break task;
+            }
+            assert!(std::time::Instant::now() < deadline, "{transport}: {task}");
+            thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert_eq!(finished["status"], "completed", "{transport}: {finished}");
+        assert_eq!(
+            finished["result"]["isError"], false,
+            "{transport}: {finished}"
+        );
+        // The same record answers operation_get.
+        let operation = call(
+            4,
+            "tools/call",
+            serde_json::json!({"_meta": meta(true), "name": "operation_get", "arguments": {"id": task_id}}),
+        );
+        assert_eq!(
+            operation["result"]["structuredContent"]["state"], "succeeded",
+            "{transport}: {operation}"
+        );
+
+        // A client that does not declare the extension waits for its result.
+        let plain = call(
+            5,
+            "tools/call",
+            serde_json::json!({"_meta": meta(false), "name": "index_scan", "arguments": {}}),
+        );
+        assert_eq!(
+            plain["result"]["resultType"], "complete",
+            "{transport}: {plain}"
+        );
+        let refused = call(
+            6,
+            "tasks/get",
+            serde_json::json!({"_meta": meta(false), "taskId": task_id}),
+        );
+        assert_eq!(refused["error"]["code"], -32021, "{transport}: {refused}");
+        let unknown = call(
+            7,
+            "tasks/cancel",
+            serde_json::json!({"_meta": meta(true), "taskId": "no-such-task"}),
+        );
+        assert_eq!(unknown["error"]["code"], -32602, "{transport}: {unknown}");
+    }
+    stdio.finish();
 }
 
 #[test]

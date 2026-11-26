@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::execution::ExecutionCancellationToken;
 use crate::mcp_protocol::{McpMethodError, McpToolErrorCode};
 
 /// Records kept, newest first; older ones are forgotten.
@@ -20,6 +21,18 @@ const RETENTION_MS: u64 = 60 * 60 * 1000;
 /// operation records provides one; without it the tool is not offered.
 pub trait McpOperationLookup: Send + Sync + std::fmt::Debug {
     fn get(&self, operation_id: &str) -> Option<Value>;
+
+    /// The operation as a task of the tasks extension (`DetailedTask`), for
+    /// lookups that can serve tasks.
+    fn task(&self, _operation_id: &str) -> Option<Value> {
+        None
+    }
+
+    /// Ask a running operation to stop; `false` when there is no such
+    /// operation.
+    fn cancel(&self, _operation_id: &str) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -45,6 +58,94 @@ pub struct McpOperationRecord {
     /// The tool's structured result, or its error, once it has finished.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// The whole `tools/call` result, for a task's `completed` status.
+    #[serde(skip)]
+    pub call_result: Option<Value>,
+    /// The JSON-RPC error the call ended with, for a task's `failed` status.
+    #[serde(skip)]
+    pub call_error: Option<Value>,
+    /// Whether a client asked for the operation to stop.
+    #[serde(skip)]
+    pub cancel_requested: bool,
+    #[serde(skip)]
+    pub cancellation: Option<ExecutionCancellationToken>,
+}
+
+/// How often a client should poll a task.
+pub const TASK_POLL_INTERVAL_MS: u64 = 2_000;
+
+impl McpOperationRecord {
+    /// This operation as a `DetailedTask` (tasks extension, 2026-07-28):
+    /// `working` while it runs, then `completed` with its `tools/call` result
+    /// (a tool error included), `failed` with the JSON-RPC error it ended
+    /// with, or `cancelled` when a requested cancellation stopped it.
+    #[must_use]
+    pub fn task(&self) -> Value {
+        let mut task = serde_json::Map::new();
+        task.insert("taskId".into(), Value::from(self.operation_id.clone()));
+        task.insert(
+            "createdAt".into(),
+            Value::from(iso_timestamp(self.started_unix_ms)),
+        );
+        task.insert(
+            "lastUpdatedAt".into(),
+            Value::from(iso_timestamp(
+                self.finished_unix_ms.unwrap_or(self.started_unix_ms),
+            )),
+        );
+        task.insert("pollIntervalMs".into(), Value::from(TASK_POLL_INTERVAL_MS));
+        let (status, message) = match (self.state, &self.call_result, &self.call_error) {
+            (McpOperationState::Running, _, _) => (
+                "working",
+                if self.cancel_requested {
+                    format!(
+                        "`{}` is still running; cancellation was requested, and a call that has started stops only if the tool checks for it",
+                        self.tool
+                    )
+                } else {
+                    format!("`{}` is running", self.tool)
+                },
+            ),
+            (_, Some(result), _) => {
+                task.insert("result".into(), result.clone());
+                ("completed", format!("`{}` finished", self.tool))
+            }
+            (_, None, Some(_)) if self.cancel_requested => {
+                ("cancelled", format!("`{}` was cancelled", self.tool))
+            }
+            (_, None, error) => {
+                let error = error.clone().unwrap_or_else(|| {
+                    json!({
+                        "code": -32603,
+                        "message": "the call ended without a response",
+                    })
+                });
+                let message = error["message"]
+                    .as_str()
+                    .unwrap_or("the call failed")
+                    .to_string();
+                task.insert("error".into(), error);
+                ("failed", message)
+            }
+        };
+        task.insert("status".into(), Value::from(status));
+        task.insert("statusMessage".into(), Value::from(message));
+        // Records last an hour after they finish; a running one has no
+        // set end.
+        let ttl = self.finished_unix_ms.map_or(Value::Null, |finished| {
+            Value::from(finished.saturating_sub(self.started_unix_ms) + RETENTION_MS)
+        });
+        task.insert("ttlMs".into(), ttl);
+        Value::Object(task)
+    }
+}
+
+fn iso_timestamp(unix_ms: u64) -> String {
+    i64::try_from(unix_ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .unwrap_or_default()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// Operation records held by one server process or listener, each visible
@@ -90,8 +191,23 @@ impl McpOperationRegistry {
             started_unix_ms: now,
             finished_unix_ms: None,
             result: None,
+            call_result: None,
+            call_error: None,
+            cancel_requested: false,
+            cancellation: None,
         });
         operation_id
+    }
+
+    /// Let a client's cancellation reach the call through `token`.
+    pub fn attach_cancellation(&self, operation_id: &str, token: ExecutionCancellationToken) {
+        let mut records = self.records.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(record) = records
+            .iter_mut()
+            .find(|record| record.operation_id == operation_id)
+        {
+            record.cancellation = Some(token);
+        }
     }
 
     /// Record how a call ended, from its JSON-RPC response: a tool result
@@ -131,6 +247,10 @@ impl McpOperationRegistry {
             record.state = state;
             record.finished_unix_ms = Some(now_unix_ms());
             record.result = Some(result);
+            record.call_result = response
+                .and_then(|response| response.get("result"))
+                .cloned();
+            record.call_error = response.and_then(|response| response.get("error")).cloned();
         }
     }
 }
@@ -147,9 +267,48 @@ impl McpOperationRegistry {
     }
 }
 
+impl McpOperationRegistry {
+    /// The record of `operation_id` as a task, if `owner` made the call.
+    #[must_use]
+    pub fn task_owned(&self, owner: &str, operation_id: &str) -> Option<Value> {
+        let records = self.records.lock().unwrap_or_else(PoisonError::into_inner);
+        records
+            .iter()
+            .find(|record| record.operation_id == operation_id && record.owner == owner)
+            .map(McpOperationRecord::task)
+    }
+
+    /// Ask `owner`'s operation to stop. A call stops only where it checks its
+    /// cancellation token, so it may still finish.
+    pub fn cancel_owned(&self, owner: &str, operation_id: &str) -> bool {
+        let mut records = self.records.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.operation_id == operation_id && record.owner == owner)
+        else {
+            return false;
+        };
+        if record.state == McpOperationState::Running {
+            record.cancel_requested = true;
+            if let Some(token) = &record.cancellation {
+                token.cancel();
+            }
+        }
+        true
+    }
+}
+
 impl McpOperationLookup for McpOperationRegistry {
     fn get(&self, operation_id: &str) -> Option<Value> {
         self.get_owned("", operation_id)
+    }
+
+    fn task(&self, operation_id: &str) -> Option<Value> {
+        self.task_owned("", operation_id)
+    }
+
+    fn cancel(&self, operation_id: &str) -> bool {
+        self.cancel_owned("", operation_id)
     }
 }
 
@@ -163,6 +322,14 @@ pub struct McpOwnedOperations {
 impl McpOperationLookup for McpOwnedOperations {
     fn get(&self, operation_id: &str) -> Option<Value> {
         self.registry.get_owned(&self.owner, operation_id)
+    }
+
+    fn task(&self, operation_id: &str) -> Option<Value> {
+        self.registry.task_owned(&self.owner, operation_id)
+    }
+
+    fn cancel(&self, operation_id: &str) -> bool {
+        self.registry.cancel_owned(&self.owner, operation_id)
     }
 }
 

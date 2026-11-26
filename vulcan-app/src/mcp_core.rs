@@ -25,6 +25,7 @@ use crate::mcp_protocol::{
 use crate::mcp_skills::{
     get_skill, read_skill_directory, skill_entries, MCP_SKILLS_EXTENSION, SKILL_TTL_MS,
 };
+use crate::mcp_task_ext::{handle_task_method, MCP_TASKS_EXTENSION};
 
 /// The stateless protocol revision.
 pub const MCP_MODERN_VERSION: &str = "2026-07-28";
@@ -179,8 +180,9 @@ fn server_info(host: &McpProtocolHost) -> Value {
 ///
 /// The skills extension is a 2026-07-28 feature: modern clients are offered
 /// `skills/list`, `skills/get` and `resources/directory/read`; legacy clients
-/// find the same `skill://` files through `resources/list`.
-fn capabilities(era: McpEra, subscriptions: bool) -> Value {
+/// find the same `skill://` files through `resources/list`. The tasks
+/// extension is offered where the transport keeps operation records.
+fn capabilities(era: McpEra, subscriptions: bool, tasks: bool) -> Value {
     let list_changed = era == McpEra::Legacy || subscriptions;
     let mut capabilities = json!({
         "tools": { "listChanged": list_changed },
@@ -192,6 +194,9 @@ fn capabilities(era: McpEra, subscriptions: bool) -> Value {
         capabilities["extensions"] = json!({
             MCP_SKILLS_EXTENSION: { "directoryRead": true },
         });
+        if tasks {
+            capabilities["extensions"][MCP_TASKS_EXTENSION] = json!({});
+        }
     }
     capabilities
 }
@@ -383,6 +388,14 @@ fn dispatch(
                 .discovery()
                 .read_resource(&params.uri, ctx.host.command_help)?
         }
+        "tasks/get" | "tasks/update" | "tasks/cancel" if ctx.era == McpEra::Legacy => {
+            return Err(McpMethodError::method_not_found(format!(
+                "`{method}` belongs to the {MCP_TASKS_EXTENSION} extension, offered to {MCP_MODERN_VERSION} clients"
+            )));
+        }
+        "tasks/get" | "tasks/update" | "tasks/cancel" => {
+            handle_task_method(method, params, ctx.operations)?
+        }
         "skills/list" | "skills/get" | "resources/directory/read" if ctx.era == McpEra::Legacy => {
             return Err(McpMethodError::method_not_found(format!(
                 "`{method}` belongs to the {MCP_SKILLS_EXTENSION} extension, offered to {MCP_MODERN_VERSION} clients; read skills through resources/list"
@@ -432,7 +445,7 @@ fn discover_result(ctx: &McpRequestContext<'_>) -> Value {
     json!({
         "resultType": "complete",
         "supportedVersions": supported_versions(),
-        "capabilities": capabilities(ctx.era, ctx.subscriptions),
+        "capabilities": capabilities(ctx.era, ctx.subscriptions, ctx.operations.is_some()),
         "instructions": server_instructions(&ctx.authority.active_tool_names()),
         "_meta": { META_SERVER_INFO: server_info(ctx.host) },
         "ttlMs": LIST_TTL_MS,
@@ -566,7 +579,7 @@ impl McpLegacyConnection {
         self.version = Some(version.to_string());
         json!({
             "protocolVersion": version,
-            "capabilities": capabilities(McpEra::Legacy, false),
+            "capabilities": capabilities(McpEra::Legacy, false, false),
             "serverInfo": server_info(host),
             "instructions": server_instructions(&authority.active_tool_names()),
         })
