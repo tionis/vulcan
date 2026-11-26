@@ -3311,6 +3311,11 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
             paths.config_file(),
             &mut loaded.diagnostics,
         );
+        remove_retired_mcp_remote_keys(
+            &mut vulcan_config,
+            paths.config_file(),
+            &mut loaded.diagnostics,
+        );
         apply_vulcan_overrides(&mut loaded.config, vulcan_config);
     }
 
@@ -3333,10 +3338,35 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
             paths.local_config_file(),
             &mut loaded.diagnostics,
         );
+        remove_retired_mcp_remote_keys(
+            &mut local_config,
+            paths.local_config_file(),
+            &mut loaded.diagnostics,
+        );
         apply_vulcan_overrides(&mut loaded.config, local_config);
     }
 
     loaded
+}
+
+/// `[mcp_remote] tool_packs` named the tool packs a remote offered. Tool packs
+/// were removed: the permission profile chosen on the consent page decides
+/// which tools a connection sees.
+fn remove_retired_mcp_remote_keys(
+    config: &mut PartialVulcanConfig,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let Some(remote) = config.mcp_remote.as_mut() else {
+        return;
+    };
+    if remote.tool_packs.take().is_some() {
+        diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
+            path: path.to_path_buf(),
+            message: "ignored mcp_remote.tool_packs: tool packs were removed; the permission profile a connection is approved with decides which tools it sees".to_string(),
+        });
+    }
 }
 
 /// Sync keys of the removed whole-worktree and path-scoped modes. They are

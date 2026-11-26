@@ -45,6 +45,8 @@ pub(super) struct PartialMcpRemoteConfig {
     pub(super) ceiling_profile: Option<String>,
     pub(super) default_profile: Option<String>,
     pub(super) redirect_hosts: Option<Vec<String>>,
+    /// Removed with tool packs; dropped with a diagnostic.
+    pub(super) tool_packs: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]

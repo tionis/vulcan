@@ -5421,6 +5421,47 @@ fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
 }
 
 #[test]
+fn retired_mcp_remote_tool_packs_load_with_a_diagnostic() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+    let paths = VaultPaths::new(vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[mcp_remote]\ndefault_profile = \"writer\"\ntool_packs = [\"notes-read\"]\n",
+    )
+    .expect("shared config");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        "[mcp_remote]\ntool_packs = [\"search\"]\n",
+    )
+    .expect("local config");
+    let loaded = load_vault_config(&paths);
+    assert_eq!(
+        loaded.config.mcp_remote.default_profile.as_deref(),
+        Some("writer"),
+        "the rest of the section still loads"
+    );
+    let retired = loaded
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic
+                .message
+                .starts_with("ignored mcp_remote.tool_packs")
+        })
+        .map(|diagnostic| diagnostic.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retired,
+        vec![
+            paths.config_file().to_path_buf(),
+            paths.local_config_file().to_path_buf()
+        ]
+    );
+}
+
+#[test]
 fn sync_branch_pull_defaults_to_git_and_reads_shared_and_local_values() {
     let temporary = TempDir::new().expect("temporary directory");
     let paths = VaultPaths::new(temporary.path());
