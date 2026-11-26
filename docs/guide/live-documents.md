@@ -37,7 +37,10 @@ Health 70%
 - **Inputs** show their current value: `[x]`/`[ ]` for toggles, `7 / 10` for sliders and
   progress bars, the option's label for selects and suggesters, and a comma list for lists. HTML
   output shows disabled form controls. Missing or mistyped values show the input's default
-  (`defaultValue`, or the type's own), which is not written.
+  (`defaultValue`, or the type's own), which is not written. Date and time inputs without a value
+  show today or now, except in publication output. Suggesters with `optionQuery(#tag)` or
+  `optionQuery("folder")` offer the matching notes from the index (image suggesters the images in
+  the folder), and `set` accepts only those unless `allowOther` is given.
 - **Views** (`VIEW[template][type:target]`): `math` (the default) evaluates the template with
   mathjs, `text` joins the values, `link` and `image` turn them into links and embeds, and
   `hidden` shows nothing. A view with a target passes its result on: later views in the note see

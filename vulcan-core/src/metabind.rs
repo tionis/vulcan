@@ -10,7 +10,7 @@
 
 use crate::config::{MetaBindConfig, VaultConfig};
 use crate::parser::types::{MetaBindSourceKind, ParsedDocument};
-use crate::NoteRecord;
+use crate::{NoteRecord, VaultPaths};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -807,6 +807,10 @@ pub struct InputSettings {
     pub default_value: Option<Value>,
     /// Suggesters accept values outside their options (`allowOther`).
     pub allow_other: bool,
+    /// What a date or time input without a value shows: now, as Meta Bind
+    /// shows it, when the render has a clock (see [`MetaBindEnv::now_ms`]).
+    #[serde(skip)]
+    pub now_default: Option<Value>,
 }
 
 /// A selectable value and its label.
@@ -923,12 +927,10 @@ pub fn input_settings(
             ))),
         }
     }
-    for name in ["optionQuery", "optionSource"] {
-        if argument(declaration, name).is_some() {
-            diagnostics.push(MetaBindDiagnostic::info(format!(
-                "`{name}` options come from Obsidian; Vulcan offers only the `option` values"
-            )));
-        }
+    if argument(declaration, "optionSource").is_some() {
+        diagnostics.push(MetaBindDiagnostic::info(
+            "`optionSource` options come from Obsidian; Vulcan offers the `option` and `optionQuery` values",
+        ));
     }
     let toggle_value = |name: &str, fallback: bool| {
         argument(declaration, name)
@@ -947,6 +949,7 @@ pub fn input_settings(
         default_value: argument(declaration, "defaultValue").and_then(|a| a.literal(0)),
         allow_other: argument(declaration, "allowOther")
             .is_some_and(|argument| argument.values.first().is_none_or(|v| v == "true")),
+        now_default: None,
     };
     let failed = diagnostics
         .iter()
@@ -977,6 +980,9 @@ impl InputSettings {
         }
         if let Some(default) = &self.default_value {
             return default.clone();
+        }
+        if let Some(now) = &self.now_default {
+            return now.clone();
         }
         match self.kind() {
             ValueKind::Toggle => self.off_value.clone(),
@@ -1396,7 +1402,7 @@ fn memory_path(scope: &str, target: &BindTarget) -> Vec<PathSegment> {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MetaBindOutcome {
     Input {
-        settings: InputSettings,
+        settings: Box<InputSettings>,
         target: Option<String>,
         value: Value,
         display: String,
@@ -1450,6 +1456,29 @@ pub fn is_excluded(config: &MetaBindConfig, path: &str) -> bool {
     })
 }
 
+/// What a render may use beyond the note and the index.
+#[derive(Default)]
+pub struct MetaBindEnv<'a> {
+    /// Now, in milliseconds since the Unix epoch: date and time inputs
+    /// without a value show it, as Meta Bind's show today. `None` for
+    /// reproducible output, where they show empty.
+    pub now_ms: Option<i64>,
+    /// The vault, for the image files `imageSuggester(optionQuery("folder"))`
+    /// offers.
+    pub paths: Option<&'a VaultPaths>,
+}
+
+impl MetaBindEnv<'_> {
+    /// An environment with the device clock and no vault access.
+    #[must_use]
+    pub fn with_clock() -> Self {
+        Self {
+            now_ms: Some(crate::current_utc_timestamp_ms()),
+            ..Self::default()
+        }
+    }
+}
+
 /// Renders the note's fields in document order: inputs show their current
 /// values, and views compute from them, seeing earlier views' write-backs.
 #[must_use]
@@ -1458,6 +1487,7 @@ pub fn evaluate_note_fields<S: std::hash::BuildHasher>(
     note_index: Option<&HashMap<String, NoteRecord, S>>,
     source_path: Option<&str>,
     parsed: &ParsedDocument,
+    env: &MetaBindEnv<'_>,
 ) -> Vec<MetaBindField> {
     let settings = &config.metabind;
     if !settings.enabled || parsed.meta_bind_fields.is_empty() {
@@ -1517,6 +1547,7 @@ pub fn evaluate_note_fields<S: std::hash::BuildHasher>(
                     !block,
                     settings,
                     config,
+                    env,
                     &mut values,
                     &mut math,
                     &buttons,
@@ -1564,6 +1595,7 @@ fn render_declaration<S: std::hash::BuildHasher>(
     inline: bool,
     settings: &MetaBindConfig,
     config: &VaultConfig,
+    env: &MetaBindEnv<'_>,
     values: &mut Values<'_, S>,
     math: &mut Option<crate::numerals::MathEvaluator>,
     buttons: &HashMap<String, String>,
@@ -1573,9 +1605,17 @@ fn render_declaration<S: std::hash::BuildHasher>(
         MetaBindDeclaration::Input(input) => {
             let (input_settings, mut found) = input_settings(input, inline, settings);
             diagnostics.append(&mut found);
-            let Some(input_settings) = input_settings else {
+            let Some(mut input_settings) = input_settings else {
                 return first_error(diagnostics);
             };
+            if let Some(now) = env.now_ms {
+                input_settings.now_default = now_value(
+                    &input_settings.input_type,
+                    now,
+                    &settings.preferred_date_format,
+                );
+            }
+            add_query_options(&mut input_settings, input, values, env.paths, diagnostics);
             let stored = match &input.target {
                 Some(target) => {
                     if matches!(
@@ -1600,7 +1640,7 @@ fn render_declaration<S: std::hash::BuildHasher>(
             MetaBindOutcome::Input {
                 display: input_settings.display(&value),
                 target: input.target.as_ref().map(ToString::to_string),
-                settings: input_settings,
+                settings: Box::new(input_settings),
                 value,
             }
         }
@@ -1660,6 +1700,256 @@ fn render_declaration<S: std::hash::BuildHasher>(
             MetaBindOutcome::Embed { target: inner }
         }
     }
+}
+
+/// Now as a date or time input shows it, in the device's time zone.
+fn now_value(input_type: &str, now_ms: i64, preferred_date_format: &str) -> Option<Value> {
+    let local = crate::expression::value::DataviewTimeZone::System.localize_utc_ms(now_ms);
+    let now = chrono::DateTime::from_timestamp_millis(local)?.naive_utc();
+    let text = match input_type {
+        "date" => now.format("%Y-%m-%d").to_string(),
+        "time" => now.format("%H:%M").to_string(),
+        "dateTime" => now.format("%Y-%m-%dT%H:%M").to_string(),
+        "datePicker" => moment_date(now.date(), preferred_date_format),
+        _ => return None,
+    };
+    Some(Value::String(text))
+}
+
+/// `date` in a Moment.js format's year, month, and day tokens (`YYYY`,
+/// `YY`, `MM`, `M`, `DD`, `D`); `[...]` is literal text, as in Moment.
+fn moment_date(date: chrono::NaiveDate, format: &str) -> String {
+    use chrono::Datelike;
+    let mut out = String::new();
+    let mut rest = if format.is_empty() {
+        "YYYY-MM-DD"
+    } else {
+        format
+    };
+    while let Some(character) = rest.chars().next() {
+        if character == '[' {
+            if let Some(end) = rest.find(']') {
+                out.push_str(&rest[1..end]);
+                rest = &rest[end + 1..];
+                continue;
+            }
+        }
+        let token = ["YYYY", "YY", "MM", "M", "DD", "D"]
+            .into_iter()
+            .find(|token| rest.starts_with(token));
+        match token {
+            Some("YYYY") => write!(out, "{:04}", date.year()),
+            Some("YY") => write!(out, "{:02}", date.year().rem_euclid(100)),
+            Some("MM") => write!(out, "{:02}", date.month()),
+            Some("M") => write!(out, "{}", date.month()),
+            Some("DD") => write!(out, "{:02}", date.day()),
+            Some("D") => write!(out, "{}", date.day()),
+            _ => {
+                out.push(character);
+                rest = &rest[character.len_utf8()..];
+                continue;
+            }
+        }
+        .expect("writing to a String cannot fail");
+        rest = &rest[token.map_or(0, str::len)..];
+    }
+    out
+}
+
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
+
+/// Adds the options of the input's `optionQuery` arguments: the notes a
+/// Dataview source selects (as links, per `useLinks`), or for image
+/// suggesters the images in a folder.
+fn add_query_options<S: std::hash::BuildHasher>(
+    settings: &mut InputSettings,
+    declaration: &InputDeclaration,
+    values: &Values<'_, S>,
+    paths: Option<&VaultPaths>,
+    diagnostics: &mut Vec<MetaBindDiagnostic>,
+) {
+    let queries = declaration
+        .arguments
+        .iter()
+        .filter(|argument| argument.name == "optionQuery")
+        .map(|argument| argument.values.first().map_or("", String::as_str))
+        .collect::<Vec<_>>();
+    if queries.is_empty() {
+        return;
+    }
+    let use_links = argument(declaration, "useLinks").map_or("true", |argument| {
+        argument.values.first().map_or("true", String::as_str)
+    });
+    for query in queries {
+        if settings.input_type.starts_with("image") {
+            let Some(paths) = paths else {
+                diagnostics.push(MetaBindDiagnostic::info(
+                    "image options need the vault's files, which this view does not read",
+                ));
+                // Without them, accept any value rather than refuse real options.
+                settings.allow_other = true;
+                continue;
+            };
+            for image in image_files(paths, unquote(query)) {
+                let label = image.rsplit('/').next().unwrap_or(&image).to_string();
+                settings.options.push(MetaBindOption {
+                    value: Value::String(image),
+                    label,
+                });
+            }
+            continue;
+        }
+        let Some(index) = values.note_index else {
+            diagnostics.push(MetaBindDiagnostic::info(
+                "`optionQuery` options need the vault index; run `vulcan scan`",
+            ));
+            // Without them, accept any value rather than refuse real options.
+            settings.allow_other = true;
+            continue;
+        };
+        match query_notes(query, index, values.source_path) {
+            Ok(notes) => {
+                for note in notes {
+                    let name = note.file_name.clone();
+                    let value = match use_links {
+                        "false" => name.clone(),
+                        "partial" => format!("[[{name}]]"),
+                        _ => format!("[[{}|{name}]]", note.document_path),
+                    };
+                    settings.options.push(MetaBindOption {
+                        value: Value::String(value),
+                        label: name,
+                    });
+                }
+            }
+            Err(message) => diagnostics.push(MetaBindDiagnostic::warning(format!(
+                "`optionQuery({query})`: {message}"
+            ))),
+        }
+    }
+}
+
+fn unquote(text: &str) -> &str {
+    let text = text.trim();
+    text.strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(text)
+}
+
+/// The image files under `folder` (the whole vault for `""`), sorted.
+fn image_files(paths: &VaultPaths, folder: &str) -> Vec<String> {
+    let folder = folder.trim_matches('/');
+    let root = paths.vault_root();
+    let mut images = ignore::WalkBuilder::new(root.join(folder))
+        .hidden(true)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    IMAGE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+                })
+        })
+        .filter_map(|entry| {
+            entry
+                .path()
+                .strip_prefix(root)
+                .ok()
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+        })
+        .collect::<Vec<_>>();
+    images.sort();
+    images
+}
+
+/// The notes a Dataview source (`#tag`, `"folder"`, `[[note]]`,
+/// `outgoing([[note]])`, combined with `and`, `or`, and `-`) selects, by
+/// path.
+fn query_notes<'i, S: std::hash::BuildHasher>(
+    source: &str,
+    index: &'i HashMap<String, NoteRecord, S>,
+    source_path: Option<&str>,
+) -> Result<Vec<&'i NoteRecord>, String> {
+    let query = crate::dql::parse_dql(&format!("LIST FROM {source}"))?;
+    let Some(expr) = query.commands.iter().find_map(|command| match command {
+        crate::dql::DqlDataCommand::From(expr) => Some(expr),
+        _ => None,
+    }) else {
+        return Err("not a Dataview source".to_string());
+    };
+    let mut notes = Vec::new();
+    for note in index.values() {
+        if source_selects(expr, note, index, source_path)? {
+            notes.push(note);
+        }
+    }
+    notes.sort_by(|left, right| left.document_path.cmp(&right.document_path));
+    Ok(notes)
+}
+
+fn link_key(path: &str) -> String {
+    format!("[[{}]]", path.strip_suffix(".md").unwrap_or(path))
+}
+
+fn normalize_tag(tag: &str) -> String {
+    tag.trim_start_matches('#').to_lowercase()
+}
+
+fn source_selects<S: std::hash::BuildHasher>(
+    expr: &crate::dql::DqlSourceExpr,
+    note: &NoteRecord,
+    index: &HashMap<String, NoteRecord, S>,
+    source_path: Option<&str>,
+) -> Result<bool, String> {
+    use crate::dql::{DqlLinkTarget, DqlSourceExpr};
+    let target = |target: &DqlLinkTarget| -> Result<&NoteRecord, String> {
+        match target {
+            DqlLinkTarget::SelfReference => source_path
+                .and_then(|path| index.values().find(|note| note.document_path == path))
+                .ok_or_else(|| "`[[]]` needs the current note".to_string()),
+            DqlLinkTarget::Wikilink(raw) => {
+                let inner = raw.trim().trim_start_matches("[[").trim_end_matches("]]");
+                let inner = inner.split(['|', '#']).next().unwrap_or_default();
+                resolve_target_note(index, source_path.unwrap_or_default(), inner)
+                    .ok_or_else(|| format!("no note `{inner}`"))
+            }
+        }
+    };
+    Ok(match expr {
+        DqlSourceExpr::Tag(tag) => {
+            let wanted = normalize_tag(tag);
+            note.tags.iter().any(|tag| {
+                let tag = normalize_tag(tag);
+                tag == wanted || tag.starts_with(&format!("{wanted}/"))
+            })
+        }
+        DqlSourceExpr::Path(path) => {
+            let path = path.trim_matches('/');
+            path.is_empty()
+                || note.document_path == path
+                || note.document_path == format!("{path}.md")
+                || note.document_path.starts_with(&format!("{path}/"))
+        }
+        DqlSourceExpr::IncomingLink(linked) => target(linked)?
+            .inlinks
+            .contains(&link_key(&note.document_path)),
+        DqlSourceExpr::OutgoingLink(linking) => target(linking)?
+            .links
+            .contains(&link_key(&note.document_path)),
+        DqlSourceExpr::Not(inner) => !source_selects(inner, note, index, source_path)?,
+        DqlSourceExpr::And(left, right) => {
+            source_selects(left, note, index, source_path)?
+                && source_selects(right, note, index, source_path)?
+        }
+        DqlSourceExpr::Or(left, right) => {
+            source_selects(left, note, index, source_path)?
+                || source_selects(right, note, index, source_path)?
+        }
+    })
 }
 
 fn first_error(diagnostics: &[MetaBindDiagnostic]) -> MetaBindOutcome {
@@ -1946,7 +2236,7 @@ pub fn inputs_bound_to<'f>(
                     ..
                 })),
                 MetaBindOutcome::Input { settings, .. },
-            ) if bound == target => Some(settings),
+            ) if bound == target => Some(settings.as_ref()),
             _ => None,
         })
         .collect()
@@ -2091,11 +2381,12 @@ pub fn fields_in_source<S: std::hash::BuildHasher>(
     note_index: Option<&HashMap<String, NoteRecord, S>>,
     source_path: Option<&str>,
     source: &str,
+    env: &MetaBindEnv<'_>,
 ) -> Vec<MetaBindField> {
     let mut config = config.clone();
     config.metabind.enabled = true;
     let parsed = crate::parse_document(source, &config);
-    evaluate_note_fields(&config, note_index, source_path, &parsed)
+    evaluate_note_fields(&config, note_index, source_path, &parsed, env)
 }
 
 #[cfg(test)]
@@ -2112,6 +2403,7 @@ mod tests {
             None,
             Some("Note.md"),
             source,
+            &MetaBindEnv::default(),
         )
     }
 
@@ -2212,6 +2504,53 @@ mod tests {
     }
 
     #[test]
+    fn date_inputs_default_to_now_when_the_render_has_a_clock() {
+        let source =
+            "---\nset: 2020-01-02\n---\n`INPUT[date:missing]` `INPUT[time:t]` `INPUT[date:set]`\n";
+        let shown = |env: &MetaBindEnv<'_>| {
+            fields_in_source::<std::collections::hash_map::RandomState>(
+                &VaultConfig::default(),
+                None,
+                Some("Note.md"),
+                source,
+                env,
+            )
+            .iter()
+            .map(|field| field_markdown(field).1)
+            .collect::<Vec<_>>()
+        };
+        let reproducible = shown(&MetaBindEnv::default());
+        assert_eq!(reproducible[2], "2020-01-02");
+        assert!(
+            reproducible[0].is_empty() || reproducible[0] == "null",
+            "{reproducible:?}"
+        );
+
+        let now = shown(&MetaBindEnv {
+            now_ms: Some(1_700_000_000_000),
+            paths: None,
+        });
+        assert!(
+            chrono::NaiveDate::parse_from_str(&now[0], "%Y-%m-%d").is_ok(),
+            "{now:?}"
+        );
+        assert!(
+            chrono::NaiveTime::parse_from_str(&now[1], "%H:%M").is_ok(),
+            "{now:?}"
+        );
+        assert_eq!(now[2], "2020-01-02", "a stored value wins over now");
+    }
+
+    #[test]
+    fn moment_date_formats_follow_the_tokens() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 3, 7).expect("date");
+        assert_eq!(moment_date(date, "YYYY-MM-DD"), "2026-03-07");
+        assert_eq!(moment_date(date, "D.M.YY"), "7.3.26");
+        assert_eq!(moment_date(date, "[Day] DD/MM/YYYY"), "Day 07/03/2026");
+        assert_eq!(moment_date(date, ""), "2026-03-07");
+    }
+
+    #[test]
     fn block_only_inputs_fail_inline_but_work_in_blocks() {
         let fields = render(
             "`INPUT[select(option(a)):x]`\n\n```meta-bind\nINPUT[select(option(a), option(b)):x]\n```\n",
@@ -2243,6 +2582,7 @@ mod tests {
             None,
             Some("templates/Daily.md"),
             "`INPUT[toggle:done]`",
+            &MetaBindEnv::default(),
         );
         assert!(matches!(fields[0].outcome, MetaBindOutcome::Notice { .. }));
     }

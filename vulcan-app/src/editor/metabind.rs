@@ -10,7 +10,7 @@ use crate::AppError;
 use std::collections::{BTreeMap, HashMap};
 use vulcan_core::metabind::{
     fields_in_source, inputs_bound_to, write_target_in_source, BindTarget, MetaBindDeclaration,
-    MetaBindOutcome, MetaBindStorage,
+    MetaBindEnv, MetaBindOutcome, MetaBindStorage,
 };
 use vulcan_core::ordinary_write::OrdinaryWriteChange;
 use vulcan_core::NoteRecord;
@@ -33,6 +33,10 @@ impl EditorSession {
             None::<&NoIndex>,
             Some(path),
             &document.text,
+            &MetaBindEnv {
+                paths: Some(self.paths()),
+                ..MetaBindEnv::with_clock()
+            },
         );
         let Some(field) = fields
             .iter()
@@ -121,6 +125,10 @@ impl EditorSession {
             None::<&NoIndex>,
             Some(path),
             &source,
+            &MetaBindEnv {
+                paths: Some(self.paths()),
+                ..MetaBindEnv::with_clock()
+            },
         );
         let inputs = inputs_bound_to(&fields, &target);
         let first = inputs

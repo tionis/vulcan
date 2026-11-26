@@ -174,15 +174,24 @@ spaces must be written `["a b"]`.
 | `list`, `listSuggester`, `imageListSuggester` | list | `[]` | block only |
 | `inlineList`, `inlineListSuggester` | list | `[]` | yes |
 
-Meta Bind's date inputs default to today. Vulcan's library takes no clock, so a missing date
-shows empty.
+Date and time inputs without a value show now, as Meta Bind's do (`date` today, `time` the current
+`HH:mm`, `dateTime` both, `datePicker` today in `preferred_date_format`'s `YYYY`/`YY`/`MM`/`M`/`DD`/`D`
+tokens), in the device's time zone. Deterministic (publication) renders show them empty instead.
+The default is shown, never written.
 
 Arguments: `class` (multi), `defaultValue`, `title`, `showcase`, `addLabels`, `minValue`,
 `maxValue`, `stepSize`, `onValue`, `offValue`, `option(value[, label])` (multi), `optionQuery`
-(multi, a Dataview source) and `optionSource` (multi: `file|folder|tag` with `from:`, `ext:`,
-`tag:` filters), both of which Vulcan reports as Obsidian-only with an informational diagnostic
-and leaves out of the offered values, `placeholder`, `limit`, `multiLine`, `useLinks` (`true` → `[[path|name]]`, `partial` →
+(multi), `placeholder`, `limit`, `multiLine`, `useLinks` (`true` → `[[path.md|name]]`, `partial` →
 `[[name]]`, `false` → `name`), `allowOther`.
+
+`optionQuery(source)` adds options from the index: the notes a Dataview source selects (`#tag` with
+its subtags, `"folder"`, `[[note]]` for notes linking to it, `outgoing([[note]])`, combined with
+`and`, `or`, `-`, and parentheses), sorted by path, each labelled with its name and stored per
+`useLinks`. For `imageSuggester` and `imageListSuggester` it names a folder (`""` for the whole
+vault) and offers the image files under it by vault path. Values outside the offered options are
+refused unless `allowOther` is set; where the index or the files are not available (an editor
+without a scanned vault) any value is accepted instead. `optionSource` is not in Meta Bind's
+documentation; Vulcan reports it with an informational diagnostic and offers no values for it.
 
 Diagnostics follow Meta Bind's levels. Errors (the field renders as an error): unknown input or view
 type, bad bind target or storage type, unresolvable file, duplicate non-multi argument, an inline

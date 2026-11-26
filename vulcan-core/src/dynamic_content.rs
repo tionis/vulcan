@@ -225,6 +225,12 @@ pub(crate) fn evaluate_dynamic_regions(
         ctx.note_index,
         note.map(|(note, _)| note.document_path.as_str()),
         parsed,
+        &crate::metabind::MetaBindEnv {
+            // Publication output stays reproducible: date inputs without a
+            // value show empty instead of today.
+            now_ms: (!ctx.deterministic).then(crate::current_utc_timestamp_ms),
+            paths: Some(ctx.paths),
+        },
     ) {
         regions.push(DynamicRegion {
             start: field.byte_range.start,

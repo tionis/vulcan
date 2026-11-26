@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 use vulcan_core::metabind::{
     fields_in_source, inputs_bound_to, resolve_target_note, view_write_backs,
-    write_target_in_source, BindTarget, MetaBindField, MetaBindStorage,
+    write_target_in_source, BindTarget, MetaBindEnv, MetaBindField, MetaBindStorage,
 };
 use vulcan_core::{NoteRecord, PermissionGuard, ProfilePermissionGuard, VaultConfig, VaultPaths};
 
@@ -49,6 +49,15 @@ pub struct MetaBindFileWrite {
     pub path: String,
     pub before: String,
     pub after: String,
+}
+
+/// The render environment `vulcan metabind` uses: the device clock and the
+/// vault's files.
+fn env(paths: &VaultPaths) -> MetaBindEnv<'_> {
+    MetaBindEnv {
+        paths: Some(paths),
+        ..MetaBindEnv::with_clock()
+    }
 }
 
 struct Scope {
@@ -92,7 +101,13 @@ pub fn list_metabind_fields(
     Ok(MetaBindReport {
         path: path.to_string(),
         enabled: config.metabind.enabled,
-        fields: fields_in_source(config, scope.note_index.as_ref(), Some(path), source),
+        fields: fields_in_source(
+            config,
+            scope.note_index.as_ref(),
+            Some(path),
+            source,
+            &env(paths),
+        ),
     })
 }
 
@@ -110,7 +125,13 @@ pub fn plan_metabind_set(
 ) -> Result<MetaBindWritePlan, AppError> {
     let scope = Scope::load(paths, path, permission_profile)?;
     let target = BindTarget::parse(target).map_err(AppError::operation)?;
-    let fields = fields_in_source(config, scope.note_index.as_ref(), Some(path), source);
+    let fields = fields_in_source(
+        config,
+        scope.note_index.as_ref(),
+        Some(path),
+        source,
+        &env(paths),
+    );
     let inputs = inputs_bound_to(&fields, &target);
     let Some(first) = inputs.first() else {
         return Err(AppError::operation(format!(
@@ -151,7 +172,13 @@ pub fn plan_metabind_apply(
     permission_profile: Option<&str>,
 ) -> Result<MetaBindWritePlan, AppError> {
     let scope = Scope::load(paths, path, permission_profile)?;
-    let fields = fields_in_source(config, scope.note_index.as_ref(), Some(path), source);
+    let fields = fields_in_source(
+        config,
+        scope.note_index.as_ref(),
+        Some(path),
+        source,
+        &env(paths),
+    );
     let mut plan = MetaBindWritePlan::default();
     let mut sources = BTreeMap::new();
     for write_back in view_write_backs(&fields) {
@@ -303,6 +330,53 @@ mod tests {
         .expect("plan");
         assert_eq!(plan.writes[0].path, "Stats.md");
         assert!(plan.writes[0].after.contains("color: blue"));
+    }
+
+    #[test]
+    fn option_queries_offer_matching_notes_and_images() {
+        let note = concat!(
+            "`INPUT[suggester(optionQuery(#npc)):who]` ",
+            "`INPUT[suggester(optionQuery(\"People\"), useLinks(partial)):folk]` ",
+            "`INPUT[suggester(optionQuery(#npc and -\"People\"), useLinks(false)):other]`\n",
+            "```meta-bind\nINPUT[imageSuggester(optionQuery(\"art\")):portrait]\n```\n",
+        );
+        let (dir, paths) = vault(&[
+            ("Hub.md", note),
+            ("Bob.md", "#npc\n"),
+            ("Ann.md", "#npc/villain\n"),
+            ("Cat.md", "no tags\n"),
+        ]);
+        std::fs::create_dir_all(dir.path().join("People")).expect("dir");
+        std::fs::write(dir.path().join("People/Dee.md"), "#npc\n").expect("write");
+        std::fs::create_dir_all(dir.path().join("art")).expect("dir");
+        std::fs::write(dir.path().join("art/face.png"), b"png").expect("write");
+        std::fs::write(dir.path().join("art/notes.txt"), b"txt").expect("write");
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).expect("scan");
+        let config = VaultConfig::default();
+        let report = list_metabind_fields(&paths, &config, "Hub.md", note, None).expect("list");
+        let options = |index: usize| match &report.fields[index].outcome {
+            vulcan_core::metabind::MetaBindOutcome::Input { settings, .. } => settings
+                .options
+                .iter()
+                .map(|option| option.value.as_str().unwrap_or_default().to_string())
+                .collect::<Vec<_>>(),
+            other => panic!("not an input: {other:?}"),
+        };
+        assert_eq!(
+            options(0),
+            ["[[Ann.md|Ann]]", "[[Bob.md|Bob]]", "[[People/Dee.md|Dee]]"]
+        );
+        assert_eq!(options(1), ["[[Dee]]"]);
+        assert_eq!(options(2), ["Ann", "Bob"]);
+        assert_eq!(options(3), ["art/face.png"]);
+
+        let plan = plan_metabind_set(&paths, &config, "Hub.md", note, "other", "Bob", None)
+            .expect("an offered value");
+        assert!(plan.writes[0].after.contains("other: Bob"));
+        assert!(
+            plan_metabind_set(&paths, &config, "Hub.md", note, "other", "Cat", None).is_err(),
+            "values outside the query are refused"
+        );
     }
 
     #[test]
