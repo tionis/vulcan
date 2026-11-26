@@ -9439,6 +9439,244 @@ shell = "allow"
             }
         }
 
+        /// Fields Vulcan adds to Dataview's objects on purpose.
+        const PROBE_VULCAN_EXTENSIONS: &[&str] = &[".fileKeys.basename", ".fileKeys.properties"];
+
+        /// Paths where Vulcan's run of the probe still differs from Obsidian's. Remove an
+        /// entry once its fix lands: the test fails when a listed path no longer differs.
+        const PROBE_KNOWN_DIVERGENCES: &[&str] = &[
+            ".behaviour.ctimeKind",
+            ".behaviour.dateParse",
+            ".behaviour.duration",
+            ".behaviour.evaluateLink",
+            ".behaviour.fileLink",
+            ".behaviour.frontmatterDateKind",
+            ".behaviour.frontmatterLinkKind",
+            ".behaviour.inlineDurationKind",
+            ".behaviour.inlinkSource",
+            ".behaviour.ioLoadIsPromise",
+            ".behaviour.markdownList",
+            ".behaviour.markdownTable",
+            ".behaviour.mtimeKind",
+            ".behaviour.pageByLink",
+            ".behaviour.pagePaths",
+            ".behaviour.parseDate",
+            ".behaviour.parseLink",
+            ".behaviour.queryIsPromise",
+            ".behaviour.queryMarkdown",
+            ".behaviour.sectionLink",
+            ".behaviour.tryEvaluate",
+            ".behaviour.whereStatus",
+            ".dvMembers.blockLink",
+            ".dvMembers.currentFilePath",
+            ".dvMembers.evaluate",
+            ".dvMembers.executeJs",
+            ".dvMembers.fileLink",
+            ".dvMembers.literal",
+            ".dvMembers.markdownList",
+            ".dvMembers.markdownTable",
+            ".dvMembers.markdownTaskList",
+            ".dvMembers.pagePaths",
+            ".dvMembers.parse",
+            ".dvMembers.sectionLink",
+            ".dvMembers.tryEvaluate",
+            ".fileKeys.ctime",
+            ".fileKeys.inlinks",
+            ".fileKeys.link",
+            ".fileKeys.mtime",
+            ".fileKeys.outlinks",
+            ".fileValues.day",
+            ".fileValues.etags",
+            ".fileValues.inlinks",
+            ".fileValues.link",
+            ".fileValues.outlinks",
+            ".fileValues.tags",
+            ".lists[0].keys",
+            ".lists[0].parent",
+            ".lists[1].fields",
+            ".lists[1].keys",
+            ".lists[1].parent",
+            ".lists[2].keys",
+            ".lists[3].keys",
+            ".lists[3].parent",
+            ".lists[4].keys",
+            ".lists[4].parent",
+            ".lists[5].keys",
+            ".lists[5].parent",
+            ".lists[6].keys",
+            ".lists[6].parent",
+            ".lists[7].keys",
+            ".lists[7].parent",
+            ".lists[8].keys",
+            ".pageKeys.Inline",
+            ".pageKeys.Inline Date",
+            ".pageKeys.Inline Duration",
+            ".pageKeys.Inline Link",
+            ".pageKeys.Inline Number",
+            ".pageKeys.child",
+            ".pageKeys.cost",
+            ".pageKeys.date",
+            ".pageKeys.datetime",
+            ".pageKeys.groups",
+            ".pageKeys.inline date",
+            ".pageKeys.inline duration",
+            ".pageKeys.inline link",
+            ".pageKeys.inline number",
+            ".pageKeys.inline-date",
+            ".pageKeys.inline-duration",
+            ".pageKeys.inline-link",
+            ".pageKeys.inline-number",
+            ".pageKeys.link",
+            ".pageKeys.links",
+            ".pageKeys.rep",
+            ".pageKeys.status",
+            ".pageKeys.up",
+            ".pageValues.Inline",
+            ".pageValues.Inline Date",
+            ".pageValues.Inline Duration",
+            ".pageValues.Inline Link",
+            ".pageValues.Inline Number",
+            ".pageValues.child",
+            ".pageValues.cost",
+            ".pageValues.date",
+            ".pageValues.datetime",
+            ".pageValues.groups",
+            ".pageValues.inline date",
+            ".pageValues.inline duration",
+            ".pageValues.inline link",
+            ".pageValues.inline number",
+            ".pageValues.inline-date",
+            ".pageValues.inline-duration",
+            ".pageValues.inline-link",
+            ".pageValues.inline-number",
+            ".pageValues.link",
+            ".pageValues.links",
+            ".pageValues.rep",
+            ".pageValues.status",
+            ".pageValues.up",
+            ".tasks[0].due",
+            ".tasks[0].fields",
+            ".tasks[1].completion",
+            ".tasks[1].fields",
+            ".tasks[2].fields",
+            ".tasks[3].due",
+            ".tasks[3].fields",
+        ];
+
+        #[test]
+        fn dataviewjs_probe_matches_obsidian() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview-probe", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let note = fs::read_to_string(vault_root.join("Dataview Probe.md"))
+                .expect("probe note should be readable");
+            let source = note
+                .split("```dataviewjs\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\n```").next())
+                .expect("probe note should hold a dataviewjs block");
+            let result = evaluate_dataview_js_with_options(
+                &paths,
+                source,
+                Some("Dataview Probe.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect("probe should evaluate");
+            let [DataviewJsOutput::Paragraph { text }] = result.outputs.as_slice() else {
+                panic!(
+                    "probe should render one paragraph, got {:?}",
+                    result.outputs
+                );
+            };
+            let actual: Value = serde_json::from_str(
+                text.trim_start_matches("```json\n")
+                    .trim_end_matches("\n```"),
+            )
+            .expect("probe output should be JSON");
+            let expected: Value = serde_json::from_str(
+                &fs::read_to_string(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../tests/fixtures/dataview-probe-obsidian.json"),
+                )
+                .expect("Obsidian probe output should be readable"),
+            )
+            .expect("Obsidian probe output should be JSON");
+
+            let mut differences = Vec::new();
+            probe_differences("", &expected, &actual, &mut differences);
+            let covered = |path: &str, entry: &str| {
+                path.strip_prefix(entry)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+            };
+            let allowed = || {
+                PROBE_VULCAN_EXTENSIONS
+                    .iter()
+                    .chain(PROBE_KNOWN_DIVERGENCES)
+            };
+            let unexpected = differences
+                .iter()
+                .filter(|(path, _)| !allowed().any(|entry| covered(path, entry)))
+                .map(|(path, detail)| format!("{path}: {detail}"))
+                .collect::<Vec<_>>();
+            let fixed = allowed()
+                .filter(|entry| !differences.iter().any(|(path, _)| covered(path, entry)))
+                .collect::<Vec<_>>();
+            assert!(
+                unexpected.is_empty() && fixed.is_empty(),
+                "unexpected differences from Obsidian:\n{}\nlisted paths that now match: {fixed:?}",
+                unexpected.join("\n")
+            );
+        }
+
+        /// Collects the leaf paths where `actual` differs from `expected`. Objects compare key by
+        /// key and same-length arrays of objects or arrays element by element.
+        fn probe_differences(
+            path: &str,
+            expected: &Value,
+            actual: &Value,
+            out: &mut Vec<(String, String)>,
+        ) {
+            match (expected, actual) {
+                (Value::Object(expected), Value::Object(actual)) => {
+                    let keys = expected
+                        .keys()
+                        .chain(actual.keys())
+                        .collect::<std::collections::BTreeSet<_>>();
+                    for key in keys {
+                        let child = format!("{path}.{key}");
+                        match (expected.get(key), actual.get(key)) {
+                            (Some(expected), Some(actual)) => {
+                                probe_differences(&child, expected, actual, out);
+                            }
+                            (expected, actual) => out
+                                .push((child, format!("obsidian={expected:?} vulcan={actual:?}"))),
+                        }
+                    }
+                }
+                (Value::Array(expected), Value::Array(actual))
+                    if expected.len() == actual.len()
+                        && expected
+                            .iter()
+                            .any(|value| value.is_object() || value.is_array()) =>
+                {
+                    for (index, (expected, actual)) in expected.iter().zip(actual).enumerate() {
+                        probe_differences(&format!("{path}[{index}]"), expected, actual, out);
+                    }
+                }
+                _ if expected != actual => out.push((
+                    path.to_string(),
+                    format!("obsidian={expected} vulcan={actual}"),
+                )),
+                _ => {}
+            }
+        }
+
         fn copy_fixture_vault(name: &str, destination: &Path) {
             let source = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../tests/fixtures/vaults")

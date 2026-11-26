@@ -188,6 +188,8 @@ Mixed [bracket:: one] and (paren:: two) fields. #probe/body
     starred: await attempt(() => file.starred),
   };
 
-  dv.paragraph("```json\n" + JSON.stringify(result, null, 1) + "\n```");
+  // Escape "::" so Dataview's reading-view inline-field renderer leaves the copied JSON intact.
+  const json = JSON.stringify(result, null, 1).replace(/::/g, "\\u003a\\u003a");
+  dv.paragraph("```json\n" + json + "\n```");
 })();
 ```

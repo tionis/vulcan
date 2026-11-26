@@ -1,0 +1,615 @@
+{
+ "pageKeys": {
+  "Inline": "string",
+  "Inline Date": "DateTime",
+  "Inline Duration": "DateTime",
+  "Inline Link": "Link",
+  "Inline Number": "number",
+  "aliases": "Array of string",
+  "bracket": "string",
+  "child": "string",
+  "cost": "string",
+  "date": "DateTime",
+  "datetime": "DateTime",
+  "flag": "boolean",
+  "float": "number",
+  "groups": "string",
+  "inline": "string",
+  "inline-date": "DateTime",
+  "inline-duration": "DateTime",
+  "inline-link": "Link",
+  "inline-number": "number",
+  "link": "Link",
+  "links": "Array of Link",
+  "list": "Array of string",
+  "nested": "object",
+  "number": "number",
+  "paren": "string",
+  "rep": "Array of number",
+  "status": "string",
+  "tags": "Array of string",
+  "text": "string",
+  "up": "Link"
+ },
+ "pageValues": {
+  "Inline": "inline value",
+  "Inline Date": "DateTime(2026-02-03T00:00)",
+  "Inline Duration": "DateTime(0000-00-00THH:120)",
+  "Inline Link": "Link(People/Alice.md|||false|file)",
+  "Inline Number": 7,
+  "aliases": [
+   "Probe Alias"
+  ],
+  "bracket": "one",
+  "child": "yes",
+  "cost": "-10.64 / 12",
+  "date": "DateTime(2026-01-15T00:00)",
+  "datetime": "DateTime(2026-01-15T10:30)",
+  "flag": true,
+  "float": 3.5,
+  "groups": "a, b",
+  "inline": "inline value",
+  "inline-date": "DateTime(2026-02-03T00:00)",
+  "inline-duration": "DateTime(0000-00-00THH:120)",
+  "inline-link": "Link(People/Alice.md|||false|file)",
+  "inline-number": 7,
+  "link": "Link(People/Alice.md|||false|file)",
+  "links": [
+   "Link(People/Alice.md|||false|file)",
+   "Link(Other Note.md|||false|file)"
+  ],
+  "list": [
+   "a",
+   "b"
+  ],
+  "nested": {
+   "inner": "value"
+  },
+  "number": 42,
+  "paren": "two",
+  "rep": [
+   1,
+   2
+  ],
+  "status": "listed",
+  "tags": [
+   "probe/front"
+  ],
+  "text": "plain text",
+  "up": "Link(People/Alice.md|||false|file)"
+ },
+ "fileKeys": {
+  "aliases": "DataArray of string",
+  "cday": "DateTime",
+  "ctime": "DateTime",
+  "day": "DateTime",
+  "etags": "DataArray of string",
+  "ext": "string",
+  "folder": "string",
+  "frontmatter": "object",
+  "inlinks": "DataArray of Link",
+  "link": "Link",
+  "lists": "DataArray of object",
+  "mday": "DateTime",
+  "mtime": "DateTime",
+  "name": "string",
+  "outlinks": "DataArray of Link",
+  "path": "string",
+  "size": "number",
+  "starred": "boolean",
+  "tags": "DataArray of string",
+  "tasks": "DataArray of object"
+ },
+ "fileValues": {
+  "aliases": [
+   "Probe Alias"
+  ],
+  "day": "DateTime(2026-01-15T00:00)",
+  "etags": [
+   "#probe/body",
+   "#probe/task",
+   "#probe/front"
+  ],
+  "ext": "md",
+  "folder": "",
+  "frontmatter": {
+   "aliases": [
+    "Probe Alias"
+   ],
+   "date": "2026-01-15",
+   "datetime": "2026-01-15T10:30",
+   "flag": true,
+   "float": 3.5,
+   "link": "[[People/Alice]]",
+   "links": [
+    "[[People/Alice]]",
+    "[[Other Note]]"
+   ],
+   "list": [
+    "a",
+    "b"
+   ],
+   "nested": {
+    "inner": "value"
+   },
+   "number": 42,
+   "tags": [
+    "probe/front"
+   ],
+   "text": "plain text"
+  },
+  "inlinks": [
+   "Link(Other Note.md|||false|file)"
+  ],
+  "link": "Link(Dataview Probe.md|||false|file)",
+  "name": "Dataview Probe",
+  "outlinks": [
+   "Link(People/Alice.md|People/Alice||false|file)",
+   "Link(People/Alice.md|People/Alice||false|file)",
+   "Link(Other Note.md|Other Note||false|file)",
+   "Link(People/Alice.md|People/Alice||false|file)",
+   "Link(Other Note.md|Other Note||false|file)",
+   "Link(People/Alice.md|People/Alice||false|file)"
+  ],
+  "path": "Dataview Probe.md",
+  "tags": [
+   "#probe/body",
+   "#probe",
+   "#probe/task",
+   "#probe/front"
+  ]
+ },
+ "lists": [
+  {
+   "text": "Plain item [cost:: -10.64 / 12] [groups:: a, b]",
+   "keys": [
+    "annotated",
+    "children",
+    "cost",
+    "groups",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "path",
+    "position",
+    "real",
+    "section",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text"
+   ],
+   "fields": {
+    "cost": "-10.64 / 12",
+    "groups": "a, b"
+   },
+   "parent": "undefined",
+   "children": 0,
+   "task": false
+  },
+  {
+   "text": "Item with link [[Other Note]] and [up:: [[People/Alice]]]",
+   "keys": [
+    "annotated",
+    "children",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "path",
+    "position",
+    "real",
+    "section",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text",
+    "up"
+   ],
+   "fields": {
+    "up": "Link(People/Alice.md|||false|file)"
+   },
+   "parent": "undefined",
+   "children": 1,
+   "task": false
+  },
+  {
+   "text": "Child item [child:: yes]",
+   "keys": [
+    "annotated",
+    "child",
+    "children",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "parent",
+    "path",
+    "position",
+    "real",
+    "section",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text"
+   ],
+   "fields": {
+    "child": "yes"
+   },
+   "parent": "number",
+   "children": 0,
+   "task": false
+  },
+  {
+   "text": "status:: listed",
+   "keys": [
+    "annotated",
+    "children",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "path",
+    "position",
+    "real",
+    "section",
+    "status",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text"
+   ],
+   "fields": {},
+   "parent": "undefined",
+   "children": 0,
+   "task": false
+  },
+  {
+   "text": "Repeated [rep:: 1] [rep:: 2]",
+   "keys": [
+    "annotated",
+    "children",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "path",
+    "position",
+    "real",
+    "rep",
+    "section",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text"
+   ],
+   "fields": {
+    "rep": [
+     1,
+     2
+    ]
+   },
+   "parent": "undefined",
+   "children": 0,
+   "task": false
+  },
+  {
+   "text": "Open task [due:: 2026-04-01] #probe/task",
+   "keys": [
+    "annotated",
+    "checked",
+    "children",
+    "completed",
+    "due",
+    "fullyCompleted",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "path",
+    "position",
+    "real",
+    "section",
+    "status",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text"
+   ],
+   "fields": {},
+   "parent": "undefined",
+   "children": 0,
+   "task": true
+  },
+  {
+   "text": "Done task ✅ 2026-04-02",
+   "keys": [
+    "annotated",
+    "checked",
+    "children",
+    "completed",
+    "completion",
+    "fullyCompleted",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "path",
+    "position",
+    "real",
+    "section",
+    "status",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text"
+   ],
+   "fields": {},
+   "parent": "undefined",
+   "children": 0,
+   "task": true
+  },
+  {
+   "text": "In progress [priority:: high]",
+   "keys": [
+    "annotated",
+    "checked",
+    "children",
+    "completed",
+    "fullyCompleted",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "path",
+    "position",
+    "priority",
+    "real",
+    "section",
+    "status",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text"
+   ],
+   "fields": {
+    "priority": "high"
+   },
+   "parent": "undefined",
+   "children": 1,
+   "task": true
+  },
+  {
+   "text": "Nested task 📅 2026-05-01",
+   "keys": [
+    "annotated",
+    "checked",
+    "children",
+    "completed",
+    "due",
+    "fullyCompleted",
+    "header",
+    "line",
+    "lineCount",
+    "link",
+    "list",
+    "outlinks",
+    "parent",
+    "path",
+    "position",
+    "real",
+    "section",
+    "status",
+    "subtasks",
+    "symbol",
+    "tags",
+    "task",
+    "text"
+   ],
+   "fields": {},
+   "parent": "number",
+   "children": 0,
+   "task": true
+  }
+ ],
+ "tasks": [
+  {
+   "text": "Open task [due:: 2026-04-01] #probe/task",
+   "status": " ",
+   "checked": false,
+   "completed": false,
+   "due": "DateTime(2026-04-01T00:00)",
+   "fields": {},
+   "subtasks": 0
+  },
+  {
+   "text": "Done task ✅ 2026-04-02",
+   "status": "x",
+   "checked": true,
+   "completed": true,
+   "completion": "DateTime(2026-04-02T00:00)",
+   "fields": {},
+   "subtasks": 0
+  },
+  {
+   "text": "In progress [priority:: high]",
+   "status": "/",
+   "checked": true,
+   "completed": false,
+   "fields": {
+    "priority": "high"
+   },
+   "subtasks": 1
+  },
+  {
+   "text": "Nested task 📅 2026-05-01",
+   "status": " ",
+   "checked": false,
+   "completed": false,
+   "due": "DateTime(2026-05-01T00:00)",
+   "fields": {},
+   "subtasks": 0
+  }
+ ],
+ "dvMembers": {
+  "pagePaths": "function",
+  "page": "function",
+  "pages": "function",
+  "current": "function",
+  "query": "function",
+  "tryQuery": "function",
+  "queryMarkdown": "function",
+  "tryQueryMarkdown": "function",
+  "evaluate": "function",
+  "tryEvaluate": "function",
+  "execute": "function",
+  "executeJs": "function",
+  "array": "function",
+  "isArray": "function",
+  "isDataArray": "function",
+  "fileLink": "function",
+  "sectionLink": "function",
+  "blockLink": "function",
+  "date": "function",
+  "duration": "function",
+  "parse": "function",
+  "literal": "function",
+  "clone": "function",
+  "compare": "function",
+  "equal": "function",
+  "el": "function",
+  "header": "function",
+  "paragraph": "function",
+  "span": "function",
+  "view": "function",
+  "list": "function",
+  "table": "function",
+  "taskList": "function",
+  "markdownTable": "function",
+  "markdownList": "function",
+  "markdownTaskList": "function",
+  "io": "object",
+  "func": "object",
+  "luxon": "object",
+  "container": "object",
+  "currentFilePath": "string"
+ },
+ "dataArrayMembers": {
+  "where": "function",
+  "filter": "function",
+  "map": "function",
+  "flatMap": "function",
+  "mutate": "function",
+  "limit": "function",
+  "slice": "function",
+  "concat": "function",
+  "indexOf": "function",
+  "find": "function",
+  "findIndex": "function",
+  "includes": "function",
+  "join": "function",
+  "sort": "function",
+  "sortInPlace": "function",
+  "groupBy": "function",
+  "groupIn": "function",
+  "distinct": "function",
+  "every": "function",
+  "some": "function",
+  "none": "function",
+  "first": "function",
+  "last": "function",
+  "to": "function",
+  "into": "function",
+  "expand": "function",
+  "forEach": "function",
+  "sum": "function",
+  "avg": "function",
+  "min": "function",
+  "max": "function",
+  "array": "function",
+  "length": "number",
+  "values": "Array"
+ },
+ "behaviour": {
+  "dateParse": "DateTime(2026-01-02T00:00)",
+  "dateShorthand": "DateTime",
+  "duration": "DateTime(0000-00-03THH:00)",
+  "compare": [
+   -1,
+   1,
+   true
+  ],
+  "parseLink": "Link(People/Alice|||false|file)",
+  "parseDate": "DateTime(2026-01-02T00:00)",
+  "fileLink": "Link(People/Alice|||false|file)",
+  "sectionLink": "Link(People/Alice||Heading|false|header)",
+  "pageByPath": "friend",
+  "pageByLink": "friend",
+  "pagePaths": [
+   "People/Alice.md"
+  ],
+  "swizzle": [
+   "Alice"
+  ],
+  "whereStatus": [
+   "listed",
+   "active"
+  ],
+  "groupOrder": [
+   "a",
+   "b"
+  ],
+  "sortKeyArgs": [
+   2,
+   1
+  ],
+  "toString": "[1, 2]",
+  "tryEvaluate": 3,
+  "evaluateLink": "Link(People/Alice.md|||false|file)",
+  "queryIsPromise": "function",
+  "queryResult": true,
+  "queryMarkdown": "- [[People/Alice.md|Alice]]\n",
+  "markdownTable": "| a |\n| - |\n| 1 |\n",
+  "markdownList": "- 1\n- 2\n",
+  "ioNormalize": "Alice",
+  "ioLoadIsPromise": "function",
+  "funcCount": true,
+  "luxon": "DateTime",
+  "inlinkSource": [
+   "Other Note.md"
+  ],
+  "frontmatterDateKind": "DateTime",
+  "frontmatterLinkKind": "Link",
+  "inlineDurationKind": "DateTime",
+  "mtimeKind": "DateTime",
+  "ctimeKind": "DateTime",
+  "cdayKind": "DateTime",
+  "sizeKind": "number",
+  "starred": false
+ }
+}
