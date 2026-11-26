@@ -944,7 +944,7 @@ function __vulcanPlain(value) {
   if (typeof value === "function") {
     return "[function " + (value.name || "anonymous") + "]";
   }
-  if (value instanceof Link) {
+  if (value instanceof Link || value instanceof __VulcanListPairWidget) {
     return value.markdown();
   }
   if (value instanceof DataArray) {
@@ -2575,6 +2575,9 @@ function __vulcanValueToString(value, recursive = false) {
   if (value == null) {
     return __vulcanDataviewSettings.renderNullAs;
   }
+  if (value instanceof __VulcanListPairWidget || value instanceof Link) {
+    return value.markdown();
+  }
   if (typeof value === "string") {
     return value;
   }
@@ -2627,6 +2630,8 @@ function __vulcanMarkdownTable(headers, rows) {
       typeof value === "object" &&
       !(value instanceof VulcanDateTime) &&
       !(value instanceof VulcanDuration) &&
+      !(value instanceof __VulcanListPairWidget) &&
+      !(value instanceof Link) &&
       value.__vulcanDuration !== true
     ) {
       const inner = Object.entries(value)
@@ -2668,6 +2673,8 @@ function __vulcanMarkdownList(input, depth) {
     typeof input === "object" &&
     !(input instanceof VulcanDateTime) &&
     !(input instanceof VulcanDuration) &&
+    !(input instanceof __VulcanListPairWidget) &&
+    !(input instanceof Link) &&
     input.__vulcanDuration !== true
   ) {
     let result = depth === 0 ? "" : "\n";
@@ -2707,62 +2714,84 @@ function __vulcanMarkdownTaskList(items, depth) {
   return result;
 }
 
-function __vulcanRenderQueryMarkdown(result) {
-  if (!result) {
-    return "";
+// Dataview's list-pair widget: a LIST row's id and its value.
+class __VulcanListPairWidget {
+  constructor(key, value) {
+    this.$widget = "dataview:list-pair";
+    this.key = key;
+    this.value = value;
   }
-  if (result.query_type === "table") {
-    const headers = result.columns ?? [];
-    const lines = [];
-    if (headers.length > 0) {
-      lines.push(`| ${headers.join(" | ")} |`);
-      lines.push(`| ${headers.map(() => "---").join(" | ")} |`);
+
+  markdown() {
+    return `${__vulcanValueToString(this.key)}: ${__vulcanValueToString(this.value)}`;
+  }
+
+  toString() {
+    return this.markdown();
+  }
+}
+
+// Dataview's QueryResult for a Vulcan DQL result: LIST values are ids,
+// list pairs, or bare values; TABLE values are rows in header order; TASK
+// values are the tasks as `file.tasks` shapes them. Values are typed as
+// page fields are, with links resolved from `origin`.
+function __vulcanDataviewQueryResult(raw, origin) {
+  const columns = raw?.columns ?? [];
+  const rows = raw?.rows ?? [];
+  const revive = (value) => __vulcanReviveFieldValue(value, origin);
+  const idMeaning = columns[0] === "Group" ? { type: "group", name: "Group" } : { type: "path" };
+  switch (raw?.query_type) {
+    case "list":
+      return {
+        type: "list",
+        values: rows.map((row) =>
+          columns.length >= 2
+            ? new __VulcanListPairWidget(revive(row[columns[0]]), revive(row[columns[1]]))
+            : revive(row[columns[0]])
+        ),
+        primaryMeaning: idMeaning,
+      };
+    case "table":
+      return {
+        type: "table",
+        headers: [...columns],
+        values: rows.map((row) => columns.map((column) => revive(row[column]))),
+        idMeaning,
+      };
+    case "task": {
+      const pages = new Map();
+      const tasksOf = (path) => {
+        if (!pages.has(path)) {
+          pages.set(path, __vulcanAsArray(dv.page(path)?.file?.tasks ?? []));
+        }
+        return pages.get(path);
+      };
+      return {
+        type: "task",
+        values: rows.map(
+          (row) =>
+            (row.path ? tasksOf(row.path).find((task) => task.line === row.line - 1) : undefined) ??
+            __vulcanReviveListItem(row, row.path ?? origin)
+        ),
+      };
     }
-    for (const row of result.rows ?? []) {
-      lines.push(`| ${headers.map((header) => __vulcanMarkdownEscape(__vulcanRenderScalar(row[header]))).join(" | ")} |`);
-    }
-    return lines.join("\n");
+    default:
+      return raw;
   }
-  if (result.query_type === "list") {
-    const columns = result.columns ?? [];
-    return (result.rows ?? []).map((row) => {
-      if (columns.length === 1) {
-        return `- ${__vulcanRenderScalar(row[columns[0]])}`;
-      }
-      if (columns.length >= 2) {
-        return `- ${__vulcanRenderScalar(row[columns[0]])}: ${__vulcanRenderScalar(row[columns[1]])}`;
-      }
-      return `- ${JSON.stringify(row)}`;
-    }).join("\n");
+}
+
+// Dataview's queryMarkdown: the result through its Markdown helpers.
+function __vulcanQueryResultMarkdown(result) {
+  switch (result.type) {
+    case "list":
+      return __vulcanMarkdownList(result.values, 0);
+    case "table":
+      return __vulcanMarkdownTable(result.headers, result.values);
+    case "task":
+      return __vulcanMarkdownTaskList(result.values, 0);
+    default:
+      throw new Error(`Cannot render ${result.type} queries to markdown.`);
   }
-  if (result.query_type === "task") {
-    const fileColumn = (result.columns ?? [])[0] ?? "File";
-    const lines = [];
-    let currentFile = null;
-    for (const row of result.rows ?? []) {
-      const file = row[fileColumn];
-      if (currentFile !== file) {
-        currentFile = file;
-        lines.push(String(file));
-      }
-      lines.push(`- [${row.status ?? " "}] ${row.text ?? ""}`);
-    }
-    return lines.join("\n");
-  }
-  if (result.query_type === "calendar") {
-    const lines = [];
-    let currentDate = null;
-    const fileColumn = (result.columns ?? [])[1] ?? "File";
-    for (const row of result.rows ?? []) {
-      if (currentDate !== row.date) {
-        currentDate = row.date;
-        lines.push(String(row.date));
-      }
-      lines.push(`- ${__vulcanRenderScalar(row[fileColumn])}`);
-    }
-    return lines.join("\n");
-  }
-  return JSON.stringify(result);
 }
 
 function buildDvFunctions(dv) {
@@ -3347,19 +3376,22 @@ const dv = {
   // Dataview's query functions are asynchronous; `vault.query()` is the
   // synchronous equivalent.
   async query(dql, file, _settings) {
-    return __vulcanQuerySync(dql, file);
-  },
-  async tryQuery(dql, file, _settings) {
-    return __vulcanTryQuerySync(dql, file);
-  },
-  async queryMarkdown(dql, file, _settings) {
     const result = __vulcanQuerySync(dql, file);
     return result.successful
-      ? { successful: true, value: __vulcanRenderQueryMarkdown(result.value) }
+      ? { successful: true, value: __vulcanDataviewQueryResult(result.value, file ?? dv.currentFilePath) }
       : result;
   },
-  async tryQueryMarkdown(dql, file, _settings) {
-    return __vulcanRenderQueryMarkdown(__vulcanTryQuerySync(dql, file));
+  async tryQuery(dql, file, _settings) {
+    return __vulcanDataviewQueryResult(__vulcanTryQuerySync(dql, file), file ?? dv.currentFilePath);
+  },
+  async queryMarkdown(dql, file, settings) {
+    const result = await dv.query(dql, file, settings);
+    return result.successful
+      ? { successful: true, value: __vulcanQueryResultMarkdown(result.value) }
+      : result;
+  },
+  async tryQueryMarkdown(dql, file, settings) {
+    return __vulcanQueryResultMarkdown(await dv.tryQuery(dql, file, settings));
   },
   async execute(dql) {
     const result = __vulcanTryQuerySync(dql);
@@ -4889,7 +4921,8 @@ __vulcanRegisterHelp(
   dv.span(text)            — render inline text
   dv.el(tag, text, attrs?) — render an arbitrary HTML element
   dv.pagePaths(source?)    — DataArray of matching page paths
-  await dv.query(dql)      — run DQL, resolving to { successful, value | error }
+  await dv.query(dql)      — run DQL, resolving to { successful, value | error } with
+                             Dataview's { type, values, headers? } result
   await dv.tryQuery(dql)   — run DQL, resolving to the result or rejecting
   await dv.queryMarkdown(dql) — run DQL, resolving to rendered Markdown
   dv.execute(dql)          — run a DQL query and emit its output
@@ -9234,6 +9267,92 @@ globalThis.this = dv.current();
         }
 
         #[test]
+        fn dataviewjs_query_results_follow_dataview() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const sorted = 'FROM "Projects" SORT file.name ASC';
+                const ids = await dv.tryQuery(`LIST ${sorted}`);
+                const pairs = await dv.tryQuery(`LIST status ${sorted}`);
+                const bare = await dv.tryQuery(`LIST WITHOUT ID priority ${sorted}`);
+                const table = await dv.tryQuery(`TABLE status, priority ${sorted}`);
+                const tasks = await dv.tryQuery('TASK FROM "Projects"');
+                const grouped = await dv.tryQuery('LIST rows.file.name FROM "Projects" GROUP BY status');
+                ({
+                  ids: [ids.type, ids.primaryMeaning.type, ids.values.map((link) => link.path)],
+                  pairs: pairs.values.map((pair) => [pair.$widget, pair.key.path, pair.value, String(pair)]),
+                  bare: [bare.values, Array.isArray(bare.values)],
+                  table: [table.type, table.headers, table.idMeaning.type, table.values[1].slice(1)],
+                  task: [tasks.type, tasks.values[0].text, tasks.values[0].line, tasks.values[0].due.toISODate(), "reviewed" in tasks.values[0]],
+                  grouped: [grouped.primaryMeaning.type, grouped.values.length],
+                  markdown: await dv.tryQueryMarkdown(`TABLE status ${sorted}`),
+                  pairMarkdown: await dv.tryQueryMarkdown(`LIST status ${sorted}`),
+                })
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            let value = result.value.expect("script value");
+            assert_eq!(
+                value["ids"],
+                serde_json::json!(["list", "path", ["Projects/Alpha.md", "Projects/Beta.md"]])
+            );
+            assert_eq!(
+                value["pairs"],
+                serde_json::json!([
+                    [
+                        "dataview:list-pair",
+                        "Projects/Alpha.md",
+                        "active",
+                        "[[Projects/Alpha.md|Alpha]]: active"
+                    ],
+                    [
+                        "dataview:list-pair",
+                        "Projects/Beta.md",
+                        "backlog",
+                        "[[Projects/Beta.md|Beta]]: backlog"
+                    ],
+                ])
+            );
+            assert_eq!(value["bare"], serde_json::json!([[1, 5], true]));
+            assert_eq!(
+                value["table"],
+                serde_json::json!([
+                    "table",
+                    ["File", "status", "priority"],
+                    "path",
+                    ["backlog", 5]
+                ])
+            );
+            assert_eq!(
+                value["task"],
+                serde_json::json!([
+                    "task",
+                    "Follow up [due:: 2026-04-02]",
+                    8,
+                    "2026-04-02",
+                    false
+                ])
+            );
+            assert_eq!(value["grouped"], serde_json::json!(["group", 2]));
+            assert_eq!(
+                value["markdown"],
+                "| File                         | status  |\n| ---------------------------- | ------- |\n| [[Projects/Alpha.md\\|Alpha]] | active  |\n| [[Projects/Beta.md\\|Beta]]   | backlog |\n"
+            );
+            assert_eq!(
+                value["pairMarkdown"],
+                "- [[Projects/Alpha.md|Alpha]]: active\n- [[Projects/Beta.md|Beta]]: backlog\n"
+            );
+        }
+
+        #[test]
         fn dataviewjs_list_items_follow_dataview() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
@@ -9564,7 +9683,7 @@ globalThis.this = dv.current();
                         text: "caught".to_string(),
                     },
                     DataviewJsOutput::Paragraph {
-                        text: "lines: 2".to_string(),
+                        text: "lines: 3".to_string(),
                     },
                 ]
             );
@@ -9593,7 +9712,8 @@ globalThis.this = dv.current();
             assert_eq!(
                 result.outputs,
                 vec![DataviewJsOutput::Paragraph {
-                    text: "- [[Projects/Alpha]]\n- [[Projects/Beta]]".to_string(),
+                    text: "- [[Projects/Alpha.md|Alpha]]\n- [[Projects/Beta.md|Beta]]\n"
+                        .to_string(),
                 }]
             );
             assert_eq!(result.value, Some(Value::String("draft".to_string())));
@@ -11539,7 +11659,6 @@ shell = "allow"
         /// Paths where Vulcan's run of the probe still differs from Obsidian's. Remove an
         /// entry once its fix lands: the test fails when a listed path no longer differs.
         const PROBE_KNOWN_DIVERGENCES: &[&str] = &[
-            ".behaviour.queryMarkdown",
             ".pageKeys.Inline",
             ".pageKeys.Inline Date",
             ".pageKeys.Inline Duration",

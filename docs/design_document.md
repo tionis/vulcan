@@ -1253,9 +1253,9 @@ Dataview also supports JavaScript queries in ` ```dataviewjs ` code blocks. Thes
   - `dv.current()` — returns the current note's metadata (`this` equivalent); `dv.currentFilePath` is its path
   - `dv.pagePaths(source?)` — DataArray of the paths `dv.pages(source)` would return
   - The query methods are asynchronous, as in Dataview, and return promises; `vault.query()` is the synchronous equivalent:
-  - `dv.query(dql, [file], [settings])` — evaluate DQL, resolve to `{ successful: boolean, value: result | error: string }`
+  - `dv.query(dql, [file], [settings])` — evaluate DQL, resolve to `{ successful: boolean, value: result | error: string }`, where the result is Dataview's `QueryResult`: `{ type: "list", values, primaryMeaning }` (values are ids, `dataview:list-pair` widgets with `key` and `value`, or bare values), `{ type: "table", headers, values, idMeaning }` (rows as arrays in header order), or `{ type: "task", values }` (tasks shaped as `file.tasks` shapes them). Values are typed as page fields are. `vault.query()` keeps Vulcan's `{ query_type, columns, rows }` result.
   - `dv.tryQuery(dql, [file], [settings])` — like `dv.query()` but rejects on failure and resolves to the result
-  - `dv.queryMarkdown(dql, [file], [settings])` — evaluate DQL, resolve to `{ successful, value: markdown | error }`
+  - `dv.queryMarkdown(dql, [file], [settings])` — evaluate DQL, resolve to `{ successful, value: markdown | error }`, rendered through `dv.markdownList()`, `dv.markdownTable()`, or `dv.markdownTaskList()` as Dataview does
   - `dv.tryQueryMarkdown(dql, [file], [settings])` — like `dv.queryMarkdown()` but rejects on failure and resolves to the Markdown
   - `dv.execute(dql)` — shorthand: evaluate DQL and render results directly (equivalent to `dv.tryQuery()` + render)
   - `dv.executeJs(code)` — run code as a nested DataviewJS block
