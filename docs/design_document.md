@@ -940,10 +940,10 @@ Inline field values must be automatically parsed into typed values during extrac
 3. **Date:** Value matches ISO 8601 patterns (`2026-04-01`, `2026-04-01T14:30`, `2026-04`, year-month) → Date type
 4. **Duration:** Value matches duration patterns (`3 hours`, `1d 3h 20m`, `2 years`) → Duration type
 5. **Number:** Value is a valid numeric literal (`42`, `3.14`, `-7`) → Number type
-6. **List:** Value contains comma-separated quoted strings (`"a", "b", "c"`) → List type. **Important:** unquoted comma-separated values (`a, b, c`) are treated as a single Text value, not a list.
+6. **List:** Value is two or more of Dataview's inline atoms separated by commas, covering the whole value → List type, each item typed as its atom. The atoms are dates, durations, double-quoted strings, `#tags`, `[[links]]`, booleans, numbers, and `null`; `[[A]], [[B]]`, `1, 2.5`, and `"a", "b"` are lists. **Important:** plain words are not atoms, so `a, b, c` stays a single Text value, and a duration takes its own commas (`1 day, 2 hours` is one Duration).
 7. **Text:** Everything else → Text type (default)
 
-**YAML frontmatter arrays vs inline arrays:** YAML `key: [a, b, c]` and bullet-list forms produce List type. Inline field `key:: "a", "b", "c"` (quoted) produces List type, but `key:: a, b, c` (unquoted) produces Text. This asymmetry matches Dataview behavior.
+**YAML frontmatter arrays vs inline arrays:** YAML `key: [a, b, c]` and bullet-list forms produce List type. Inline field `key:: "a", "b", "c"` (quoted) or `key:: [[A]], [[B]]` produces List type, but `key:: a, b, c` (unquoted words) produces Text. This asymmetry matches Dataview behavior.
 
 **Duplicate keys become lists:** If the same key appears multiple times (in frontmatter or inline fields), values are collected into a List.
 

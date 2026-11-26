@@ -22,6 +22,7 @@ use std::fmt::{Display, Formatter, Write as _};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROPERTY_NAMESPACE_FRONTMATTER: &str = "frontmatter";
@@ -332,7 +333,7 @@ pub fn extract_indexed_properties(
         inline_json_values
             .entry(key.clone())
             .or_default()
-            .push(extracted_property_json_value(&extracted));
+            .push(inline_property_json_value(value_text, &extracted, config));
         values.push(extracted.value);
         list_items.extend(extracted.list_items);
     }
@@ -387,7 +388,7 @@ pub(crate) fn list_item_inline_properties(
             .get(&field.key)
             .map(String::as_str)
             .map(canonical_property_type);
-        let value = indexed_inline_property_value(
+        let extracted = extract_inline_property_value(
             &field.key,
             &field.value_text,
             field.kind,
@@ -397,12 +398,10 @@ pub(crate) fn list_item_inline_properties(
         grouped
             .entry(field.key.clone())
             .or_default()
-            .push(typed_property_json_value(
-                value.value_text,
-                value.value_number,
-                value.value_bool,
-                value.value_date,
-                &value.value_type,
+            .push(inline_property_json_value(
+                &field.value_text,
+                &extracted,
+                config,
             ));
     }
     let mut properties = Map::new();
@@ -433,6 +432,10 @@ fn inline_text_to_yaml_value(value_text: &str, config: &VaultConfig) -> yaml_ser
         return yaml_serde::Value::Sequence(
             values.into_iter().map(yaml_serde::Value::String).collect(),
         );
+    }
+
+    if let Some(values) = parse_inline_atom_list(trimmed) {
+        return yaml_serde::Value::Sequence(values);
     }
 
     match yaml_serde::from_str::<yaml_serde::Value>(trimmed) {
@@ -491,6 +494,85 @@ fn parse_inline_quoted_list(value_text: &str) -> Option<Vec<String>> {
         .collect()
 }
 
+/// Dataview's inline list (`parseInlineValue`): two or more of its inline
+/// atoms separated by commas, covering the whole text. Plain words are not
+/// atoms, so `a, b` stays text, and a duration takes its own commas
+/// (`1 day, 2 hours` is one duration).
+fn parse_inline_atom_list(text: &str) -> Option<Vec<yaml_serde::Value>> {
+    if !text.contains(',') {
+        return None;
+    }
+    let mut values = Vec::new();
+    let mut rest = text;
+    loop {
+        let (value, length) = inline_atom(rest)?;
+        values.push(value);
+        rest = &rest[length..];
+        if rest.is_empty() {
+            break;
+        }
+        rest = rest.trim_start().strip_prefix(',')?.trim_start();
+    }
+    (values.len() >= 2).then_some(values)
+}
+
+/// Dataview's inline atom at the start of `text`, and its length: the
+/// first of date, duration, string, tag, link, boolean, number, and `null`
+/// that matches, as in its grammar; a date that is not a real date falls
+/// through.
+fn inline_atom(text: &str) -> Option<(yaml_serde::Value, usize)> {
+    static PATTERNS: OnceLock<[Regex; 7]> = OnceLock::new();
+    let [date, duration, string, tag, link, boolean, number] = PATTERNS.get_or_init(|| {
+        let unit = "years|year|yrs|yr|months|month|mos|mo|weeks|week|wks|wk|w|days|day|d|\
+                    hours|hour|hrs|hr|h|minutes|minute|mins|min|m|seconds|second|secs|sec|s";
+        let part = format!(r"-?[0-9]+(?:\.[0-9]+)?\s*(?:{unit})");
+        [
+            r"^\d{4}-\d{2}(?:-\d{2}(?:T\d{2}(?::\d{2}(?::\d{2}(?:\.\d{3})?(?:[+-]\d{1,2}(?::\d{2})?|Z|\[[0-9A-Za-z+,\-./]+\])?)?)?)?)?".to_string(),
+            format!(r"^{part}(?:(?:\s*,\s*|\s*){part})*"),
+            r#"^"(?:\\.|[^"\\])*""#.to_string(),
+            r##"^#[^\x{2000}-\x{206F}\x{2E00}-\x{2E7F}'!"#$%&()*+,.:;<=>?@^`{|}~\[\]\\\s]*"##.to_string(),
+            r"^!?\[\[[^\[\]]*?\]\]".to_string(),
+            r"^(?:true|false|True|False)".to_string(),
+            r"^-?[0-9]+(?:\.[0-9]+)?".to_string(),
+        ]
+        .map(|pattern| Regex::new(&pattern).expect("inline atom pattern should compile"))
+    });
+    let matched = |pattern: &Regex| pattern.find(text).map(|found| found.as_str());
+
+    if let Some(found) = matched(date).filter(|found| normalize_date_string(found).is_some()) {
+        return Some((yaml_serde::Value::String(found.to_string()), found.len()));
+    }
+    if let Some(found) = matched(duration) {
+        return Some((yaml_serde::Value::String(found.to_string()), found.len()));
+    }
+    if let Some(found) = matched(string) {
+        let inner = &found[1..found.len() - 1];
+        let unescaped = inner.replace("\\\"", "\"").replace("\\\\", "\\");
+        return Some((yaml_serde::Value::String(unescaped), found.len()));
+    }
+    for pattern in [tag, link] {
+        if let Some(found) = matched(pattern) {
+            return Some((yaml_serde::Value::String(found.to_string()), found.len()));
+        }
+    }
+    if let Some(found) = matched(boolean) {
+        return Some((
+            yaml_serde::Value::Bool(found.eq_ignore_ascii_case("true")),
+            found.len(),
+        ));
+    }
+    if let Some(found) = matched(number) {
+        let value = if found.contains('.') {
+            found.parse::<f64>().ok().map(yaml_serde::Number::from)
+        } else {
+            found.parse::<i64>().ok().map(yaml_serde::Number::from)
+        }?;
+        return Some((yaml_serde::Value::Number(value), found.len()));
+    }
+    text.starts_with("null")
+        .then(|| (yaml_serde::Value::String("null".to_string()), 4))
+}
+
 fn is_quoted_inline_list_segment(segment: &str) -> bool {
     let trimmed = segment.trim();
     trimmed.len() >= 2
@@ -525,6 +607,22 @@ fn property_json_value(value: &IndexedPropertyValue) -> Value {
             .as_ref()
             .map_or(Value::Null, |value_text| Value::String(value_text.clone())),
     }
+}
+
+/// An inline field's value in the page object: a list keeps its items'
+/// types (`1, 2` is numbers), anything else is typed as extracted.
+fn inline_property_json_value(
+    value_text: &str,
+    extracted: &ExtractedPropertyValue,
+    config: &VaultConfig,
+) -> Value {
+    if extracted.value.value_type == "list" {
+        let yaml = inline_text_to_yaml_value(value_text, config);
+        if yaml.is_sequence() {
+            return yaml_to_json(&yaml);
+        }
+    }
+    extracted_property_json_value(extracted)
 }
 
 fn extracted_property_json_value(value: &ExtractedPropertyValue) -> Value {
@@ -4116,6 +4214,54 @@ mod tests {
                 "tags=list",
             ]
         );
+    }
+
+    #[test]
+    fn comma_separated_inline_atoms_become_lists_as_in_dataview() {
+        let config = VaultConfig::default();
+        let parsed = parse_document(
+            concat!(
+                "links:: [[Sven]], [[Nope|a, b]]\n",
+                "numbers:: 1, 2.5\n",
+                "mixed:: 2026-01-01, #tag, \"x, y\", true\n",
+                "words:: a, b\n",
+                "span:: 1 day, 2 hours\n",
+                "partial:: 12abc, 3\n",
+                "- Item [pair:: 1, true]\n",
+            ),
+            &config,
+        );
+        let indexed = extract_indexed_properties(&parsed, &config)
+            .expect("properties should extract")
+            .expect("note has properties");
+        let page: Value = serde_json::from_str(&indexed.canonical_json).expect("canonical JSON");
+        assert_eq!(
+            page["links"],
+            serde_json::json!(["[[Sven]]", "[[Nope|a, b]]"])
+        );
+        assert_eq!(page["numbers"], serde_json::json!([1, 2.5]));
+        assert_eq!(
+            page["mixed"],
+            serde_json::json!(["2026-01-01", "#tag", "x, y", true])
+        );
+        // Plain words are not atoms, and a duration takes its own commas.
+        assert_eq!(page["words"], "a, b");
+        assert_eq!(page["partial"], "12abc, 3");
+        assert_eq!(page["pair"], serde_json::json!([1, true]));
+        let item = list_item_inline_properties(&parsed.list_items[0].inline_fields, &config);
+        assert_eq!(item["pair"], serde_json::json!([1, true]));
+        let span = indexed
+            .values
+            .iter()
+            .find(|value| value.key == "span")
+            .expect("span value");
+        assert_eq!(span.value_type, "duration");
+        let links = indexed
+            .values
+            .iter()
+            .find(|value| value.key == "links")
+            .expect("links value");
+        assert_eq!(links.value_type, "list");
     }
 
     #[test]
