@@ -60,7 +60,6 @@ pub fn scan_fingerprint(metadata: &fs::Metadata) -> Option<StatFingerprint> {
     {
         use std::os::windows::fs::MetadataExt;
         metadata.is_file().then(|| {
-            let mut fingerprint = [0; 40];
             let fields = [
                 *b"WINSCAN1",
                 metadata.creation_time().to_be_bytes(),
@@ -68,9 +67,8 @@ pub fn scan_fingerprint(metadata: &fs::Metadata) -> Option<StatFingerprint> {
                 metadata.last_write_time().to_be_bytes(),
                 u64::from(metadata.file_attributes()).to_be_bytes(),
             ];
-            for (chunk, field) in fingerprint.chunks_exact_mut(8).zip(fields) {
-                chunk.copy_from_slice(&field);
-            }
+            let mut fingerprint = [0; 40];
+            fingerprint.copy_from_slice(fields.as_flattened());
             fingerprint
         })
     }
