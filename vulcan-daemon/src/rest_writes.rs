@@ -95,7 +95,12 @@ pub(crate) async fn write_vault(
             Err(error) => failure(&error),
         };
         if let Err(error) = store.finish(&ticket, status, &response) {
-            eprintln!("cannot record the outcome of a REST write for `{id}`: {error}");
+            // `id` comes from the request path: escape it so it cannot add
+            // lines of its own to the log.
+            eprintln!(
+                "cannot record the outcome of a REST write for `{}`: {error}",
+                id.escape_debug()
+            );
         }
         (status, response)
     })
