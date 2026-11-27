@@ -401,8 +401,11 @@ mod tests {
             git(vault, &["rev-parse", "HEAD~1"]),
             git(vault, &["rev-parse", "origin/main"])
         );
+        // Git for Windows checks text out with CRLF (`core.autocrlf`).
         assert_eq!(
-            fs::read_to_string(vault.join("Home.md")).unwrap(),
+            fs::read_to_string(vault.join("Home.md"))
+                .unwrap()
+                .replace("\r\n", "\n"),
             "local\nremote\n"
         );
         let requests = provider.0.lock().unwrap();

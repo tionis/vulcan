@@ -127,13 +127,16 @@ mod tests {
         let report =
             evaluate_numerals_note(&paths, &config, "Bill.md", note, None).expect("evaluate");
         let plan = plan_numerals_apply(note, &report);
+        // The report says why when nothing is planned (an evaluation error).
         assert_eq!(
             plan.changes,
             vec![NumeralsChange {
                 line: 7,
                 before: "@[cost::0] = rate * hours + [[Prices]].$fee".to_string(),
                 after: "@[cost::500] = rate * hours + [[Prices]].$fee".to_string(),
-            }]
+            }],
+            "{:?}",
+            report.regions
         );
         assert!(plan.updated.contains("@[cost::500]"));
     }
