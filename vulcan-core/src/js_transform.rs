@@ -123,7 +123,9 @@ Math.random = () => __vulcanNondeterministic("Math.random()");
             let runtime =
                 Runtime::new().map_err(|error| PureJsTransformError::Message(error.to_string()))?;
             runtime.set_memory_limit(options.memory_limit_bytes);
-            runtime.set_max_stack_size(options.stack_limit_bytes);
+            runtime.set_max_stack_size(crate::resource_limits::quickjs_stack_bytes(
+                options.stack_limit_bytes,
+            ));
             let context = Context::full(&runtime)
                 .map_err(|error| PureJsTransformError::Message(error.to_string()))?;
             let deadline = Instant::now();

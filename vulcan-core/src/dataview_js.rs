@@ -5956,9 +5956,11 @@ globalThis.this = dv.current();
                     &loaded_config.js_runtime,
                     state.permissions.as_ref(),
                 ));
-                runtime.set_max_stack_size(runtime_stack_limit_bytes(
-                    &loaded_config.js_runtime,
-                    state.permissions.as_ref(),
+                runtime.set_max_stack_size(crate::resource_limits::quickjs_stack_bytes(
+                    runtime_stack_limit_bytes(
+                        &loaded_config.js_runtime,
+                        state.permissions.as_ref(),
+                    ),
                 ));
             }
             let timeout_description =

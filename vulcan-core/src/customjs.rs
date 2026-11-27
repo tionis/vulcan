@@ -270,7 +270,9 @@ mod bridge {
         ) -> Result<Self, String> {
             let runtime = Runtime::new().map_err(|error| error.to_string())?;
             runtime.set_memory_limit(limits.memory_limit_mb.saturating_mul(1024 * 1024));
-            runtime.set_max_stack_size(limits.stack_limit_kb.saturating_mul(1024));
+            runtime.set_max_stack_size(crate::resource_limits::quickjs_stack_bytes(
+                limits.stack_limit_kb.saturating_mul(1024),
+            ));
             let context = Context::full(&runtime).map_err(|error| error.to_string())?;
             let sources_json = serde_json::to_string(sources).map_err(|error| error.to_string())?;
             context.with(|ctx| -> Result<(), String> {

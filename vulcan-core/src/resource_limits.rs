@@ -8,6 +8,23 @@ pub(crate) const MAX_PARSE_RECURSION_DEPTH: usize = 64;
 pub(crate) const MAX_EVALUATION_OPERATIONS: usize = 100_000;
 pub(crate) const MAX_EVALUATION_TIME: Duration = Duration::from_secs(1);
 
+/// The `QuickJS` stack, in bytes, for a configured limit. `QuickJS` measures
+/// native stack, and a debug build for Windows has interpreter frames many
+/// times larger than any release build or other platform: about ten nested
+/// calls into Vulcan's own `DataviewJS` helpers exhausted a 256 KiB profile
+/// cap there. Debug Windows builds therefore get at least 1 MiB, still well
+/// inside the 2 MiB threads that run JavaScript; everywhere else the
+/// configured limit applies as is.
+#[cfg(feature = "js_runtime")]
+#[must_use]
+pub(crate) fn quickjs_stack_bytes(configured: usize) -> usize {
+    if cfg!(all(windows, debug_assertions)) {
+        configured.max(1024 * 1024)
+    } else {
+        configured
+    }
+}
+
 pub(crate) fn ensure_query_input(source: &str) -> Result<(), String> {
     if source.len() > MAX_QUERY_INPUT_BYTES {
         return Err(format!(
@@ -144,5 +161,21 @@ mod tests {
     fn collection_budget_rejects_oversized_vectorized_inputs() {
         assert!(ensure_collection_items(MAX_EVALUATION_OPERATIONS).is_ok());
         assert!(ensure_collection_items(MAX_EVALUATION_OPERATIONS + 1).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "js_runtime"))]
+mod quickjs_stack_tests {
+    use super::quickjs_stack_bytes;
+
+    #[test]
+    fn configured_stack_limits_hold_outside_debug_windows_builds() {
+        let small = 256 * 1024;
+        if cfg!(all(windows, debug_assertions)) {
+            assert_eq!(quickjs_stack_bytes(small), 1024 * 1024);
+        } else {
+            assert_eq!(quickjs_stack_bytes(small), small);
+        }
+        assert_eq!(quickjs_stack_bytes(4 * 1024 * 1024), 4 * 1024 * 1024);
     }
 }
