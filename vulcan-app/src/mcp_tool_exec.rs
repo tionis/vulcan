@@ -793,6 +793,10 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
         git(root, &["init", "--quiet"]);
+        // Vulcan's own commits read the repository's identity, not this
+        // helper's: CI runners have no global one.
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "user.email", "test@example.com"]);
         vulcan_core::paths::initialize_vulcan_dir(&VaultPaths::new(root)).unwrap();
         std::fs::write(root.join(".gitignore"), ".vulcan/\n").unwrap();
         std::fs::write(root.join("Home.md"), "See [[Inbox/Idea]].\n").unwrap();
@@ -889,6 +893,10 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
         git(root, &["init", "--quiet"]);
+        // Vulcan's own commits read the repository's identity, not this
+        // helper's: CI runners have no global one.
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "user.email", "test@example.com"]);
         let paths = VaultPaths::new(root);
         vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
         std::fs::write(root.join(".gitignore"), ".vulcan/\n").unwrap();
@@ -961,6 +969,10 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
         git(root, &["init", "--quiet"]);
+        // Vulcan's own commits read the repository's identity, not this
+        // helper's: CI runners have no global one.
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "user.email", "test@example.com"]);
         std::fs::write(root.join("Home.md"), "# Home\n").unwrap();
         git(root, &["add", "Home.md"]);
         git(root, &["commit", "--quiet", "-m", "home"]);

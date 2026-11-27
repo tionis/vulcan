@@ -4143,11 +4143,15 @@ mod tests {
         // Another clone publishes two versions of an LFS file; the writer
         // fast-forwards past the first and only ever checks out the second.
         let other = temporary.path().join("lfs-work");
+        // `-b main`: the bare remote's HEAD names Git's default branch,
+        // which is `master` where no global config says otherwise.
         run_git(
             temporary.path(),
             &[
                 "clone",
                 "--quiet",
+                "-b",
+                "main",
                 remote.to_str().expect("remote path"),
                 other.to_str().expect("clone path"),
             ],
@@ -4900,9 +4904,14 @@ mod tests {
                 format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
             )
             .expect("hook");
-            let mut permissions = fs::metadata(&path).expect("hook").permissions();
-            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-            fs::set_permissions(&path, permissions).expect("executable hook");
+            // Git for Windows runs hooks through its own shell without an
+            // executable bit.
+            #[cfg(unix)]
+            {
+                let mut permissions = fs::metadata(&path).expect("hook").permissions();
+                std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+                fs::set_permissions(&path, permissions).expect("executable hook");
+            }
         }
         // No signing key exists, so signing would fail the replay.
         run_git(&writer, &["config", "commit.gpgSign", "true"]);

@@ -805,6 +805,31 @@ mod tests {
         second.shutdown().unwrap();
     }
 
+    /// [`open_events`], retried while the listener is full (503).
+    fn open_events_once_admitted(addr: SocketAddr) -> BufReader<TcpStream> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .write_all(b"GET /__fake/live-reload.events HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line.starts_with("HTTP/1.1 200") {
+                return reader;
+            }
+            assert!(
+                line.starts_with("HTTP/1.1 503") && std::time::Instant::now() < deadline,
+                "{line}"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn open_events(addr: SocketAddr) -> BufReader<TcpStream> {
         let mut stream = TcpStream::connect(addr).unwrap();
         stream
@@ -835,13 +860,16 @@ mod tests {
         )
         .unwrap();
         // More streams than the listener admits at once, each dropped by its
-        // client: the next keep-alive write fails and frees the slot.
+        // client: a later keep-alive write fails and frees the slot. How many
+        // writes that takes varies (on macOS the first write to a closed
+        // socket can still succeed), so each round waits until its streams
+        // are admitted; slots that were never freed would time out here.
         for _ in 0..3 {
             let streams = (0..40)
-                .map(|_| open_events(session.addr()))
+                .map(|_| open_events_once_admitted(session.addr()))
                 .collect::<Vec<_>>();
             drop(streams);
-            thread::sleep(LIVE_RELOAD_INTERVAL * 3);
+            thread::sleep(LIVE_RELOAD_INTERVAL);
         }
         assert!(wait_for(|| get(session.addr(), "GET", "/docs/").0 == 200));
         session.shutdown().unwrap();

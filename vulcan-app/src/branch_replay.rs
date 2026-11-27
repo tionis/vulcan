@@ -364,6 +364,10 @@ mod tests {
         )
         .expect("config");
         fs::write(vault.join(".git/info/exclude"), ".vulcan/\n").expect("exclude");
+        // The replay commits through Vulcan's own Git calls, which read the
+        // repository's identity: CI runners have no global one.
+        git(&vault, &["config", "user.name", "Test"]);
+        git(&vault, &["config", "user.email", "test@example.com"]);
         (temporary, VaultPaths::new(&vault))
     }
 

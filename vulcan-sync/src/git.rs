@@ -7952,11 +7952,16 @@ mod tests {
         fs::write(root.join("Notes.md"), "draft\n").expect("draft");
         // Old timestamps keep Git's racy-entry check out of the count.
         run_git(root, &["status", "--short"]);
-        Command::new("touch")
-            .args(["-d", "2 hours ago", "a.bin", "b.bin", "c.bin", "Notes.md"])
-            .current_dir(root)
-            .status()
-            .expect("touch");
+        // Set from Rust: `touch -d "2 hours ago"` is GNU-only, and macOS's
+        // touch refused it without the test noticing.
+        let past = std::time::SystemTime::now() - Duration::from_hours(2);
+        for name in ["a.bin", "b.bin", "c.bin", "Notes.md"] {
+            fs::File::options()
+                .write(true)
+                .open(root.join(name))
+                .and_then(|file| file.set_modified(past))
+                .expect("backdate");
+        }
         let engine = GitCliEngine::default();
         let repository = engine.discover_repository(root).expect("repository");
         let runs = || fs::read_to_string(&counter).map_or(0, |text| text.lines().count());

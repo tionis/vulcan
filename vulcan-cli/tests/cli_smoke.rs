@@ -41085,6 +41085,10 @@ fn git_changeset_commands_inspect_and_land_staged_work() {
         assert!(status.success(), "git {args:?}");
     };
     git(&vault, &["init", "--quiet", "-b", "main"]);
+    // `changeset land` commits through Vulcan, which reads the repository's
+    // identity: CI runners have no global one.
+    git(&vault, &["config", "user.name", "Test"]);
+    git(&vault, &["config", "user.email", "test@example.com"]);
     fs::write(vault.join("Home.md"), "# Home\n").expect("note");
     git(&vault, &["add", "Home.md"]);
     git(&vault, &["commit", "--quiet", "-m", "seed"]);
