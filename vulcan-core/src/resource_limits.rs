@@ -12,14 +12,14 @@ pub(crate) const MAX_EVALUATION_TIME: Duration = Duration::from_secs(1);
 /// native stack, and a debug build for Windows has interpreter frames many
 /// times larger than any release build or other platform: about ten nested
 /// calls into Vulcan's own `DataviewJS` helpers exhausted a 256 KiB profile
-/// cap there. Debug Windows builds therefore get at least 1 MiB, still well
-/// inside the 2 MiB threads that run JavaScript; everywhere else the
-/// configured limit applies as is.
+/// cap there, and mathjs a 1 MiB one. Debug Windows builds therefore get at
+/// least 4 MiB; their test runs set `RUST_MIN_STACK` so threads have room
+/// (CI uses 16 MiB). Everywhere else the configured limit applies as is.
 #[cfg(feature = "js_runtime")]
 #[must_use]
 pub(crate) fn quickjs_stack_bytes(configured: usize) -> usize {
     if cfg!(all(windows, debug_assertions)) {
-        configured.max(1024 * 1024)
+        configured.max(4 * 1024 * 1024)
     } else {
         configured
     }
@@ -172,10 +172,10 @@ mod quickjs_stack_tests {
     fn configured_stack_limits_hold_outside_debug_windows_builds() {
         let small = 256 * 1024;
         if cfg!(all(windows, debug_assertions)) {
-            assert_eq!(quickjs_stack_bytes(small), 1024 * 1024);
+            assert_eq!(quickjs_stack_bytes(small), 4 * 1024 * 1024);
         } else {
             assert_eq!(quickjs_stack_bytes(small), small);
         }
-        assert_eq!(quickjs_stack_bytes(4 * 1024 * 1024), 4 * 1024 * 1024);
+        assert_eq!(quickjs_stack_bytes(8 * 1024 * 1024), 8 * 1024 * 1024);
     }
 }

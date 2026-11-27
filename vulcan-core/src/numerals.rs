@@ -886,12 +886,12 @@ mod engine {
             // default. Every thread that renders has more real stack than
             // that: 2 MB test threads, the CLI's 16 MB worker.
             runtime.set_memory_limit(limits.memory_limit_mb.max(64).saturating_mul(1024 * 1024));
-            runtime.set_max_stack_size(
+            runtime.set_max_stack_size(crate::resource_limits::quickjs_stack_bytes(
                 limits
                     .stack_limit_kb
                     .max(Self::MATHJS_MIN_STACK_KB)
                     .saturating_mul(1024),
-            );
+            ));
             let context = Context::full(&runtime).map_err(|error| error.to_string())?;
             let started = Instant::now();
             runtime
