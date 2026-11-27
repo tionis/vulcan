@@ -105,6 +105,10 @@ impl McpHttpListener {
         E: Fn(&McpHttpReadError) -> McpHttpResponse + Send + Sync + 'static,
     {
         let listener = self.listener.try_clone()?;
+        // tokio needs a non-blocking socket. A clone on Windows is a new
+        // handle (WSADuplicateSocket) that does not carry the original's
+        // mode, and a blocking accept never lets the loop see `stop`.
+        listener.set_nonblocking(true)?;
         let shared = Arc::new(Shared {
             handler: Box::new(handler),
             malformed: Box::new(malformed),
