@@ -903,7 +903,7 @@ Sandbox defaults, runtime memory limits, and script locations.
 - `js_runtime.scripts_folder` — type: `string`; target: `shared|local|device`; default: `.vulcan/scripts`
   Default sandbox, memory, stack, timeout, and script folder settings for `vulcan run`.
   Example: `vulcan config set js_runtime.scripts_folder <value>`
-- `js_runtime.stack_limit_kb` — type: `integer`; target: `shared|local|device`; default: `256`
+- `js_runtime.stack_limit_kb` — type: `integer`; target: `shared|local|device`; default: `1024`
   Default sandbox, memory, stack, timeout, and script folder settings for `vulcan run`.
   Example: `vulcan config set js_runtime.stack_limit_kb <value>`
 

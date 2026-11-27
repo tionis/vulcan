@@ -872,13 +872,26 @@ mod engine {
             });
         }
 
+        /// The least `QuickJS` stack an engine gets, whatever the script limit.
+        const MATHJS_MIN_STACK_KB: usize = 1024;
+
         fn new(config: &VaultConfig, key: String) -> Result<Self, String> {
             LOADS.with(|loads| loads.set(loads.get() + 1));
             let limits = &config.js_runtime;
             let runtime = Runtime::new().map_err(|error| error.to_string())?;
-            // mathjs needs room beyond a script's: at least 64 MB.
+            // mathjs needs room beyond a script's: at least 64 MB of memory,
+            // and at least 1 MB of stack. Loading it takes about 192 KB of
+            // QuickJS stack in a Linux debug build and more where frames are
+            // larger (macOS on ARM, Windows), beyond the 256 KB script
+            // default. Every thread that renders has more real stack than
+            // that: 2 MB test threads, the CLI's 16 MB worker.
             runtime.set_memory_limit(limits.memory_limit_mb.max(64).saturating_mul(1024 * 1024));
-            runtime.set_max_stack_size(limits.stack_limit_kb.saturating_mul(1024));
+            runtime.set_max_stack_size(
+                limits
+                    .stack_limit_kb
+                    .max(Self::MATHJS_MIN_STACK_KB)
+                    .saturating_mul(1024),
+            );
             let context = Context::full(&runtime).map_err(|error| error.to_string())?;
             let started = Instant::now();
             runtime
@@ -1044,6 +1057,17 @@ mod tests {
             engine::bytecode_is_target_independent(),
             "QuickJS bytecode now depends on byte order; build.rs must write it for the target"
         );
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn mathjs_loads_whatever_the_script_stack_limit() {
+        // The script limit can be far below what loading mathjs needs; the
+        // engine keeps its own floor.
+        let mut config = crate::config::VaultConfig::default();
+        config.numerals.enabled = true;
+        config.js_runtime.stack_limit_kb = 64;
+        assert_eq!(evaluate(&config, "`#: 2 + 3`\n"), ["5"]);
     }
 
     #[cfg(feature = "js_runtime")]

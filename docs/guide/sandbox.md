@@ -150,7 +150,7 @@ limits. The defaults live in `.vulcan/config.toml`:
 ```toml
 [js_runtime]
 memory_limit_mb = 64
-stack_limit_kb = 256
+stack_limit_kb = 1024
 default_timeout_seconds = 30
 default_sandbox = "strict"
 scripts_folder = ".vulcan/scripts"

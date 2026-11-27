@@ -196,7 +196,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 
 # [js_runtime]
 # memory_limit_mb = 64
-# stack_limit_kb = 256
+# stack_limit_kb = 1024
 # default_timeout_seconds = 30
 # default_sandbox = "strict"  # strict | fs | net | none
 # scripts_folder = ".vulcan/scripts"

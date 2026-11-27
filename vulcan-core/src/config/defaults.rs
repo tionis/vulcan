@@ -239,8 +239,11 @@ pub(super) fn default_js_runtime_memory_limit_mb() -> usize {
     64
 }
 
+/// `QuickJS` stack, in KiB. It counts native frames too (the regex engine
+/// recurses), so it needs headroom where frames are larger than on Linux:
+/// 256 KiB overflowed in Vulcan's own `DataviewJS` link handling on Windows.
 pub(super) fn default_js_runtime_stack_limit_kb() -> usize {
-    256
+    1024
 }
 
 pub(super) fn default_js_runtime_default_timeout_seconds() -> usize {
