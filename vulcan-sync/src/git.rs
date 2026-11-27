@@ -5632,7 +5632,25 @@ fn terminate_process_group(child: &mut Child) {
     let _ = child.kill();
 }
 
-#[cfg(not(unix))]
+/// Windows has no process groups to signal, and killing a process leaves its
+/// children running: a stalled `git push` would keep its `ssh` or
+/// `git-remote-https` helper, which holds the output pipes open, so the
+/// engine would wait for that helper instead of returning. `taskkill /T`
+/// ends the whole tree.
+#[cfg(windows)]
+fn terminate_process_group(child: &mut Child) {
+    use std::os::windows::process::CommandExt;
+    let _ = Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &child.id().to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(WINDOWS_GIT_CREATION_FLAGS)
+        .status();
+    let _ = child.kill();
+}
+
+#[cfg(not(any(unix, windows)))]
 fn terminate_process_group(child: &mut Child) {
     let _ = child.kill();
 }
