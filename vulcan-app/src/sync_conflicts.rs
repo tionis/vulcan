@@ -804,12 +804,6 @@ fn archived_conflict_store(
     Ok(Some((temporary, store)))
 }
 
-#[cfg(not(unix))]
-#[allow(clippy::unnecessary_wraps)] // One fallible contract across platforms.
-fn set_carried_mode(_path: &Path, _mode: Option<&str>) -> Result<(), AppError> {
-    Ok(())
-}
-
 /// Deletes the remote conflict refs (`.../conflicts/<id>/record` and
 /// published resolution refs) of `conflict_ids` with one listing and one
 /// leased push. Nothing reads them back, and the commits they name are in
